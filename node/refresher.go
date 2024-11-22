@@ -22,9 +22,10 @@ type Refresher struct {
 func NewRefresher(brokers []string, topic string, groupID string) *Refresher {
 	return &Refresher{
 		replicaKafkaReader: kafka.NewReader(kafka.ReaderConfig{
-			Brokers: brokers,
-			Topic:   topic,
-			GroupID: groupID,
+			Brokers:     brokers,
+			Topic:       topic,
+			GroupID:     groupID,
+			StartOffset: kafka.LastOffset,
 		}),
 		quit: make(chan struct{}),
 	}

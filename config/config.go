@@ -11,7 +11,6 @@ type Config struct {
 	Listen                       string   `yaml:"listen"`
 	InnerReplicaBrokers          []string `yaml:"inner_replica_brokers"`
 	InnerReplicaStateChangeTopic string   `yaml:"inner_replica_state_change_topic"`
-	InnerReplicaGroupID          string   `yaml:"inner_replica_group_id"`
 }
 
 var defaultConfig = Config{
