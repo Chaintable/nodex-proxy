@@ -5,6 +5,7 @@ go 1.22.5
 require (
 	github.com/Chaintable/pipeline v0.0.18
 	github.com/segmentio/kafka-go v0.4.47
+	golang.org/x/exp v0.0.0-20241108190413-2d47ceb2692f
 	gopkg.in/yaml.v3 v3.0.1
 )
 
