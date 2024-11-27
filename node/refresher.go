@@ -28,7 +28,7 @@ func NewRefresher(etcdEndpoints []string, configKey string) *Refresher {
 		DialTimeout: 5 * time.Second,
 	})
 	if err != nil {
-		log.Fatalf("连接 etcd 失败: %v\n", err)
+		log.Fatalf("connectting etcd failed: %v\n", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -67,12 +67,18 @@ func (r *Refresher) watchConfig(key string, ctx context.Context) {
 						continue
 					}
 
-					r.mu.Lock()
-					// TODO handle replicaNotification
-					// r.setBackends(replicaNotification.Backends)
-					r.mu.Unlock()
+					newBackends := make([]string, 0, len(replicaNotification.ReplicaStates))
 
-					log.Println("配置已更新")
+					for _, replicaState := range replicaNotification.ReplicaStates {
+						if replicaState.StateType != 1 {
+							continue
+						}
+						newBackends = append(newBackends, replicaState.Address)
+					}
+
+					r.setBackends(newBackends)
+
+					log.Println("chain backends updated")
 				}
 			}
 		}

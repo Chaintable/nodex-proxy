@@ -3,7 +3,7 @@ module github.com/Chaintable/nodex-proxy
 go 1.22.9
 
 require (
-	github.com/Chaintable/pipeline v0.0.18
+	github.com/Chaintable/pipeline v0.0.24
 	github.com/gin-gonic/gin v1.10.0
 	go.etcd.io/etcd v3.3.27+incompatible
 	golang.org/x/exp v0.0.0-20241108190413-2d47ceb2692f
