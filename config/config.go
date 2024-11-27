@@ -8,9 +8,14 @@ import (
 )
 
 type Config struct {
-	Listen                       string   `yaml:"listen"`
-	InnerReplicaBrokers          []string `yaml:"inner_replica_brokers"`
-	InnerReplicaStateChangeTopic string   `yaml:"inner_replica_state_change_topic"`
+	Listen                      string                       `yaml:"listen"`
+	ReplicaNotificationSettings []ReplicaNotificationSetting `yaml:"replica_notification_settings"`
+}
+
+type ReplicaNotificationSetting struct {
+	EtcdEndpoints []string `yaml:"etcd_endpoints"`
+	Key           string   `yaml:"key"`
+	ChainID       string   `yaml:"chain_id"`
 }
 
 var defaultConfig = Config{
