@@ -8,59 +8,76 @@ import (
 
 	"github.com/Chaintable/pipeline/types"
 	"github.com/Chaintable/pipeline/util"
-	kafka "github.com/segmentio/kafka-go"
+	"go.etcd.io/etcd/clientv3"
 )
 
 type Refresher struct {
-	replicaKafkaReader *kafka.Reader
-	quit               chan struct{}
+	etcdClient  *clientv3.Client
+	watchCancel context.CancelFunc
+	watchKey    string
+
+	quit chan struct{}
 
 	backends []string
 	mu       sync.RWMutex
 }
 
-func NewRefresher(brokers []string, topic string, groupID string) *Refresher {
-	return &Refresher{
-		replicaKafkaReader: kafka.NewReader(kafka.ReaderConfig{
-			Brokers:     brokers,
-			Topic:       topic,
-			GroupID:     groupID,
-			StartOffset: kafka.LastOffset,
-		}),
-		quit: make(chan struct{}),
+func NewRefresher(etcdEndpoints []string, configKey string) *Refresher {
+	etcdCli, err := clientv3.New(clientv3.Config{
+		Endpoints:   etcdEndpoints,
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("连接 etcd 失败: %v\n", err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	refresher := &Refresher{
+		etcdClient:  etcdCli,
+		watchCancel: cancel,
+		quit:        make(chan struct{}),
+	}
+
+	go refresher.watchConfig(configKey, ctx)
+
+	return refresher
 }
 
 func (r *Refresher) Close() error {
 	close(r.quit)
-	return r.replicaKafkaReader.Close()
+	r.watchCancel()
+	return r.etcdClient.Close()
 }
 
-func (r *Refresher) Refresh() error {
+func (r *Refresher) watchConfig(key string, ctx context.Context) {
+	watchChan := r.etcdClient.Watch(ctx, key)
+
 	for {
 		select {
 		case <-r.quit:
-			return nil
-		default:
-			msg, err := r.replicaKafkaReader.FetchMessage(context.Background())
-			if err != nil {
-				log.Printf("fetch message error %+v", err)
-				time.Sleep(1 * time.Second)
-				continue
+			return
+		case watchResp := <-watchChan:
+			for _, event := range watchResp.Events {
+				if event.Type == clientv3.EventTypePut {
+					replicaNotification := &types.ReplicaStateChangeNotification{}
+					err := util.DecodeFromGzipJson(event.Kv.Value, replicaNotification)
+					if err != nil {
+						log.Printf("decode message error %+v", err)
+						time.Sleep(1 * time.Second)
+						continue
+					}
+
+					r.mu.Lock()
+					// TODO handle replicaNotification
+					// r.setBackends(replicaNotification.Backends)
+					r.mu.Unlock()
+
+					log.Println("配置已更新")
+				}
 			}
-			replicaNotification := &types.ReplicaStateChangeNotification{}
-			err = util.DecodeFromGzipJson(msg.Value, replicaNotification)
-			if err != nil {
-				log.Printf("decode message error %+v", err)
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			// TODO handle replicaNotification
-			// r.setBackends(replicaNotification.Backends)
 		}
 	}
 }
-
 func (r *Refresher) GetBackends() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

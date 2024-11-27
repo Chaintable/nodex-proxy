@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +11,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/node"
+	"github.com/gin-gonic/gin"
 )
 
 func parseCmdlineAndLoadConfig() config.Config {
@@ -41,26 +41,34 @@ func main() {
 	config := parseCmdlineAndLoadConfig()
 	log.Printf("[main] config: %+v", config)
 
-	nodeRefresher := node.NewRefresher(config.InnerReplicaBrokers, config.InnerReplicaStateChangeTopic, "")
+	var nodeRefresherMap = make(map[string]*node.Refresher)
 
-	go func() {
-		nodeRefresher.Refresh()
-	}()
+	for _, replicaNotificationSetting := range config.ReplicaNotificationSettings {
+		nodeRefresher := node.NewRefresher(replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key)
+		nodeRefresherMap[replicaNotificationSetting.ChainID] = nodeRefresher
+	}
 
-	lb := lb.NewLoadBalancer(nodeRefresher)
+	lb := lb.NewLoadBalancer(nodeRefresherMap)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		lb.ServeHTTP(w, r)
+	router := gin.Default()
+
+	// 定义带有 path 参数的路由
+	router.GET("/:chain_id", func(c *gin.Context) {
+		chainID := c.Param("chain_id")
+		rw := c.Writer
+		req := c.Request
+
+		lb.ServeHTTP(rw, req, chainID)
 	})
 
-	log.Println("Starting load balancer on :", config.Listen)
-	if err := http.ListenAndServe(fmt.Sprintf(":%s", config.Listen), nil); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
-	}
+	// 启动服务器
+	router.Run(fmt.Sprintf(":%s", config.Listen))
 
 	sig := <-sigChan
 
-	nodeRefresher.Close()
+	for _, refresher := range nodeRefresherMap {
+		refresher.Close()
+	}
 
 	log.Printf("[main] sig %v received, shutting down...", sig)
 }

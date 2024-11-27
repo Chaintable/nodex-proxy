@@ -11,15 +11,18 @@ import (
 )
 
 type LoadBalancer struct {
-	nodeRefresher *node.Refresher
+	nodeRefresherMap map[string]*node.Refresher
 }
 
-func NewLoadBalancer(nodeRefresher *node.Refresher) *LoadBalancer {
-	return &LoadBalancer{nodeRefresher: nodeRefresher}
+func NewLoadBalancer(nodeRefresherMap map[string]*node.Refresher) *LoadBalancer {
+	return &LoadBalancer{nodeRefresherMap: nodeRefresherMap}
 }
 
-func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	backends := lb.nodeRefresher.GetBackends()
+func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
+	if lb.nodeRefresherMap[chainID] == nil {
+		http.Error(w, "No backends available", http.StatusBadGateway)
+	}
+	backends := lb.nodeRefresherMap[chainID].GetBackends()
 	if len(backends) == 0 {
 		http.Error(w, "No backends available", http.StatusServiceUnavailable)
 		return
