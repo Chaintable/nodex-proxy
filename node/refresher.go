@@ -2,12 +2,13 @@ package node
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/Chaintable/pipeline/types"
-	"github.com/Chaintable/pipeline/util"
 	"go.etcd.io/etcd/clientv3"
 )
 
@@ -23,6 +24,7 @@ type Refresher struct {
 }
 
 func NewRefresher(etcdEndpoints []string, configKey string) *Refresher {
+	log.Printf("init Refresher etcd endpoints: %v\n", etcdEndpoints)
 	etcdCli, err := clientv3.New(clientv3.Config{
 		Endpoints:   etcdEndpoints,
 		DialTimeout: 5 * time.Second,
@@ -50,6 +52,31 @@ func (r *Refresher) Close() error {
 }
 
 func (r *Refresher) watchConfig(key string, ctx context.Context) {
+	// Initial request to get the current value of the key
+	resp, err := r.etcdClient.Get(ctx, key)
+	log.Printf("watchConfig resp: %+v, key: %s \n", resp, key)
+	if err != nil {
+		log.Printf("failed to get initial value for key %s: %+v", key, err)
+	} else {
+		for _, kv := range resp.Kvs {
+			replicaNotification := &types.ReplicaStateChangeNotification{}
+			err := json.Unmarshal(kv.Value, replicaNotification)
+			if err != nil {
+				log.Printf("decode initial message error %+v", err)
+			} else {
+				newBackends := make([]string, 0, len(replicaNotification.ReplicaStates))
+				for _, replicaState := range replicaNotification.ReplicaStates {
+					if replicaState.StateType != 1 {
+						continue
+					}
+					newBackends = append(newBackends, replicaState.Address)
+				}
+				r.setBackends(newBackends)
+				log.Println("initial chain backends set")
+			}
+		}
+	}
+
 	watchChan := r.etcdClient.Watch(ctx, key)
 
 	for {
@@ -60,7 +87,7 @@ func (r *Refresher) watchConfig(key string, ctx context.Context) {
 			for _, event := range watchResp.Events {
 				if event.Type == clientv3.EventTypePut {
 					replicaNotification := &types.ReplicaStateChangeNotification{}
-					err := util.DecodeFromGzipJson(event.Kv.Value, replicaNotification)
+					err := json.Unmarshal(event.Kv.Value, replicaNotification)
 					if err != nil {
 						log.Printf("decode message error %+v", err)
 						time.Sleep(1 * time.Second)
@@ -78,7 +105,7 @@ func (r *Refresher) watchConfig(key string, ctx context.Context) {
 
 					r.setBackends(newBackends)
 
-					log.Println("chain backends updated")
+					log.Println(fmt.Sprintf("chain backends updated, backends: %v", newBackends))
 				}
 			}
 		}

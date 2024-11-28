@@ -4,9 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/lb"
@@ -35,8 +32,8 @@ func parseCmdlineAndLoadConfig() config.Config {
 }
 
 func main() {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// sigChan := make(chan os.Signal, 1)
+	// signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	config := parseCmdlineAndLoadConfig()
 	log.Printf("[main] config: %+v", config)
@@ -61,14 +58,22 @@ func main() {
 		lb.ServeHTTP(rw, req, chainID)
 	})
 
+	router.POST("/:chain_id", func(c *gin.Context) {
+		chainID := c.Param("chain_id")
+		rw := c.Writer
+		req := c.Request
+
+		lb.ServeHTTP(rw, req, chainID)
+	})
+
 	// 启动服务器
 	router.Run(fmt.Sprintf(":%s", config.Listen))
 
-	sig := <-sigChan
+	// sig := <-sigChan
 
 	for _, refresher := range nodeRefresherMap {
 		refresher.Close()
 	}
 
-	log.Printf("[main] sig %v received, shutting down...", sig)
+	// log.Printf("[main] sig %v received, shutting down...", sig)
 }

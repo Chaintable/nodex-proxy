@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 
 	"github.com/Chaintable/nodex-proxy/node"
 	"golang.org/x/exp/rand"
@@ -28,7 +29,9 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 		return
 	}
 	urlStr := backends[rand.Intn(len(backends))]
-
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+		urlStr = "http://" + urlStr
+	}
 	url, err := url.Parse(urlStr)
 	if err != nil {
 		log.Printf("Failed to parse backend URL %s: %v", urlStr, err)
