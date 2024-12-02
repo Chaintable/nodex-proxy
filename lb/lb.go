@@ -34,7 +34,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	}
 	url, err := url.Parse(urlStr)
 	if err != nil {
-		log.Printf("Failed to parse backend URL %s: %v", urlStr, err)
+		log.Printf("Failed to parse backend URL %s: %v, chain id: %+v", urlStr, err, chainID)
 		http.Error(w, "Backend URL Parser ERR", http.StatusServiceUnavailable)
 	}
 

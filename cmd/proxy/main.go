@@ -32,16 +32,13 @@ func parseCmdlineAndLoadConfig() config.Config {
 }
 
 func main() {
-	// sigChan := make(chan os.Signal, 1)
-	// signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
 	config := parseCmdlineAndLoadConfig()
-	log.Printf("[main] config: %+v", config)
+	log.Printf("config: %+v", config)
 
 	var nodeRefresherMap = make(map[string]*node.Refresher)
 
 	for _, replicaNotificationSetting := range config.ReplicaNotificationSettings {
-		nodeRefresher := node.NewRefresher(replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key)
+		nodeRefresher := node.NewRefresher(replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key, replicaNotificationSetting.ChainID)
 		nodeRefresherMap[replicaNotificationSetting.ChainID] = nodeRefresher
 	}
 
