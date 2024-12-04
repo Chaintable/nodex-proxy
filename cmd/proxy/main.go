@@ -3,16 +3,17 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/node"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 )
 
 func parseCmdlineAndLoadConfig() config.Config {
@@ -37,14 +38,15 @@ func parseCmdlineAndLoadConfig() config.Config {
 
 func main() {
 	config := parseCmdlineAndLoadConfig()
-	log.Printf("config: %+v", config)
+	log.Info("config: %", zap.Any("config", config))
+	log.ProductionModeWithoutStackTrace()
 
 	var nodeRefresherMap = make(map[string]*node.Refresher)
 
 	for _, replicaNotificationSetting := range config.ReplicaNotificationSettings {
 		nodeRefresher, err := node.NewRefresher(replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key, replicaNotificationSetting.ChainID)
 		if err != nil {
-			log.Fatalf("new refresher failed: %v\n", err)
+			log.Fatal("new refresher failed:", err)
 		}
 		nodeRefresherMap[replicaNotificationSetting.ChainID] = nodeRefresher
 	}
@@ -63,7 +65,7 @@ func main() {
 	// 启动服务器
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", config.Listen))
 	if err != nil {
-		log.Fatalf("listen failed: %v\n", err)
+		log.Fatal("listen failed: %v\n", err)
 	}
 	server.Serve(listener)
 
