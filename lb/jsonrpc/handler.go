@@ -73,6 +73,7 @@ func NewTransport(
 	logger *zap.Logger,
 	config *types.Config,
 ) *transport {
+	initTracer(*config)
 	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
 	rpcMethodTransportMap := map[jsonrpc.RPCMethod]*http.Transport{}
 	for m, t := range config.RPCMethodTimeoutConfig {
