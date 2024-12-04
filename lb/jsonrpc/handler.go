@@ -27,7 +27,9 @@ import (
 
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/types"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
@@ -45,6 +47,7 @@ type transport struct {
 
 	preProcessor  types.PreProcessorFunc
 	postProcessor types.PostProcessorFunc
+	props         propagation.TextMapPropagator
 }
 
 func newHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) *http.Transport {
@@ -101,6 +104,7 @@ func NewTransport(
 			updatePostProcessorMetrics(),
 		}).Call,
 		config: config,
+		props:  otel.GetTextMapPropagator(),
 	}
 }
 
@@ -154,6 +158,7 @@ func (t *transport) RoundTrip(request *http.Request) (response *http.Response, e
 		if httpTransport, ok = t.rpcMethodHttpTransportMap[processData.Method]; !ok {
 			httpTransport = t.defaultHttpTransport
 		}
+		t.props.Inject(ctx, propagation.HeaderCarrier(request.Header))
 		response, processData.Error = httpTransport.RoundTrip(request)
 		upstreamSpan.End()
 		if processData.Error != nil {
