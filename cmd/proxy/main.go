@@ -11,7 +11,6 @@ import (
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/node"
-	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -50,9 +49,8 @@ func main() {
 		}
 		nodeRefresherMap[replicaNotificationSetting.ChainID] = nodeRefresher
 	}
-	pConfig := types.DefaultConfig()
-	limiter := jsonrpc.NewMethodLimiter(pConfig.Processor.RateLimiter.RpcMethods)
-	lb := lb.NewLoadBalancer(nodeRefresherMap, pConfig, &jsonrpc.GeneralRPCMethodHandler{Config: &pConfig}, limiter)
+	limiter := jsonrpc.NewMethodLimiter(config.ProxyConfig.Processor.RateLimiter.RpcMethods)
+	lb := lb.NewLoadBalancer(nodeRefresherMap, *config.ProxyConfig, &jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig}, limiter)
 
 	router := chi.NewRouter()
 	router.HandleFunc("/{chainId}", func(rw http.ResponseWriter, r *http.Request) {
