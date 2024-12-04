@@ -4,7 +4,10 @@ import (
 	"net/http"
 	"net/http/httputil"
 
+	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/node"
+	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
 	"golang.org/x/exp/rand"
 )
@@ -12,12 +15,20 @@ import (
 type LoadBalancer struct {
 	nodeRefresherMap map[string]*node.Refresher
 	BufferPool       httputil.BufferPool
+	Config           types.Config
+	RpcMethodHandler types.RPCMethodHandlerI
+	Limiter          jsonrpc.Limiter
 }
 
 var headerUserAgent = "User-Agent"
 
-func NewLoadBalancer(nodeRefresherMap map[string]*node.Refresher) *LoadBalancer {
-	return &LoadBalancer{nodeRefresherMap: nodeRefresherMap, BufferPool: utils.NewBufferPool()}
+func NewLoadBalancer(nodeRefresherMap map[string]*node.Refresher, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter) *LoadBalancer {
+	return &LoadBalancer{
+		nodeRefresherMap: nodeRefresherMap, BufferPool: utils.NewBufferPool(),
+		Config:           config,
+		RpcMethodHandler: rpcMethodHandler,
+		Limiter:          limiter,
+	}
 }
 
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
@@ -34,6 +45,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	reverseProxy := &httputil.ReverseProxy{
 		Director:   lb.forwardDirector(urlStr, r),
 		BufferPool: lb.BufferPool,
+		Transport:  jsonrpc.NewTransport(lb.RpcMethodHandler, lb.Limiter, log.Logger(), &lb.Config),
 	}
 
 	reverseProxy.ServeHTTP(w, r)

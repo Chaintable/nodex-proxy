@@ -1,0 +1,172 @@
+// Copyright (c) 2022 DeBank Inc. <admin@debank.com>
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+package jsonrpc
+
+import (
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/Chaintable/nodex-proxy/jsonrpc"
+	"github.com/Chaintable/nodex-proxy/types"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
+)
+
+// transport used as default reverse-proxy transport that handle
+// incoming requests or outgoing responses.
+type transport struct {
+	defaultHttpTransport      *http.Transport
+	rpcMethodHttpTransportMap map[jsonrpc.RPCMethod]*http.Transport
+
+	limiter Limiter
+
+	logger *zap.Logger
+	config *types.Config
+
+	preProcessor  types.PreProcessorFunc
+	postProcessor types.PostProcessorFunc
+}
+
+func newHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) *http.Transport {
+	return &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout:   timeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          30 * connectionPoolSize,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		ResponseHeaderTimeout: timeout,
+		MaxIdleConnsPerHost:   connectionPoolSize,
+	}
+}
+
+func NewTransport(
+	rpcMethodHandler types.RPCMethodHandlerI,
+	limiter Limiter,
+	logger *zap.Logger,
+	config *types.Config,
+) *transport {
+	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
+	rpcMethodTransportMap := map[jsonrpc.RPCMethod]*http.Transport{}
+	for m, t := range config.RPCMethodTimeoutConfig {
+		if t <= 0 {
+			t = config.DefaultRPCTimeout
+		}
+		rpcMethodTransportMap[jsonrpc.RPCMethod(m)] = newHttpTransportWithTimeout(time.Duration(t)*time.Millisecond, config.ConnectionPoolSize)
+	}
+	return &transport{
+		limiter:                   limiter,
+		defaultHttpTransport:      newHttpTransportWithTimeout(defaultTimeout, config.ConnectionPoolSize),
+		rpcMethodHttpTransportMap: rpcMethodTransportMap,
+		logger:                    logger,
+		preProcessor: types.PreProcessorProcessors([]types.PreProcessorFunc{
+			parseJRPCRequestBody(),
+			logRequest(),
+			jRPCMethodDenied(config.Processor.MethodDenied),
+			checkJRPCRequestBody(config.Processor.MethodNameChecker),
+			updatePreprocessorMetrics(),
+			rpcMethodLimiter(limiter),
+			rpcMethodHandlerProcessor(rpcMethodHandler.PreHandlerMap()),
+			requestMirror(defaultTimeout, config.Processor.RequestMirror),
+		}).Call,
+		postProcessor: types.PostProcessorProcessors([]types.PostProcessorFunc{
+			parseJRPCResponseBody(),
+			logResponse(),
+			rpcMethodHandlerPostProcessor(rpcMethodHandler.PostHandlerMap()),
+			observabilityLog(config.Processor.ObservabilityLog),
+			updatePostProcessorMetrics(),
+		}).Call,
+		config: config,
+	}
+}
+
+func (t *transport) beforeProcess(request *http.Request) *types.ProcessorData {
+	ctx := request.Context()
+	span := trace.SpanFromContext(ctx)
+	traceID := span.SpanContext().TraceID().String()
+
+	sourceBiz := request.Header.Get(DBKBiz)
+	sourceHost := request.Header.Get(DBKSourceHost)
+	sourceIP := request.Header.Get(DBKSource)
+	sourceEnv := request.Header.Get(DBKEnv)
+	sourceServerVersion := request.Header.Get(DBKServerVersion)
+
+	// TODO: add some general metrics
+	return &types.ProcessorData{
+		RequestId:           traceID,
+		SourceBiz:           sourceBiz,
+		SourceHost:          sourceHost,
+		SourceIP:            sourceIP,
+		SourceEnv:           sourceEnv,
+		SourceServerVersion: sourceServerVersion,
+
+		Start:           time.Now(),
+		Method:          "unknown",
+		Host:            types.ProcessorHost(originHostFromContext(ctx, request.Host)),
+		Target:          "native",
+		UpstreamRelated: false,
+	}
+}
+
+// RoundTrip implements RoundTrip Method for interface of http.RoundTripper.
+func (t *transport) RoundTrip(request *http.Request) (response *http.Response, err error) {
+	ctx := request.Context()
+	ctx, roundTripSpan := tracer.Start(
+		ctx,
+		"RoundTrip")
+	defer roundTripSpan.End()
+	processData := t.beforeProcess(request)
+
+	request, response, processData = t.preProcessor(request, response, processData)
+	if response == nil {
+		processData.UpstreamRelated = true
+		_, upstreamSpan := tracer.Start(
+			ctx,
+			"Upstream", trace.WithAttributes(attribute.String("rpc_method", string(processData.Method))))
+		var (
+			httpTransport *http.Transport
+			ok            bool
+		)
+		if httpTransport, ok = t.rpcMethodHttpTransportMap[processData.Method]; !ok {
+			httpTransport = t.defaultHttpTransport
+		}
+		response, processData.Error = httpTransport.RoundTrip(request)
+		upstreamSpan.End()
+		if processData.Error != nil {
+			nerr, ok := processData.Error.(net.Error)
+			if ok && nerr.Timeout() {
+				response, processData.ResponseBody, _ = jsonrpc.GatewayTimeout(processData.Error)
+				goto POSTPROCESS
+			}
+			response, processData.ResponseBody, _ = jsonrpc.BadGateway(processData.Error)
+		}
+	}
+
+POSTPROCESS:
+	processData = t.postProcessor(request, response, processData)
+	return response, nil
+}
