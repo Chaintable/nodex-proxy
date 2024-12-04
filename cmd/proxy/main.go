@@ -4,13 +4,15 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/node"
 	"github.com/Chaintable/nodex-proxy/types"
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
 )
 
 func parseCmdlineAndLoadConfig() config.Config {
@@ -50,27 +52,20 @@ func main() {
 	limiter := jsonrpc.NewMethodLimiter(pConfig.Processor.RateLimiter.RpcMethods)
 	lb := lb.NewLoadBalancer(nodeRefresherMap, pConfig, &jsonrpc.GeneralRPCMethodHandler{Config: &pConfig}, limiter)
 
-	router := gin.Default()
-
-	// 定义带有 path 参数的路由
-	router.GET("/:chain_id", func(c *gin.Context) {
-		chainID := c.Param("chain_id")
-		rw := c.Writer
-		req := c.Request
-
-		lb.ServeHTTP(rw, req, chainID)
+	router := chi.NewRouter()
+	router.HandleFunc("/{chainId}", func(rw http.ResponseWriter, r *http.Request) {
+		chainId := chi.URLParam(r, "chainId")
+		lb.ServeHTTP(rw, r, chainId)
 	})
-
-	router.POST("/:chain_id", func(c *gin.Context) {
-		chainID := c.Param("chain_id")
-		rw := c.Writer
-		req := c.Request
-
-		lb.ServeHTTP(rw, req, chainID)
-	})
-
+	server := http.Server{
+		Handler: router,
+	}
 	// 启动服务器
-	router.Run(fmt.Sprintf(":%s", config.Listen))
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", config.Listen))
+	if err != nil {
+		log.Fatalf("listen failed: %v\n", err)
+	}
+	server.Serve(listener)
 
 	// sig := <-sigChan
 
