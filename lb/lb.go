@@ -1,11 +1,8 @@
 package lb
 
 import (
-	"log"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
-	"strings"
 
 	"github.com/Chaintable/nodex-proxy/node"
 	"github.com/Chaintable/nodex-proxy/utils"
@@ -16,6 +13,8 @@ type LoadBalancer struct {
 	nodeRefresherMap map[string]*node.Refresher
 	BufferPool       httputil.BufferPool
 }
+
+var headerUserAgent = "User-Agent"
 
 func NewLoadBalancer(nodeRefresherMap map[string]*node.Refresher) *LoadBalancer {
 	return &LoadBalancer{nodeRefresherMap: nodeRefresherMap, BufferPool: utils.NewBufferPool()}
@@ -31,17 +30,31 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 		return
 	}
 	urlStr := backends[rand.Intn(len(backends))]
-	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
-		urlStr = "http://" + urlStr
-	}
-	url, err := url.Parse(urlStr)
-	if err != nil {
-		log.Printf("Failed to parse backend URL %s: %v, chain id: %+v", urlStr, err, chainID)
-		http.Error(w, "Backend URL Parser ERR", http.StatusServiceUnavailable)
-	}
 
-	reverseProxy := httputil.NewSingleHostReverseProxy(url)
-	reverseProxy.BufferPool = lb.BufferPool
+	reverseProxy := &httputil.ReverseProxy{
+		Director:   lb.forwardDirector(urlStr, r),
+		BufferPool: lb.BufferPool,
+	}
 
 	reverseProxy.ServeHTTP(w, r)
+}
+
+func (lb *LoadBalancer) forwardDirector(host string, inReq *http.Request) func(*http.Request) {
+	return func(outReq *http.Request) {
+		outReq.URL = cloneURL(outReq.URL)
+		outReq.URL.Scheme = "http"
+		outReq.URL.Host = host
+		outReq.URL.Path = inReq.URL.Path
+		outReq.URL.RawPath = inReq.URL.RawPath
+		outReq.URL.RawQuery = inReq.URL.RawQuery
+		outReq.RequestURI = ""
+		outReq.Host = inReq.Host
+		if outReq.Host == "" {
+			outReq.Host = inReq.URL.Host
+		}
+
+		if _, ok := outReq.Header[headerUserAgent]; !ok {
+			outReq.Header.Set(headerUserAgent, "")
+		}
+	}
 }
