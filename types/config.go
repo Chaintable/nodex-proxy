@@ -62,17 +62,6 @@ var defaultConfig = Config{
 				RpcMethods: map[jsonrpc.RPCMethod]int{},
 			},
 		},
-		Raft: RaftProcessorConfig{
-			Enable: false,
-			RaftConfig: RaftConfig{
-				SnapRootDir:       defaultSnapRootDir,
-				WALDir:            "wal",
-				SnapDir:           "snap",
-				SnapCount:         720, // 5 second per proposal,
-				Host:              ":12780",
-				MinBlockNumberGap: 5,
-			},
-		},
 		RateLimiter: RateLimiterProcessorConfig{
 			RpcMethods: map[string]int{
 				"eth_call": 10_000,
@@ -82,9 +71,6 @@ var defaultConfig = Config{
 			Enable:          false,
 			RecentBlocks:    0,
 			RewriteToLatest: false,
-		},
-		RPCCache: RPCCacheProcessorConfig{
-			Enable: false,
 		},
 		RequestMirror: RequestMirrorConfig{
 			Enable: false,
@@ -131,17 +117,6 @@ type SlowLogThresholdConfig struct {
 	RpcMethods map[jsonrpc.RPCMethod]int `yaml:"rpc_methods"`
 }
 
-// MultiCallProcessorConfig configures the observability log for eth_multiCall
-// if enabled, it will by default log high gas and erroneous calls
-type MultiCallProcessorConfig struct {
-	GasThreshold int `yaml:"gas_threshold"`
-}
-
-type RaftProcessorConfig struct {
-	Enable     bool `yaml:"enable"`
-	RaftConfig `yaml:",inline"`
-}
-
 type RateLimiterProcessorConfig struct {
 	RpcMethods map[string]int `yaml:"rpc_methods"` // map[method]rps
 }
@@ -169,11 +144,8 @@ type MethodNameCheckerConfig struct {
 
 type ProcessorConfig struct {
 	ObservabilityLog     ObservabilityLogProcessorConfig     `yaml:"observability_log"`
-	Raft                 RaftProcessorConfig                 `yaml:"raft"`
 	RateLimiter          RateLimiterProcessorConfig          `yaml:"rate_limiter"`
 	BlockRangeQueryLimit BlockRangeQueryLimitProcessorConfig `yaml:"block_range_query_limit"`
-	RPCCache             RPCCacheProcessorConfig             `yaml:"rpc_cache"`
-	MultiCall            MultiCallProcessorConfig            `yaml:"multicall"`
 	RequestMirror        RequestMirrorConfig                 `yaml:"request_mirror"`
 	MethodNameChecker    MethodNameCheckerConfig             `yaml:"method_name_checker"`
 	MethodDenied         *[]jsonrpc.RPCMethod                `yaml:"method_denied"`
@@ -252,6 +224,11 @@ func NewConfig(filepath string, chainId string) (cfg Config, err error) {
 		return
 	}
 
+	FillWithDefaultConfig(&cfg)
+	return
+}
+
+func FillWithDefaultConfig(cfg *Config) {
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = defaultConfig.ServiceName
 	}
@@ -306,28 +283,6 @@ func NewConfig(filepath string, chainId string) (cfg Config, err error) {
 	}
 
 	// raft processor config
-	defaultRaftProcessConfig := defaultConfig.Processor.Raft
-	raftProcessConfig := &cfg.Processor.Raft
-	if raftProcessConfig.SnapRootDir == "" {
-		raftProcessConfig.SnapRootDir = defaultRaftProcessConfig.SnapRootDir
-	}
-	if raftProcessConfig.SnapDir == "" {
-		raftProcessConfig.SnapDir = defaultRaftProcessConfig.SnapDir
-	}
-	if raftProcessConfig.WALDir == "" {
-		raftProcessConfig.WALDir = defaultRaftProcessConfig.WALDir
-	}
-	if raftProcessConfig.SnapCount == 0 {
-		raftProcessConfig.SnapCount = defaultRaftProcessConfig.SnapCount
-	}
-	if raftProcessConfig.MinBlockNumberGap == 0 {
-		raftProcessConfig.MinBlockNumberGap = defaultRaftProcessConfig.MinBlockNumberGap
-	}
-	if raftProcessConfig.Host == "" {
-		raftProcessConfig.Host = defaultRaftProcessConfig.Host
-	}
-	// observability config
-
 	// trace
 	defaultObservabilityTraceConfig := defaultConfig.Observability.Trace
 	observabilityTraceConfig := &cfg.Observability.Trace
@@ -342,7 +297,6 @@ func NewConfig(filepath string, chainId string) (cfg Config, err error) {
 		observabilityLogConfig.Sampling = defaultObservabilityLogConfig.Sampling
 	}
 	cfg.initMetrics()
-	return
 }
 
 type debugInfo struct {
