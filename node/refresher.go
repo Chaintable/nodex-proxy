@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Chaintable/pipeline/types"
-	"go.etcd.io/etcd/clientv3"
+	"go.etcd.io/etcd/client/v3"
 )
 
 type Refresher struct {

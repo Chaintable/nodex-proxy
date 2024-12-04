@@ -25,13 +25,16 @@ import (
 	"os"
 	"time"
 
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"go.opentelemetry.io/contrib/propagators/aws/xray"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	"google.golang.org/grpc"
 )
 
 var tracer = otel.Tracer("jrpcx")
@@ -73,9 +76,17 @@ func initTracer(config types.Config) error {
 		sdktrace.WithIDGenerator(idg),
 	}
 	if traceConfig.Enable {
-		_, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		// Create and start new OTLP trace exporter
+		traceExporter, err := otlptracegrpc.New(
+			ctx, otlptracegrpc.WithInsecure(),
+			otlptracegrpc.WithEndpoint(traceConfig.OTLPEndpoint),
+			otlptracegrpc.WithDialOption(grpc.WithBlock()))
+		if err != nil {
+			log.Error(" new oltp exporter error", err)
+		}
+		tracerProviderOptions = append(tracerProviderOptions, sdktrace.WithBatcher(traceExporter))
 
 	}
 	// https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/sdk.md
