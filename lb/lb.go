@@ -8,15 +8,17 @@ import (
 	"strings"
 
 	"github.com/Chaintable/nodex-proxy/node"
+	"github.com/Chaintable/nodex-proxy/utils"
 	"golang.org/x/exp/rand"
 )
 
 type LoadBalancer struct {
 	nodeRefresherMap map[string]*node.Refresher
+	BufferPool       httputil.BufferPool
 }
 
 func NewLoadBalancer(nodeRefresherMap map[string]*node.Refresher) *LoadBalancer {
-	return &LoadBalancer{nodeRefresherMap: nodeRefresherMap}
+	return &LoadBalancer{nodeRefresherMap: nodeRefresherMap, BufferPool: utils.NewBufferPool()}
 }
 
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
@@ -39,6 +41,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	}
 
 	reverseProxy := httputil.NewSingleHostReverseProxy(url)
+	reverseProxy.BufferPool = lb.BufferPool
 
 	reverseProxy.ServeHTTP(w, r)
 }
