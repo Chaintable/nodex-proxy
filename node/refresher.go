@@ -24,7 +24,7 @@ type Refresher struct {
 	chainID string
 }
 
-func NewRefresher(etcdEndpoints []string, configKey string, chainID string) *Refresher {
+func NewRefresher(etcdEndpoints []string, configKey string, chainID string) (*Refresher, error) {
 	log.Printf("init Refresher etcd endpoints: %v, chain id: %v", etcdEndpoints, chainID)
 	etcdCli, err := clientv3.New(clientv3.Config{
 		Endpoints:   etcdEndpoints,
@@ -34,6 +34,7 @@ func NewRefresher(etcdEndpoints []string, configKey string, chainID string) *Ref
 		log.Fatalf("connectting etcd failed: %v\n", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	refresher := &Refresher{
 		etcdClient:  etcdCli,
@@ -41,14 +42,15 @@ func NewRefresher(etcdEndpoints []string, configKey string, chainID string) *Ref
 		quit:        make(chan struct{}),
 		chainID:     chainID,
 	}
-
-	err = refresher.init(configKey, ctx)
+	timeOutCtx, cancelFunc := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelFunc()
+	err = refresher.init(configKey, timeOutCtx)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	go refresher.watchConfig(configKey, ctx)
 
-	return refresher
+	return refresher, err
 }
 
 func (r *Refresher) Close() error {
