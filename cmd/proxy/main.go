@@ -40,7 +40,10 @@ func main() {
 	var nodeRefresherMap = make(map[string]*node.Refresher)
 
 	for _, replicaNotificationSetting := range config.ReplicaNotificationSettings {
-		nodeRefresher := node.NewRefresher(replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key, replicaNotificationSetting.ChainID)
+		nodeRefresher, err := node.NewRefresher(replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key, replicaNotificationSetting.ChainID)
+		if err != nil {
+			log.Fatalf("new refresher failed: %v\n", err)
+		}
 		nodeRefresherMap[replicaNotificationSetting.ChainID] = nodeRefresher
 	}
 	pConfig := types.DefaultConfig()
