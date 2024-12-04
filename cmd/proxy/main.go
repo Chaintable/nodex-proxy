@@ -7,7 +7,9 @@ import (
 
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/lb"
+	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/node"
+	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -41,8 +43,9 @@ func main() {
 		nodeRefresher := node.NewRefresher(replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key, replicaNotificationSetting.ChainID)
 		nodeRefresherMap[replicaNotificationSetting.ChainID] = nodeRefresher
 	}
-
-	lb := lb.NewLoadBalancer(nodeRefresherMap)
+	pConfig := types.DefaultConfig()
+	limiter := jsonrpc.NewMethodLimiter(pConfig.Processor.RateLimiter.RpcMethods)
+	lb := lb.NewLoadBalancer(nodeRefresherMap, pConfig, &jsonrpc.GeneralRPCMethodHandler{Config: &pConfig}, limiter)
 
 	router := gin.Default()
 
