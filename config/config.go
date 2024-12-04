@@ -4,12 +4,14 @@ import (
 	"log"
 	"os"
 
+	"github.com/Chaintable/nodex-proxy/types"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
 	Listen                      string                       `yaml:"listen"`
 	ReplicaNotificationSettings []ReplicaNotificationSetting `yaml:"replica_notification_settings"`
+	ProxyConfig                 *types.Config                `yaml:"proxy_config"`
 }
 
 type ReplicaNotificationSetting struct {
@@ -35,5 +37,6 @@ func LoadConfig(configPath string) Config {
 	if err != nil {
 		log.Fatalf("parse config file error: %v\n", err)
 	}
+	types.FillWithDefaultConfig(config.ProxyConfig)
 	return config
 }
