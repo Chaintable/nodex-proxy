@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -41,9 +42,11 @@ func main() {
 	log.ProductionModeWithoutStackTrace()
 
 	var nodeRefresherMap = make(map[string]*node.Refresher)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	for _, replicaNotificationSetting := range config.ReplicaNotificationSettings {
-		nodeRefresher, err := node.NewRefresher(replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key, replicaNotificationSetting.ChainID)
+		nodeRefresher, err := node.NewRefresher(ctx, replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key, replicaNotificationSetting.ChainID)
 		if err != nil {
 			log.Fatal("new refresher failed:", err)
 		}
