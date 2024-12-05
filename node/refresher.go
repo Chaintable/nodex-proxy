@@ -27,7 +27,7 @@ type Refresher struct {
 	chainID           string
 }
 
-func NewRefresher(etcdEndpoints []string, configKey string, chainID string) (*Refresher, error) {
+func NewRefresher(ctx context.Context, etcdEndpoints []string, configKey string, chainID string) (*Refresher, error) {
 	log.Printf("init Refresher etcd endpoints: %v, chain id: %v", etcdEndpoints, chainID)
 	etcdCli, err := clientv3.New(clientv3.Config{
 		Endpoints:   etcdEndpoints,
@@ -37,7 +37,6 @@ func NewRefresher(etcdEndpoints []string, configKey string, chainID string) (*Re
 		log.Fatalf("connectting etcd failed: %v\n", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	refresher := &Refresher{
 		etcdClient:  etcdCli,
@@ -131,7 +130,7 @@ func (r *Refresher) watchConfig(key string, ctx context.Context) {
 					r.setStateBackends(stateBackends)
 					r.setArchiveBackends(archiveBackends)
 
-					log.Printf("chain: %+v backends updated, backends: %v", r.chainID, stateBackends)
+					log.Printf("chain: %+v backends updated, backends: %v, height:%v", r.chainID, stateBackends, r.LatestBlockNumber)
 				}
 			}
 		}
