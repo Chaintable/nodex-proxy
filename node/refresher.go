@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Chaintable/pipeline/types"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"go.etcd.io/etcd/client/v3"
 )
 
@@ -18,10 +19,12 @@ type Refresher struct {
 
 	quit chan struct{}
 
-	backends []string
-	mu       sync.RWMutex
-
-	chainID string
+	backends          []string
+	mu                sync.RWMutex
+	stateBackends     []string
+	archiveBackends   []string
+	LatestBlockNumber *hexutil.Big
+	chainID           string
 }
 
 func NewRefresher(etcdEndpoints []string, configKey string, chainID string) (*Refresher, error) {
@@ -74,21 +77,28 @@ func (r *Refresher) init(key string, ctx context.Context) error {
 			log.Printf("decode initial message error %+v, chain id: %v", err, r.chainID)
 			return err
 		}
-		newBackends := make([]string, 0, len(replicaNotification.ReplicaStates))
+		var archiveBackends []string
+		var stateBackends []string
 		for _, replicaState := range replicaNotification.ReplicaStates {
 			if replicaState.StateType != 1 {
 				continue
 			}
-			newBackends = append(newBackends, replicaState.Address)
+			if replicaState.NodeType == 1 {
+				stateBackends = append(stateBackends, replicaState.Address)
+			} else {
+				archiveBackends = append(archiveBackends, replicaState.Address)
+			}
+			r.LatestBlockNumber = replicaState.LatestBlockNumber
 		}
-		r.setBackends(newBackends)
+		r.setStateBackends(stateBackends)
+		r.setArchiveBackends(archiveBackends)
 		log.Printf("initial chain: %+v backends success", r.chainID)
 	}
 	return nil
 }
 
 func (r *Refresher) watchConfig(key string, ctx context.Context) {
-	watchChan := r.etcdClient.Watch(ctx, key)
+	watchChan := r.etcdClient.Watch(ctx, key, clientv3.WithPrefix())
 
 	for {
 		select {
@@ -105,31 +115,41 @@ func (r *Refresher) watchConfig(key string, ctx context.Context) {
 						continue
 					}
 
-					newBackends := make([]string, 0, len(replicaNotification.ReplicaStates))
-
+					var archiveBackends []string
+					var stateBackends []string
 					for _, replicaState := range replicaNotification.ReplicaStates {
 						if replicaState.StateType != 1 {
 							continue
 						}
-						newBackends = append(newBackends, replicaState.Address)
+						if replicaState.NodeType == 1 {
+							stateBackends = append(stateBackends, replicaState.Address)
+						} else {
+							archiveBackends = append(archiveBackends, replicaState.Address)
+						}
+						r.LatestBlockNumber = replicaState.LatestBlockNumber
 					}
+					r.setStateBackends(stateBackends)
+					r.setArchiveBackends(archiveBackends)
 
-					r.setBackends(newBackends)
-
-					log.Printf("chain: %+v backends updated, backends: %v", r.chainID, newBackends)
+					log.Printf("chain: %+v backends updated, backends: %v", r.chainID, stateBackends)
 				}
 			}
 		}
 	}
 }
-func (r *Refresher) GetBackends() []string {
+func (r *Refresher) GetBackends() ([]string, []string, *hexutil.Big) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.backends
+	return r.stateBackends, r.archiveBackends, r.LatestBlockNumber
 }
 
-func (r *Refresher) setBackends(backends []string) {
+func (r *Refresher) setStateBackends(backends []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.backends = backends
+	r.stateBackends = backends
+}
+func (r *Refresher) setArchiveBackends(backends []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.archiveBackends = backends
 }
