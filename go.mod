@@ -10,7 +10,7 @@ require (
 	github.com/go-kit/kit v0.9.0
 	github.com/goccy/go-json v0.10.2
 	github.com/prometheus/client_golang v1.20.5
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	go.etcd.io/etcd/client/v3 v3.5.17
 	go.opentelemetry.io/contrib/propagators/aws v1.32.0
 	go.opentelemetry.io/otel v1.32.0

@@ -8,13 +8,16 @@ import (
 
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
+	"github.com/Chaintable/nodex-proxy/lb/lbnode"
+	"github.com/Chaintable/nodex-proxy/lb/selector"
+	"github.com/Chaintable/nodex-proxy/lb/selector/random"
+	"github.com/Chaintable/nodex-proxy/lb/selector/roundrobin"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/node"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
-	"golang.org/x/exp/rand"
 )
 
 type LoadBalancer struct {
@@ -23,6 +26,7 @@ type LoadBalancer struct {
 	Config           types.Config
 	RpcMethodHandler types.RPCMethodHandlerI
 	Limiter          jsonrpc.Limiter
+	nodeSelector     selector.Strategy
 }
 
 type BlockContext struct {
@@ -33,11 +37,19 @@ type BlockContext struct {
 var headerUserAgent = "User-Agent"
 
 func NewLoadBalancer(nodeRefresherMap map[string]*node.Refresher, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter) *LoadBalancer {
+	var nodeSelector selector.Strategy
+	switch config.NodeSelectStrategy {
+	case "round_robin":
+		nodeSelector = roundrobin.New()
+	case "random":
+		nodeSelector = random.New()
+	}
 	return &LoadBalancer{
 		nodeRefresherMap: nodeRefresherMap, BufferPool: utils.NewBufferPool(),
 		Config:           config,
 		RpcMethodHandler: rpcMethodHandler,
 		Limiter:          limiter,
+		nodeSelector:     nodeSelector,
 	}
 }
 
@@ -52,9 +64,14 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 		http.Error(w, "No backends available", http.StatusServiceUnavailable)
 		return
 	}
+	targetNode, err := lb.GetNode(stateBackends, archiveBackends, blockHeight, r)
+	if err != nil {
+		http.Error(w, "No backends available", http.StatusServiceUnavailable)
+		return
+	}
 
 	reverseProxy := &httputil.ReverseProxy{
-		Director:   lb.forwardDirector(stateBackends, archiveBackends, blockHeight, r),
+		Director:   lb.forwardDirector(targetNode, r),
 		BufferPool: lb.BufferPool,
 		Transport:  jsonrpc.NewTransport(lb.RpcMethodHandler, lb.Limiter, log.Logger(), &lb.Config),
 	}
@@ -62,8 +79,16 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	reverseProxy.ServeHTTP(w, r)
 }
 
-func (lb *LoadBalancer) forwardDirector(stateBackends, archiveBackends []string, blockHeight *hexutil.Big, inReq *http.Request) func(*http.Request) {
-	host := append(stateBackends, archiveBackends...)[rand.Intn(len(stateBackends)+len(archiveBackends))]
+func (lb *LoadBalancer) GetNode(stateBackends, archiveBackends []*lbnode.Node, blockHeight *hexutil.Big, inReq *http.Request) (*lbnode.Node, error) {
+	var backupNodes []*lbnode.Node
+	backupNodes = append(backupNodes, stateBackends...)
+	backupNodes = append(backupNodes, archiveBackends...)
+
+	targetNode, err := lb.nodeSelector.GetNode(nil, backupNodes, "")
+	if err != nil {
+		return nil, err
+	}
+
 	if len(stateBackends) == 0 {
 		stateBackends = archiveBackends
 	}
@@ -73,6 +98,7 @@ func (lb *LoadBalancer) forwardDirector(stateBackends, archiveBackends []string,
 	_, jsonObjects, _, err := ejrpc.ParseRequest(inReq)
 	if err != nil {
 		log.Error("failed to parse incoming request", err)
+		return targetNode, nil
 	}
 	for _, value := range jsonObjects {
 		var arr []interface{}
@@ -87,13 +113,11 @@ func (lb *LoadBalancer) forwardDirector(stateBackends, archiveBackends []string,
 		lastElem := arr[len(arr)-1]
 		lastBytes, err := json.Marshal(lastElem)
 		if err != nil {
-			host = append(stateBackends, archiveBackends...)[rand.Intn(len(stateBackends)+len(archiveBackends))]
 			log.Error("failed to marshal params", err)
 			break
 		}
 		var ctx BlockContext
 		if err := json.Unmarshal(lastBytes, &ctx); err != nil {
-			host = append(stateBackends, archiveBackends...)[rand.Intn(len(stateBackends)+len(archiveBackends))]
 			log.Error("failed to unmarshal params", err)
 			break
 		}
@@ -101,19 +125,32 @@ func (lb *LoadBalancer) forwardDirector(stateBackends, archiveBackends []string,
 			stateBlockHeightLow := big.NewInt(0)
 			stateBlockHeightLow.Sub(blockHeight.ToInt(), big.NewInt(64))
 			if big.NewInt(ctx.BlockId.BlockNumber.Int64()).Cmp(stateBlockHeightLow) >= 0 {
-				host = stateBackends[rand.Intn(len(stateBackends))]
+				targetNode, err = lb.nodeSelector.GetNode(nil, stateBackends, "")
+				if err != nil {
+					return nil, err
+				}
 			} else {
-				host = archiveBackends[rand.Intn(len(archiveBackends))]
+				targetNode, err = lb.nodeSelector.GetNode(nil, archiveBackends, "")
+				if err != nil {
+					return nil, err
+				}
 			}
 		} else {
-			host = archiveBackends[rand.Intn(len(archiveBackends))]
+			targetNode, err = lb.nodeSelector.GetNode(nil, stateBackends, "")
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
+	return targetNode, nil
+}
+
+func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *http.Request) func(*http.Request) {
 
 	return func(outReq *http.Request) {
 		outReq.URL = cloneURL(outReq.URL)
 		outReq.URL.Scheme = "http"
-		outReq.URL.Host = host
+		outReq.URL.Host = host.Addr()
 		outReq.URL.Path = inReq.URL.Path
 		outReq.URL.RawPath = inReq.URL.RawPath
 		outReq.URL.RawQuery = inReq.URL.RawQuery
