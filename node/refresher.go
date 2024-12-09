@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/Chaintable/nodex-proxy/lb/lbnode"
+	proxyType "github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/pipeline/types"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"go.etcd.io/etcd/client/v3"
@@ -21,8 +25,8 @@ type Refresher struct {
 
 	backends          []string
 	mu                sync.RWMutex
-	stateBackends     []string
-	archiveBackends   []string
+	stateBackends     []*lbnode.Node
+	archiveBackends   []*lbnode.Node
 	LatestBlockNumber *hexutil.Big
 	chainID           string
 }
@@ -142,7 +146,7 @@ func (r *Refresher) watchConfig(key string, ctx context.Context) {
 }
 
 // GetBackends ...
-func (r *Refresher) GetBackends() ([]string, []string, *hexutil.Big) {
+func (r *Refresher) GetBackends() ([]*lbnode.Node, []*lbnode.Node, *hexutil.Big) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.stateBackends, r.archiveBackends, r.LatestBlockNumber
@@ -150,21 +154,23 @@ func (r *Refresher) GetBackends() ([]string, []string, *hexutil.Big) {
 
 // setBackends ...
 func (r *Refresher) setBackends(states []string, archives []string, blkNum *hexutil.Big) {
+
+	var stateBackends []*lbnode.Node
+	for _, state := range states {
+		temp := strings.Split(state, ":")
+		port, _ := strconv.Atoi(temp[1])
+		stateBackends = append(stateBackends, lbnode.New(state, temp[0], port, proxyType.DefaultLoadBalancerWeight))
+	}
+	var archiveBackends []*lbnode.Node
+	for _, archive := range archives {
+		temp := strings.Split(archive, ":")
+		port, _ := strconv.Atoi(temp[1])
+		archiveBackends = append(archiveBackends, lbnode.New(archive, temp[0], port, proxyType.DefaultLoadBalancerWeight))
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.stateBackends = states
-	r.archiveBackends = archives
+	r.stateBackends = stateBackends
+	r.archiveBackends = archiveBackends
 	r.LatestBlockNumber = blkNum
-}
-
-func (r *Refresher) setStateBackends(backends []string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.stateBackends = backends
-}
-
-func (r *Refresher) setArchiveBackends(backends []string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.archiveBackends = backends
 }

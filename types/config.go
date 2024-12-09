@@ -42,6 +42,11 @@ const (
 	defaultSnapRootDir = "~/.jrpcx/raft/snap-root"
 )
 
+var (
+	DefaultLoadBalancerWeight     = 1
+	DefaultLoadBalancerTargetPort = 80
+)
+
 // defaultConfig default configuration if config file not specified.
 var defaultConfig = Config{
 	ServiceName:            "jrpcx",
@@ -99,6 +104,7 @@ var defaultConfig = Config{
 			},
 		},
 	},
+	NodeSelectStrategy: "random",
 }
 
 type DebugLogProcessorConfig struct {
@@ -182,6 +188,7 @@ type Config struct {
 	ConnectionPoolSize     int                 `yaml:"connection_pool_size"`
 	Processor              ProcessorConfig     `yaml:"processor"`
 	Observability          ObservabilityConfig `yaml:"observability"`
+	NodeSelectStrategy     string              `yaml:"node_select_strategy"`
 }
 
 type RaftJoinConfig struct {
@@ -295,6 +302,9 @@ func FillWithDefaultConfig(cfg *Config) {
 	observabilityLogConfig := &cfg.Observability.Log
 	if observabilityLogConfig.Sampling == nil {
 		observabilityLogConfig.Sampling = defaultObservabilityLogConfig.Sampling
+	}
+	if cfg.NodeSelectStrategy == "" {
+		cfg.NodeSelectStrategy = defaultConfig.NodeSelectStrategy
 	}
 	cfg.initMetrics()
 }
