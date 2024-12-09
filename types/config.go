@@ -188,7 +188,7 @@ type Config struct {
 	ConnectionPoolSize     int                 `yaml:"connection_pool_size"`
 	Processor              ProcessorConfig     `yaml:"processor"`
 	Observability          ObservabilityConfig `yaml:"observability"`
-	NodeSelectStrategy     string              `json:"node_select_strategy"`
+	NodeSelectStrategy     string              `yaml:"node_select_strategy"`
 }
 
 type RaftJoinConfig struct {
