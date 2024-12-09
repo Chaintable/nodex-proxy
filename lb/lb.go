@@ -1,10 +1,12 @@
 package lb
 
 import (
+	"context"
 	"encoding/json"
 	"math/big"
 	"net/http"
 	"net/http/httputil"
+	"time"
 
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
@@ -17,7 +19,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/rpc"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type LoadBalancer struct {
@@ -29,12 +31,19 @@ type LoadBalancer struct {
 	nodeSelector     selector.Strategy
 }
 
-type BlockContext struct {
-	BlockId *rpc.BlockNumberOrHash `json:"block_id"`
-	Type    string                 `json:"type"`
-}
-
 var headerUserAgent = "User-Agent"
+
+type jrpcxContextKeyType int
+
+const (
+	originHostKey jrpcxContextKeyType = iota
+
+	DBKBiz           = "x-dbk-biz"
+	DBKSourceHost    = "x-dbk-source-host"
+	DBKSource        = "x-dbk-source"
+	DBKEnv           = "x-dbk-env"
+	DBKServerVersion = "x-dbk-server-version"
+)
 
 func NewLoadBalancer(nodeRefresherMap map[string]*node.Refresher, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter) *LoadBalancer {
 	var nodeSelector selector.Strategy
@@ -58,13 +67,14 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 		http.Error(w, "No backends available", http.StatusBadGateway)
 		return
 	}
+	requestContext := lb.generateRequestContext(r)
 
 	stateBackends, archiveBackends, blockHeight := lb.nodeRefresherMap[chainID].GetBackends()
 	if len(stateBackends) == 0 && len(archiveBackends) == 0 {
 		http.Error(w, "No backends available", http.StatusServiceUnavailable)
 		return
 	}
-	targetNode, err := lb.GetNode(stateBackends, archiveBackends, blockHeight, r)
+	targetNode, err := lb.getNode(requestContext, stateBackends, archiveBackends, blockHeight)
 	if err != nil {
 		http.Error(w, "No backends available", http.StatusServiceUnavailable)
 		return
@@ -73,13 +83,13 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	reverseProxy := &httputil.ReverseProxy{
 		Director:   lb.forwardDirector(targetNode, r),
 		BufferPool: lb.BufferPool,
-		Transport:  jsonrpc.NewTransport(lb.RpcMethodHandler, lb.Limiter, log.Logger(), &lb.Config),
+		Transport:  jsonrpc.NewTransport(requestContext, lb.RpcMethodHandler, lb.Limiter, log.Logger(), &lb.Config),
 	}
 
 	reverseProxy.ServeHTTP(w, r)
 }
 
-func (lb *LoadBalancer) GetNode(stateBackends, archiveBackends []*lbnode.Node, blockHeight *hexutil.Big, inReq *http.Request) (*lbnode.Node, error) {
+func (lb *LoadBalancer) getNode(requestContext *types.RequestContext, stateBackends, archiveBackends []*lbnode.Node, blockHeight *hexutil.Big) (*lbnode.Node, error) {
 	var backupNodes []*lbnode.Node
 	backupNodes = append(backupNodes, stateBackends...)
 	backupNodes = append(backupNodes, archiveBackends...)
@@ -95,36 +105,11 @@ func (lb *LoadBalancer) GetNode(stateBackends, archiveBackends []*lbnode.Node, b
 	if len(archiveBackends) == 0 {
 		archiveBackends = stateBackends
 	}
-	_, jsonObjects, _, err := ejrpc.ParseRequest(inReq)
-	if err != nil {
-		log.Error("failed to parse incoming request", err)
-		return targetNode, nil
-	}
-	for _, value := range jsonObjects {
-		var arr []interface{}
-		err := json.Unmarshal(value.Params, &arr)
-		if err != nil {
-			log.Error("failed to unmarshal params", err)
-			break
-		}
-		if len(arr) <= 0 {
-			break
-		}
-		lastElem := arr[len(arr)-1]
-		lastBytes, err := json.Marshal(lastElem)
-		if err != nil {
-			log.Error("failed to marshal params", err)
-			break
-		}
-		var ctx BlockContext
-		if err := json.Unmarshal(lastBytes, &ctx); err != nil {
-			log.Error("failed to unmarshal params", err)
-			break
-		}
-		if ctx.Type == "equal" && ctx.BlockId.BlockNumber != nil {
+	if requestContext.BlockContext != nil {
+		if requestContext.BlockContext.Type == "equal" && requestContext.BlockContext.BlockId.BlockNumber != nil {
 			stateBlockHeightLow := big.NewInt(0)
 			stateBlockHeightLow.Sub(blockHeight.ToInt(), big.NewInt(64))
-			if big.NewInt(ctx.BlockId.BlockNumber.Int64()).Cmp(stateBlockHeightLow) >= 0 {
+			if big.NewInt(requestContext.BlockContext.BlockId.BlockNumber.Int64()).Cmp(stateBlockHeightLow) >= 0 {
 				targetNode, err = lb.nodeSelector.GetNode(nil, stateBackends, "")
 				if err != nil {
 					return nil, err
@@ -164,4 +149,81 @@ func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *http.Request) 
 			outReq.Header.Set(headerUserAgent, "")
 		}
 	}
+}
+
+func (lb *LoadBalancer) generateRequestContext(request *http.Request) *types.RequestContext {
+	requestContext := lb.beforeProcess(request)
+
+	requestContext.RawRequestBody, requestContext.RequestBody, requestContext.RequestBodySize, requestContext.Error = ejrpc.ParseRequest(request)
+	if requestContext.Error != nil {
+		return requestContext
+	}
+	requestContext.BlockContext = lb.parseBlockContext(requestContext.RequestBody)
+	return requestContext
+}
+
+func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {
+	for _, value := range requestBody {
+		var arr []interface{}
+		err := json.Unmarshal(value.Params, &arr)
+		if err != nil {
+			log.Error("failed to unmarshal params", err)
+			break
+		}
+		if len(arr) <= 0 {
+			break
+		}
+		lastElem := arr[len(arr)-1]
+		lastBytes, err := json.Marshal(lastElem)
+		if err != nil {
+			log.Error("failed to marshal params", err)
+			break
+		}
+		var ctx types.BlockContext
+		if err := json.Unmarshal(lastBytes, &ctx); err != nil {
+			log.Error("failed to unmarshal params", err)
+			break
+		}
+		return &ctx
+	}
+	return nil
+}
+
+func (lb *LoadBalancer) beforeProcess(request *http.Request) *types.RequestContext {
+	ctx := request.Context()
+	span := trace.SpanFromContext(ctx)
+	traceID := span.SpanContext().TraceID().String()
+
+	sourceBiz := request.Header.Get(DBKBiz)
+	sourceHost := request.Header.Get(DBKSourceHost)
+	sourceIP := request.Header.Get(DBKSource)
+	sourceEnv := request.Header.Get(DBKEnv)
+	sourceServerVersion := request.Header.Get(DBKServerVersion)
+
+	// TODO: add some general metrics
+	return &types.RequestContext{
+		Context:             ctx,
+		RequestId:           traceID,
+		SourceBiz:           sourceBiz,
+		SourceHost:          sourceHost,
+		SourceIP:            sourceIP,
+		SourceEnv:           sourceEnv,
+		SourceServerVersion: sourceServerVersion,
+
+		Start:           time.Now(),
+		Method:          "unknown",
+		Host:            types.ProcessorHost(originHostFromContext(ctx, request.Host)),
+		Target:          "native",
+		UpstreamRelated: false,
+	}
+}
+
+func originHostFromContext(ctx context.Context, defaultHost string) string {
+	if ctx == nil {
+		return defaultHost
+	}
+	if originHost, ok := ctx.Value(originHostKey).(string); ok {
+		return originHost
+	}
+	return defaultHost
 }
