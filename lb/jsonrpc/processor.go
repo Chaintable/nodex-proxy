@@ -23,7 +23,7 @@ const (
 )
 
 func parseJRPCRequestBody() types.PreProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) (*http.Request, *http.Response, *types.ProcessorData) {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
 		if processData.RequestBody == nil {
 			processData.RawRequestBody, processData.RequestBody, processData.RequestBodySize, processData.Error = jsonrpc.ParseRequest(request)
 			if processData.Error != nil {
@@ -57,7 +57,7 @@ func jRPCMethodDenied(deniedMethods *[]jsonrpc.RPCMethod) types.PreProcessorFunc
 		Code:    jsonrpc.ExtMethodNotAllowed,
 		Message: jsonrpc.ExtMethodNotAllowedMsg,
 	}
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) (*http.Request, *http.Response, *types.ProcessorData) {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
 		for _, req := range processData.RequestBody {
 			if _, ok := deniedMethodMap[req.Method]; ok {
 				response, processData.ResponseBody, processData.Error = jsonrpc.ErrorResponse(http.StatusBadRequest, errObject, nil)
@@ -82,7 +82,7 @@ func checkJRPCRequestBody(config types.MethodNameCheckerConfig) types.PreProcess
 		Code:    jsonrpc.ExtMethodNotAllowed,
 		Message: jsonrpc.ExtMethodNotAllowedMsg,
 	}
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) (*http.Request, *http.Response, *types.ProcessorData) {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
 		for _, req := range processData.RequestBody {
 			if deniedRegexp != nil {
 				if deniedRegexp.MatchString(string(req.Method)) {
@@ -100,7 +100,7 @@ func checkJRPCRequestBody(config types.MethodNameCheckerConfig) types.PreProcess
 }
 
 func logRequest() types.PreProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) (*http.Request, *http.Response, *types.ProcessorData) {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
 		if types.DebugInfo.DebugModeEnable() {
 			log.Observe("RPC Call Started", request.Context(), processData.LogAttributes()...)
 		}
@@ -109,7 +109,7 @@ func logRequest() types.PreProcessorFunc {
 }
 
 func updatePreprocessorMetrics() types.PreProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) (*http.Request, *http.Response, *types.ProcessorData) {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
 		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target)
 		sourceDapp := request.Header.Get(headerDappKey)
 		m.IncrCallsStarted(processData.Method, sourceDapp)
@@ -118,7 +118,7 @@ func updatePreprocessorMetrics() types.PreProcessorFunc {
 }
 
 func rpcMethodLimiter(limiter Limiter) types.PreProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) (*http.Request, *http.Response, *types.ProcessorData) {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
 		if !limiter.Allow(processData.Method) {
 			response, processData.ResponseBody, processData.Error = jsonrpc.TooManyRequestsResponse()
 		}
@@ -127,7 +127,7 @@ func rpcMethodLimiter(limiter Limiter) types.PreProcessorFunc {
 }
 
 func rpcMethodHandlerProcessor(handlerMap map[jsonrpc.RPCMethod]types.PreProcessorFunc) types.PreProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) (*http.Request, *http.Response, *types.ProcessorData) {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
 		if handler, ok := handlerMap[processData.Method]; ok {
 			if handler != nil {
 				return handler(request, response, processData)
@@ -138,7 +138,7 @@ func rpcMethodHandlerProcessor(handlerMap map[jsonrpc.RPCMethod]types.PreProcess
 }
 
 func rpcMethodHandlerPostProcessor(handlerMap map[jsonrpc.RPCMethod]types.PostProcessorFunc) types.PostProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) *types.ProcessorData {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) *types.RequestContext {
 		if handler, ok := handlerMap[processData.Method]; ok {
 			if handler != nil {
 				return handler(request, response, processData)
@@ -149,7 +149,7 @@ func rpcMethodHandlerPostProcessor(handlerMap map[jsonrpc.RPCMethod]types.PostPr
 }
 
 func parseJRPCResponseBody() types.PostProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) *types.ProcessorData {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) *types.RequestContext {
 		if processData.ResponseBody == nil {
 			if !strings.Contains(response.Header.Get("Content-Type"), "application/json") ||
 				strings.Contains(response.Header.Get("Transfer-Encoding"), "chunked") {
@@ -189,7 +189,7 @@ func parseJRPCResponseBody() types.PostProcessorFunc {
 }
 
 func logResponse() types.PostProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) *types.ProcessorData {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) *types.RequestContext {
 		if types.DebugInfo.DebugModeEnable() {
 			attributes := append(processData.LogAttributes(), log.MillisDurationAttribute("duration", time.Since(processData.Start)))
 			log.Observe("RPC Call Complete", request.Context(), attributes...)
@@ -200,7 +200,7 @@ func logResponse() types.PostProcessorFunc {
 
 func observabilityLog(config types.ObservabilityLogProcessorConfig) types.PostProcessorFunc {
 	if config.Enable {
-		return func(request *http.Request, response *http.Response, processData *types.ProcessorData) *types.ProcessorData {
+		return func(request *http.Request, response *http.Response, processData *types.RequestContext) *types.RequestContext {
 			duration := time.Since(processData.Start)
 			observe := duration >= time.Duration(config.SlowThreshold.Default)*time.Millisecond
 			if threshold, ok := config.SlowThreshold.RpcMethods[processData.Method]; ok {
@@ -220,7 +220,7 @@ func observabilityLog(config types.ObservabilityLogProcessorConfig) types.PostPr
 	return nil
 }
 func updatePostProcessorMetrics() types.PostProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) *types.ProcessorData {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) *types.RequestContext {
 		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target)
 		responseDuration := time.Since(processData.Start)
 
@@ -263,7 +263,7 @@ func updatePostProcessorMetrics() types.PostProcessorFunc {
 }
 
 func paramsCountLimit() types.PreProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) (*http.Request, *http.Response, *types.ProcessorData) {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
 		var params []interface{}
 		if err := nJson.Unmarshal(processData.RequestBody[0].Params, &params); err != nil {
 			return request, response, processData
@@ -306,7 +306,7 @@ func requestMirror(timeout time.Duration, config types.RequestMirrorConfig) type
 	httpClient := http.Client{
 		Timeout: timeout,
 	}
-	doMirrorRequest := func(request *http.Request, processData *types.ProcessorData, target string) {
+	doMirrorRequest := func(request *http.Request, processData *types.RequestContext, target string) {
 		mirrorRequest, err := http.NewRequest(request.Method, target, bytes.NewReader(processData.RawRequestBody))
 		if err != nil {
 			log.Error("mirror request error", err)
@@ -320,7 +320,7 @@ func requestMirror(timeout time.Duration, config types.RequestMirrorConfig) type
 		}
 		defer resp.Body.Close()
 	}
-	return func(request *http.Request, response *http.Response, processData *types.ProcessorData) (*http.Request, *http.Response, *types.ProcessorData) {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
 		mirrorTarget := types.DynamicRequestMirrorConfig.Target
 		if mirrorTarget != "" {
 			go doMirrorRequest(request, processData, mirrorTarget)

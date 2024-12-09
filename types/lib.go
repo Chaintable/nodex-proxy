@@ -1,11 +1,13 @@
 package types
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
+	"github.com/ethereum/go-ethereum/rpc"
 	nJson "github.com/goccy/go-json"
 	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
@@ -16,11 +18,29 @@ type (
 	ProcessorHost   string
 )
 
-// ProcessorData is the accompanying data in the pre-processing and post-processing processes,
+type BlockContext struct {
+	BlockId *rpc.BlockNumberOrHash `json:"block_id"`
+	Type    string                 `json:"type"`
+}
+type jrpcxContextKeyType int
+
+const (
+	originHostKey jrpcxContextKeyType = iota
+
+	// DBK HTTP metadata headers
+	DBKBiz           = "x-dbk-biz"
+	DBKSourceHost    = "x-dbk-source-host"
+	DBKSource        = "x-dbk-source"
+	DBKEnv           = "x-dbk-env"
+	DBKServerVersion = "x-dbk-server-version"
+)
+
+// RequestContext is the accompanying data in the pre-processing and post-processing processes,
 // and is used to pass the required data during the processing.
-type ProcessorData struct {
-	Host   ProcessorHost   `json:"host"`
-	Target ProcessorTarget `json:"target"`
+type RequestContext struct {
+	Context context.Context
+	Host    ProcessorHost   `json:"host"`
+	Target  ProcessorTarget `json:"target"`
 	// Request source metadata
 	SourceBiz           string `json:"source_biz"`
 	SourceHost          string `json:"source_host"`
@@ -40,21 +60,22 @@ type ProcessorData struct {
 	ResponseBody     *jsonrpc.ResponseObject  `json:"-"`
 	RequestBodySize  int                      `json:"request_body_size"`
 	ResponseBodySize int                      `json:"response_body_size"`
+	BlockContext     *BlockContext            `json:"block_context"`
 	Cached           bool                     `json:"cached"`
 }
 
 type (
 	// PreProcessorFunc emphasizes the preprocessing of the **request**,
 	// and when the request meets certain conditions, the response is pre-built to achieve the purpose of preprocessing.
-	PreProcessorFunc func(request *http.Request, response *http.Response, processData *ProcessorData) (*http.Request, *http.Response, *ProcessorData)
+	PreProcessorFunc func(request *http.Request, response *http.Response, processData *RequestContext) (*http.Request, *http.Response, *RequestContext)
 	// PostProcessorFunc emphasizes the **observation and recording of the response**, to achieve specific requirements,
 	// and **does not modify the response**.
-	PostProcessorFunc       func(request *http.Request, response *http.Response, processData *ProcessorData) *ProcessorData
+	PostProcessorFunc       func(request *http.Request, response *http.Response, processData *RequestContext) *RequestContext
 	PreProcessorProcessors  []PreProcessorFunc
 	PostProcessorProcessors []PostProcessorFunc
 )
 
-func (p PreProcessorProcessors) Call(request *http.Request, response *http.Response, processData *ProcessorData) (*http.Request, *http.Response, *ProcessorData) {
+func (p PreProcessorProcessors) Call(request *http.Request, response *http.Response, processData *RequestContext) (*http.Request, *http.Response, *RequestContext) {
 	for _, processFunc := range p {
 		if processFunc != nil {
 			request, response, processData = processFunc(request, response, processData)
@@ -66,7 +87,7 @@ func (p PreProcessorProcessors) Call(request *http.Request, response *http.Respo
 	return request, response, processData
 }
 
-func (p PostProcessorProcessors) Call(request *http.Request, response *http.Response, processData *ProcessorData) *ProcessorData {
+func (p PostProcessorProcessors) Call(request *http.Request, response *http.Response, processData *RequestContext) *RequestContext {
 	for _, processFunc := range p {
 		if processFunc != nil {
 			processData = processFunc(request, response, processData)
@@ -75,7 +96,7 @@ func (p PostProcessorProcessors) Call(request *http.Request, response *http.Resp
 	return processData
 }
 
-func (p *ProcessorData) LogAttributes() []attribute.KeyValue {
+func (p *RequestContext) LogAttributes() []attribute.KeyValue {
 	requestBodyStr, _ := nJson.Marshal(p.RequestBody)
 	result := []attribute.KeyValue{
 		log.EpochNanosTimeAttribute("Start", p.Start),
@@ -95,6 +116,6 @@ func (p *ProcessorData) LogAttributes() []attribute.KeyValue {
 	return result
 }
 
-func (p *ProcessorData) LogField() zap.Field {
+func (p *RequestContext) LogField() zap.Field {
 	return zap.Any("Attributes", attribute.NewSet(p.LogAttributes()...).MarshalLog())
 }

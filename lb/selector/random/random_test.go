@@ -38,11 +38,11 @@ func TestRandom_GetNode(t *testing.T) {
 			r := New()
 			got, err := r.GetNode(context.Background(), tt.fields, tt.args.requestKey)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("Random.GetNode() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("Random.getNode() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) && !reflect.DeepEqual(got, tt.fields[1]) {
-				t.Errorf("Random.GetNode() = %v, want %v", got, tt.want)
+				t.Errorf("Random.getNode() = %v, want %v", got, tt.want)
 			}
 		})
 	}

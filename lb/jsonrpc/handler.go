@@ -37,6 +37,7 @@ import (
 // transport used as default reverse-proxy transport that handle
 // incoming requests or outgoing responses.
 type transport struct {
+	requestContext            *types.RequestContext
 	defaultHttpTransport      *http.Transport
 	rpcMethodHttpTransportMap map[jsonrpc.RPCMethod]*http.Transport
 
@@ -68,6 +69,7 @@ func newHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) 
 }
 
 func NewTransport(
+	requestContext *types.RequestContext,
 	rpcMethodHandler types.RPCMethodHandlerI,
 	limiter Limiter,
 	logger *zap.Logger,
@@ -83,6 +85,7 @@ func NewTransport(
 		rpcMethodTransportMap[jsonrpc.RPCMethod(m)] = newHttpTransportWithTimeout(time.Duration(t)*time.Millisecond, config.ConnectionPoolSize)
 	}
 	return &transport{
+		requestContext:            requestContext,
 		limiter:                   limiter,
 		defaultHttpTransport:      newHttpTransportWithTimeout(defaultTimeout, config.ConnectionPoolSize),
 		rpcMethodHttpTransportMap: rpcMethodTransportMap,
@@ -109,34 +112,6 @@ func NewTransport(
 	}
 }
 
-func (t *transport) beforeProcess(request *http.Request) *types.ProcessorData {
-	ctx := request.Context()
-	span := trace.SpanFromContext(ctx)
-	traceID := span.SpanContext().TraceID().String()
-
-	sourceBiz := request.Header.Get(DBKBiz)
-	sourceHost := request.Header.Get(DBKSourceHost)
-	sourceIP := request.Header.Get(DBKSource)
-	sourceEnv := request.Header.Get(DBKEnv)
-	sourceServerVersion := request.Header.Get(DBKServerVersion)
-
-	// TODO: add some general metrics
-	return &types.ProcessorData{
-		RequestId:           traceID,
-		SourceBiz:           sourceBiz,
-		SourceHost:          sourceHost,
-		SourceIP:            sourceIP,
-		SourceEnv:           sourceEnv,
-		SourceServerVersion: sourceServerVersion,
-
-		Start:           time.Now(),
-		Method:          "unknown",
-		Host:            types.ProcessorHost(originHostFromContext(ctx, request.Host)),
-		Target:          "native",
-		UpstreamRelated: false,
-	}
-}
-
 // RoundTrip implements RoundTrip Method for interface of http.RoundTripper.
 func (t *transport) RoundTrip(request *http.Request) (response *http.Response, err error) {
 	ctx := request.Context()
@@ -144,8 +119,7 @@ func (t *transport) RoundTrip(request *http.Request) (response *http.Response, e
 		ctx,
 		"RoundTrip")
 	defer roundTripSpan.End()
-	processData := t.beforeProcess(request)
-
+	processData := t.requestContext
 	request, response, processData = t.preProcessor(request, response, processData)
 	if response == nil {
 		processData.UpstreamRelated = true
