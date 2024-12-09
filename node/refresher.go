@@ -76,8 +76,11 @@ func (r *Refresher) init(key string, ctx context.Context) error {
 			log.Printf("decode initial message error %+v, chain id: %v", err, r.chainID)
 			return err
 		}
-		var archiveBackends []string
-		var stateBackends []string
+		var (
+			stateBackends     []string
+			archiveBackends   []string
+			latestBlockNumber *hexutil.Big
+		)
 		for _, replicaState := range replicaNotification.ReplicaStates {
 			if replicaState.StateType != 1 {
 				continue
@@ -87,10 +90,9 @@ func (r *Refresher) init(key string, ctx context.Context) error {
 			} else {
 				archiveBackends = append(archiveBackends, replicaState.Address)
 			}
-			r.LatestBlockNumber = replicaState.LatestBlockNumber
+			latestBlockNumber = replicaState.LatestBlockNumber
 		}
-		r.setStateBackends(stateBackends)
-		r.setArchiveBackends(archiveBackends)
+		r.setBackends(stateBackends, archiveBackends, latestBlockNumber)
 		log.Printf("initial chain: %+v backends success", r.chainID)
 	}
 	return nil
@@ -114,8 +116,11 @@ func (r *Refresher) watchConfig(key string, ctx context.Context) {
 						continue
 					}
 
-					var archiveBackends []string
-					var stateBackends []string
+					var (
+						stateBackends   []string
+						archiveBackends []string
+						lastBlockNumber *hexutil.Big
+					)
 					for _, replicaState := range replicaNotification.ReplicaStates {
 						if replicaState.StateType != 1 {
 							continue
@@ -125,21 +130,31 @@ func (r *Refresher) watchConfig(key string, ctx context.Context) {
 						} else {
 							archiveBackends = append(archiveBackends, replicaState.Address)
 						}
-						r.LatestBlockNumber = replicaState.LatestBlockNumber
+						lastBlockNumber = replicaState.LatestBlockNumber
 					}
-					r.setStateBackends(stateBackends)
-					r.setArchiveBackends(archiveBackends)
 
+					r.setBackends(stateBackends, archiveBackends, lastBlockNumber)
 					log.Printf("chain: %+v backends updated, backends: %v, height:%v", r.chainID, stateBackends, r.LatestBlockNumber)
 				}
 			}
 		}
 	}
 }
+
+// GetBackends ...
 func (r *Refresher) GetBackends() ([]string, []string, *hexutil.Big) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.stateBackends, r.archiveBackends, r.LatestBlockNumber
+}
+
+// setBackends ...
+func (r *Refresher) setBackends(states []string, archives []string, blkNum *hexutil.Big) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stateBackends = states
+	r.archiveBackends = archives
+	r.LatestBlockNumber = blkNum
 }
 
 func (r *Refresher) setStateBackends(backends []string) {
@@ -147,6 +162,7 @@ func (r *Refresher) setStateBackends(backends []string) {
 	defer r.mu.Unlock()
 	r.stateBackends = backends
 }
+
 func (r *Refresher) setArchiveBackends(backends []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

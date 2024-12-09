@@ -44,7 +44,9 @@ func NewLoadBalancer(nodeRefresherMap map[string]*node.Refresher, config types.C
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
 	if lb.nodeRefresherMap[chainID] == nil {
 		http.Error(w, "No backends available", http.StatusBadGateway)
+		return
 	}
+
 	stateBackends, archiveBackends, blockHeight := lb.nodeRefresherMap[chainID].GetBackends()
 	if len(stateBackends) == 0 && len(archiveBackends) == 0 {
 		http.Error(w, "No backends available", http.StatusServiceUnavailable)
@@ -62,15 +64,15 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 
 func (lb *LoadBalancer) forwardDirector(stateBackends, archiveBackends []string, blockHeight *hexutil.Big, inReq *http.Request) func(*http.Request) {
 	host := append(stateBackends, archiveBackends...)[rand.Intn(len(stateBackends)+len(archiveBackends))]
-	if len(stateBackends) == 0 && len(archiveBackends) != 0 {
+	if len(stateBackends) == 0 {
 		stateBackends = archiveBackends
 	}
-	if len(archiveBackends) == 0 && len(stateBackends) != 0 {
+	if len(archiveBackends) == 0 {
 		archiveBackends = stateBackends
 	}
 	_, jsonObjects, _, err := ejrpc.ParseRequest(inReq)
 	if err != nil {
-		log.Error("failed to parse request", err)
+		log.Error("failed to parse incoming request", err)
 	}
 	for _, value := range jsonObjects {
 		var arr []interface{}
