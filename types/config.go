@@ -105,6 +105,7 @@ var defaultConfig = Config{
 		},
 	},
 	NodeSelectStrategy: "random",
+	EtcdPrefix:         "",
 }
 
 type DebugLogProcessorConfig struct {
@@ -189,6 +190,7 @@ type Config struct {
 	Processor              ProcessorConfig     `yaml:"processor"`
 	Observability          ObservabilityConfig `yaml:"observability"`
 	NodeSelectStrategy     string              `yaml:"node_select_strategy"`
+	EtcdPrefix             string              `yaml:"etcd_prefix"`
 }
 
 type RaftJoinConfig struct {
@@ -305,6 +307,9 @@ func FillWithDefaultConfig(cfg *Config) {
 	}
 	if cfg.NodeSelectStrategy == "" {
 		cfg.NodeSelectStrategy = defaultConfig.NodeSelectStrategy
+	}
+	if cfg.EtcdPrefix == "" {
+		cfg.EtcdPrefix = defaultConfig.EtcdPrefix
 	}
 	cfg.initMetrics()
 }

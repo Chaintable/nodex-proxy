@@ -1,14 +1,17 @@
 package random
 
 import (
-	"context"
-
 	"reflect"
 	"testing"
 
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
+	"github.com/Chaintable/nodex-proxy/types"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
+func TempPickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node) []*lbnode.Node {
+	return append(stateNodes, archiveNodes...)
+}
 func TestRandom_GetNode(t *testing.T) {
 	type args struct {
 		requestKey string
@@ -35,8 +38,10 @@ func TestRandom_GetNode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := New()
-			got, err := r.GetNode(context.Background(), tt.fields, tt.args.requestKey)
+			r := New(TempPickNodes)
+			r.UpsertNode(nil, "0x1", 2, tt.fields[0])
+			r.UpsertNode(nil, "0x1", 2, tt.fields[1])
+			got, err := r.GetNode(&types.RequestContext{ChainId: "0x1"}, tt.args.requestKey)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Random.getNode() error = %v, wantErr %v", err, tt.wantErr)
 				return

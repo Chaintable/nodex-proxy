@@ -4,14 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"strconv"
-	"strings"
-	"sync"
+	"regexp"
 	"time"
 
-	"github.com/Chaintable/nodex-proxy/lb/lbnode"
-	proxyType "github.com/Chaintable/nodex-proxy/types"
-	"github.com/Chaintable/pipeline/types"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"go.etcd.io/etcd/client/v3"
 )
@@ -19,20 +14,42 @@ import (
 type Refresher struct {
 	etcdClient  *clientv3.Client
 	watchCancel context.CancelFunc
-	watchKey    string
 
 	quit chan struct{}
 
-	backends          []string
-	mu                sync.RWMutex
-	stateBackends     []*lbnode.Node
-	archiveBackends   []*lbnode.Node
-	LatestBlockNumber *hexutil.Big
-	chainID           string
+	backends    []string
+	nodeChannel chan *TargetNode
+	heightChan  chan *ChainHeight
+	keyPrefix   string
 }
 
-func NewRefresher(ctx context.Context, etcdEndpoints []string, configKey string, chainID string) (*Refresher, error) {
-	log.Printf("init Refresher etcd endpoints: %v, chain id: %v", etcdEndpoints, chainID)
+const (
+	addNode = 0 + iota
+	delNode
+)
+
+var (
+	lastBlockPattern = regexp.MustCompile(`^(?P<chain>.*?)/lastBlockNumber$`)
+	nodesPattern     = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
+)
+
+type TargetNode struct {
+	ChainId    string `json:"-"`
+	StateType  int    `json:"stateType"` // 1 latest, 2 delay, 3 offline
+	Address    string `json:"address"`   //
+	Port       int    `json:"port"`
+	NodeType   int    `json:"nodeType"` // 1 state, 2 archive
+	ChangeType int    `json:"-"`
+	NodeKey    string `json:"-"`
+}
+
+type ChainHeight struct {
+	ChainId           string       `json:"-"`
+	LatestBlockNumber *hexutil.Big `json:"latestBlockNumber"`
+}
+
+func NewRefresher(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Refresher, error) {
+	log.Printf("Init Refresher etcd endpoints: %v", etcdEndpoints)
 	etcdCli, err := clientv3.New(clientv3.Config{
 		Endpoints:   etcdEndpoints,
 		DialTimeout: 5 * time.Second,
@@ -46,15 +63,8 @@ func NewRefresher(ctx context.Context, etcdEndpoints []string, configKey string,
 		etcdClient:  etcdCli,
 		watchCancel: cancel,
 		quit:        make(chan struct{}),
-		chainID:     chainID,
+		keyPrefix:   keyPrefix,
 	}
-	timeOutCtx, cancelFunc := context.WithTimeout(ctx, 5*time.Second)
-	defer cancelFunc()
-	err = refresher.init(configKey, timeOutCtx)
-	if err != nil {
-		return nil, err
-	}
-	go refresher.watchConfig(configKey, ctx)
 
 	return refresher, err
 }
@@ -65,46 +75,56 @@ func (r *Refresher) Close() error {
 	return r.etcdClient.Close()
 }
 
-func (r *Refresher) init(key string, ctx context.Context) error {
+func (r *Refresher) Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, error) {
 	// Initial request to get the current value of the key
-	resp, err := r.etcdClient.Get(ctx, key)
-	log.Printf("get key resp: %+v, key: %s , chainID: %v", resp, key, r.chainID)
+
+	resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
+	log.Printf("get key resp: %+v, key: %s ", resp, r.keyPrefix)
 	if err != nil {
-		log.Printf("failed to get initial value for key %s: %+v, chain id: %v", key, err, r.chainID)
-		return err
+		log.Printf("failed to get initial value for: %+v", err)
+		return nil, nil, err
 	}
+	nodeChannel := make(chan *TargetNode, 1000)
+	heightChannel := make(chan *ChainHeight, 1000)
+	r.nodeChannel = nodeChannel
+	r.heightChan = heightChannel
 	for _, kv := range resp.Kvs {
-		replicaNotification := &types.ReplicaStateChangeNotification{}
-		err := json.Unmarshal(kv.Value, replicaNotification)
-		if err != nil {
-			log.Printf("decode initial message error %+v, chain id: %v", err, r.chainID)
-			return err
-		}
-		var (
-			stateBackends     []string
-			archiveBackends   []string
-			latestBlockNumber *hexutil.Big
-		)
-		for _, replicaState := range replicaNotification.ReplicaStates {
-			if replicaState.StateType != 1 {
+		if match := nodesPattern.FindStringSubmatch(string(kv.Key)); match != nil {
+			chainId := match[nodesPattern.SubexpIndex("chain")]
+			nodeKey := match[nodesPattern.SubexpIndex("node")]
+			var node TargetNode
+			err := json.Unmarshal(kv.Value, &node)
+			if err != nil {
+				log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", kv.Key, err, chainId)
 				continue
 			}
-			if replicaState.NodeType == 1 {
-				stateBackends = append(stateBackends, replicaState.Address)
-			} else {
-				archiveBackends = append(archiveBackends, replicaState.Address)
-			}
-			latestBlockNumber = replicaState.LatestBlockNumber
+			node.NodeKey = nodeKey
+			node.ChangeType = addNode
+			node.ChainId = chainId
+			nodeChannel <- &node
+			continue
 		}
-		r.setBackends(stateBackends, archiveBackends, latestBlockNumber)
-		log.Printf("initial chain: %+v backends success", r.chainID)
+		if match := lastBlockPattern.FindStringSubmatch(string(kv.Key)); match != nil {
+			chainId := match[lastBlockPattern.SubexpIndex("chain")]
+			var height ChainHeight
+			err := json.Unmarshal(kv.Value, &height)
+			if err != nil {
+				log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", kv.Key, err, chainId)
+				continue
+			}
+			height.ChainId = chainId
+			heightChannel <- &height
+			continue
+		}
 	}
-	return nil
+	go r.watchConfig(ctx)
+
+	return nodeChannel, heightChannel, nil
+
 }
 
-func (r *Refresher) watchConfig(key string, ctx context.Context) {
-	watchChan := r.etcdClient.Watch(ctx, key, clientv3.WithPrefix())
-
+func (r *Refresher) watchConfig(ctx context.Context) {
+	watchChan := r.etcdClient.Watch(ctx, r.keyPrefix, clientv3.WithPrefix(), clientv3.WithPrevKV())
 	for {
 		select {
 		case <-r.quit:
@@ -112,65 +132,54 @@ func (r *Refresher) watchConfig(key string, ctx context.Context) {
 		case watchResp := <-watchChan:
 			for _, event := range watchResp.Events {
 				if event.Type == clientv3.EventTypePut {
-					replicaNotification := &types.ReplicaStateChangeNotification{}
-					err := json.Unmarshal(event.Kv.Value, replicaNotification)
-					if err != nil {
-						log.Printf("decode message error %+v, chain id:%+v, val: %+v", err, r.chainID, event.Kv.Value)
-						time.Sleep(1 * time.Second)
-						continue
-					}
-
-					var (
-						stateBackends   []string
-						archiveBackends []string
-						lastBlockNumber *hexutil.Big
-					)
-					for _, replicaState := range replicaNotification.ReplicaStates {
-						if replicaState.StateType != 1 {
+					key := event.Kv.Key
+					value := event.Kv.Value
+					if match := nodesPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := match[nodesPattern.SubexpIndex("chain")]
+						nodeKey := match[nodesPattern.SubexpIndex("node")]
+						var node TargetNode
+						err := json.Unmarshal(value, &node)
+						if err != nil {
+							log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", key, err, chainId)
 							continue
 						}
-						if replicaState.NodeType == 1 {
-							stateBackends = append(stateBackends, replicaState.Address)
-						} else {
-							archiveBackends = append(archiveBackends, replicaState.Address)
-						}
-						lastBlockNumber = replicaState.LatestBlockNumber
+						node.NodeKey = nodeKey
+						node.ChangeType = addNode
+						node.ChainId = chainId
+						r.nodeChannel <- &node
+						continue
 					}
-
-					r.setBackends(stateBackends, archiveBackends, lastBlockNumber)
-					log.Printf("chain: %+v backends updated, backends: %v, height:%v", r.chainID, stateBackends, r.LatestBlockNumber)
+					if match := lastBlockPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := match[lastBlockPattern.SubexpIndex("chain")]
+						var height ChainHeight
+						err := json.Unmarshal(value, &height)
+						if err != nil {
+							log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", key, err, chainId)
+							continue
+						}
+						height.ChainId = chainId
+						r.heightChan <- &height
+						continue
+					}
+				} else if event.Type == clientv3.EventTypeDelete {
+					key := event.Kv.Key
+					value := event.PrevKv.Value
+					if match := nodesPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := match[nodesPattern.SubexpIndex("chain")]
+						nodeKey := match[nodesPattern.SubexpIndex("node")]
+						var node TargetNode
+						err := json.Unmarshal(value, &node)
+						if err != nil {
+							log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", key, err, chainId)
+							continue
+						}
+						node.NodeKey = nodeKey
+						node.ChangeType = delNode
+						node.ChainId = chainId
+						r.nodeChannel <- &node
+					}
 				}
 			}
 		}
 	}
-}
-
-// GetBackends ...
-func (r *Refresher) GetBackends() ([]*lbnode.Node, []*lbnode.Node, *hexutil.Big) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.stateBackends, r.archiveBackends, r.LatestBlockNumber
-}
-
-// setBackends ...
-func (r *Refresher) setBackends(states []string, archives []string, blkNum *hexutil.Big) {
-
-	var stateBackends []*lbnode.Node
-	for _, state := range states {
-		temp := strings.Split(state, ":")
-		port, _ := strconv.Atoi(temp[1])
-		stateBackends = append(stateBackends, lbnode.New(state, temp[0], port, proxyType.DefaultLoadBalancerWeight))
-	}
-	var archiveBackends []*lbnode.Node
-	for _, archive := range archives {
-		temp := strings.Split(archive, ":")
-		port, _ := strconv.Atoi(temp[1])
-		archiveBackends = append(archiveBackends, lbnode.New(archive, temp[0], port, proxyType.DefaultLoadBalancerWeight))
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.stateBackends = stateBackends
-	r.archiveBackends = archiveBackends
-	r.LatestBlockNumber = blkNum
 }

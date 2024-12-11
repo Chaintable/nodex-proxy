@@ -9,9 +9,9 @@ import (
 )
 
 type Config struct {
-	Listen                      string                       `yaml:"listen"`
-	ReplicaNotificationSettings []ReplicaNotificationSetting `yaml:"replica_notification_settings"`
-	ProxyConfig                 *types.Config                `yaml:"proxy_config"`
+	Listen        string        `yaml:"listen"`
+	EtcdEndpoints []string      `yaml:"etcd_endpoints"`
+	ProxyConfig   *types.Config `yaml:"proxy_config"`
 }
 
 type ReplicaNotificationSetting struct {
