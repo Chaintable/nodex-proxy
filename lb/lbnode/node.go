@@ -15,6 +15,7 @@ type Node struct {
 	conns           int64
 	currentWeight   int
 	currentHandling int64
+	stateType       int
 	lock            sync.RWMutex
 }
 type Option func(*Node)
@@ -64,6 +65,12 @@ func (node *Node) SetWeight(weight int) {
 	defer node.lock.Unlock()
 
 	node.weight = weight
+}
+func (node *Node) SetState(state int) {
+	node.lock.Lock()
+	defer node.lock.Unlock()
+
+	node.stateType = state
 }
 
 // CurrentWeight returns currentWeight
@@ -118,6 +125,14 @@ func (node *Node) IncrConns(n int64) int64 {
 	return node.conns
 }
 
+func (node *Node) Available() bool {
+
+	node.lock.RLock()
+	defer node.lock.RUnlock()
+
+	return node.stateType == 1
+}
+
 func (node *Node) Clone() *Node {
 	node.lock.RLock()
 	defer node.lock.RUnlock()
@@ -132,6 +147,7 @@ func (node *Node) Clone() *Node {
 		currentWeight:   node.currentWeight,
 		lock:            sync.RWMutex{},
 		currentHandling: node.currentHandling,
+		stateType:       node.stateType,
 	}
 	return &n
 }

@@ -44,17 +44,22 @@ func main() {
 	var nodeRefresherMap = make(map[string]*node.Refresher)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	for _, replicaNotificationSetting := range config.ReplicaNotificationSettings {
-		nodeRefresher, err := node.NewRefresher(ctx, replicaNotificationSetting.EtcdEndpoints, replicaNotificationSetting.Key, replicaNotificationSetting.ChainID)
-		if err != nil {
-			log.Fatal("new refresher failed:", err)
-		}
-		nodeRefresherMap[replicaNotificationSetting.ChainID] = nodeRefresher
+	nodeRefresher, err := node.NewRefresher(ctx, config.EtcdEndpoints, config.ProxyConfig.EtcdPrefix)
+	if err != nil {
+		log.Fatal("New refresher failed: %v\n", err)
 	}
-	limiter := jsonrpc.NewMethodLimiter(config.ProxyConfig.Processor.RateLimiter.RpcMethods)
-	lb := lb.NewLoadBalancer(nodeRefresherMap, *config.ProxyConfig, &jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig}, limiter)
+	defer nodeRefresher.Close()
+	nodeChannel, heightChan, err := nodeRefresher.Init(ctx)
+	if err != nil {
+		log.Fatal("Init node refresher failed: %v\n", err)
+	}
 
+	limiter := jsonrpc.NewMethodLimiter(config.ProxyConfig.Processor.RateLimiter.RpcMethods)
+	lb := lb.NewLoadBalancer(
+		ctx,
+		nodeRefresherMap, *config.ProxyConfig,
+		&jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig}, limiter, nodeChannel, heightChan)
+	go lb.BackgroundRefreshNode()
 	router := chi.NewRouter()
 	router.HandleFunc("/{chainId}", func(rw http.ResponseWriter, r *http.Request) {
 		chainId := chi.URLParam(r, "chainId")

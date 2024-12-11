@@ -3,7 +3,6 @@ package lb
 import (
 	"context"
 	"encoding/json"
-	"math/big"
 	"net/http"
 	"net/http/httputil"
 	"time"
@@ -18,17 +17,19 @@ import (
 	"github.com/Chaintable/nodex-proxy/node"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"go.opentelemetry.io/otel/trace"
 )
 
 type LoadBalancer struct {
+	ctx              context.Context
 	nodeRefresherMap map[string]*node.Refresher
 	BufferPool       httputil.BufferPool
 	Config           types.Config
 	RpcMethodHandler types.RPCMethodHandlerI
 	Limiter          jsonrpc.Limiter
 	nodeSelector     selector.Strategy
+	nodeChannel      <-chan *node.TargetNode
+	heightChannel    <-chan *node.ChainHeight
 }
 
 var headerUserAgent = "User-Agent"
@@ -45,36 +46,55 @@ const (
 	DBKServerVersion = "x-dbk-server-version"
 )
 
-func NewLoadBalancer(nodeRefresherMap map[string]*node.Refresher, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter) *LoadBalancer {
+func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*node.Refresher, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, nodeChannel <-chan *node.TargetNode, heightChannel <-chan *node.ChainHeight) *LoadBalancer {
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
 	case "round_robin":
-		nodeSelector = roundrobin.New()
+		nodeSelector = roundrobin.New(utils.PickNodes)
 	case "random":
-		nodeSelector = random.New()
+		nodeSelector = random.New(utils.PickNodes)
 	}
 	return &LoadBalancer{
+		ctx:              ctx,
 		nodeRefresherMap: nodeRefresherMap, BufferPool: utils.NewBufferPool(),
 		Config:           config,
 		RpcMethodHandler: rpcMethodHandler,
 		Limiter:          limiter,
 		nodeSelector:     nodeSelector,
+		nodeChannel:      nodeChannel,
+		heightChannel:    heightChannel,
+	}
+}
+
+func (lb *LoadBalancer) BackgroundRefreshNode() {
+	for {
+		select {
+		case <-lb.ctx.Done():
+			return
+		case tempNode := <-lb.nodeChannel:
+			chainId := tempNode.ChainId
+			role := tempNode.NodeType
+			changeType := tempNode.ChangeType
+			targetNode := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultLoadBalancerWeight)
+			targetNode.SetState(tempNode.StateType)
+			switch changeType {
+			case 0:
+				_ = lb.nodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
+			case 1:
+				_ = lb.nodeSelector.RemoveNode(lb.ctx, chainId, role, targetNode)
+			}
+
+		case chainHeight := <-lb.heightChannel:
+			_ = lb.nodeSelector.UpdateChainHeight(lb.ctx, chainHeight.ChainId, chainHeight.LatestBlockNumber)
+		}
 	}
 }
 
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
-	if lb.nodeRefresherMap[chainID] == nil {
-		http.Error(w, "No backends available", http.StatusBadGateway)
-		return
-	}
 	requestContext := lb.generateRequestContext(r)
+	requestContext.ChainId = chainID
 
-	stateBackends, archiveBackends, blockHeight := lb.nodeRefresherMap[chainID].GetBackends()
-	if len(stateBackends) == 0 && len(archiveBackends) == 0 {
-		http.Error(w, "No backends available", http.StatusServiceUnavailable)
-		return
-	}
-	targetNode, err := lb.getNode(requestContext, stateBackends, archiveBackends, blockHeight)
+	targetNode, err := lb.nodeSelector.GetNode(requestContext, "")
 	if err != nil {
 		http.Error(w, "No backends available", http.StatusServiceUnavailable)
 		return
@@ -87,47 +107,6 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	}
 
 	reverseProxy.ServeHTTP(w, r)
-}
-
-func (lb *LoadBalancer) getNode(requestContext *types.RequestContext, stateBackends, archiveBackends []*lbnode.Node, blockHeight *hexutil.Big) (*lbnode.Node, error) {
-	var backupNodes []*lbnode.Node
-	backupNodes = append(backupNodes, stateBackends...)
-	backupNodes = append(backupNodes, archiveBackends...)
-
-	targetNode, err := lb.nodeSelector.GetNode(nil, backupNodes, "")
-	if err != nil {
-		return nil, err
-	}
-
-	if len(stateBackends) == 0 {
-		stateBackends = archiveBackends
-	}
-	if len(archiveBackends) == 0 {
-		archiveBackends = stateBackends
-	}
-	if requestContext.BlockContext != nil {
-		if requestContext.BlockContext.Type == "equal" && requestContext.BlockContext.BlockId.BlockNumber != nil {
-			stateBlockHeightLow := big.NewInt(0)
-			stateBlockHeightLow.Sub(blockHeight.ToInt(), big.NewInt(64))
-			if big.NewInt(requestContext.BlockContext.BlockId.BlockNumber.Int64()).Cmp(stateBlockHeightLow) >= 0 {
-				targetNode, err = lb.nodeSelector.GetNode(nil, stateBackends, "")
-				if err != nil {
-					return nil, err
-				}
-			} else {
-				targetNode, err = lb.nodeSelector.GetNode(nil, archiveBackends, "")
-				if err != nil {
-					return nil, err
-				}
-			}
-		} else {
-			targetNode, err = lb.nodeSelector.GetNode(nil, stateBackends, "")
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	return targetNode, nil
 }
 
 func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *http.Request) func(*http.Request) {

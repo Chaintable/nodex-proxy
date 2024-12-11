@@ -62,6 +62,7 @@ type RequestContext struct {
 	ResponseBodySize int                      `json:"response_body_size"`
 	BlockContext     *BlockContext            `json:"block_context"`
 	Cached           bool                     `json:"cached"`
+	ChainId          string                   `json:"chain_id"`
 }
 
 type (
