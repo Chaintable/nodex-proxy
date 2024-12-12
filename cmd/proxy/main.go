@@ -8,10 +8,10 @@ import (
 	"net/http"
 
 	"github.com/Chaintable/nodex-proxy/config"
+	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
-	"github.com/Chaintable/nodex-proxy/node"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -41,10 +41,10 @@ func main() {
 	log.Info("config: %", zap.Any("config", config))
 	log.ProductionModeWithoutStackTrace()
 
-	var nodeRefresherMap = make(map[string]*node.Refresher)
+	var nodeRefresherMap = make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	nodeRefresher, err := node.NewRefresher(ctx, config.EtcdEndpoints, config.ProxyConfig.EtcdPrefix)
+	nodeRefresher, err := etcd.New(ctx, config.EtcdEndpoints, config.ProxyConfig.EtcdPrefix)
 	if err != nil {
 		log.Fatal("New refresher failed: %v\n", err)
 	}

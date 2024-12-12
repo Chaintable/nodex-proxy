@@ -1,4 +1,4 @@
-package node
+package etcd
 
 import (
 	"context"
@@ -7,19 +7,19 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/Chaintable/nodex-proxy/discovery"
 	"go.etcd.io/etcd/client/v3"
 )
 
-type Refresher struct {
+type Discover struct {
 	etcdClient  *clientv3.Client
 	watchCancel context.CancelFunc
 
 	quit chan struct{}
 
 	backends      []string
-	nodeChannel   chan *TargetNode
-	heightChan    chan *ChainHeight
+	nodeChannel   chan *discovery.TargetNode
+	heightChan    chan *discovery.ChainHeight
 	keyPrefix     string
 	watchRevision int64
 }
@@ -34,23 +34,8 @@ var (
 	nodesPattern     = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
 )
 
-type TargetNode struct {
-	ChainId    string `json:"-"`
-	StateType  int    `json:"stateType"` // 1 latest, 2 delay, 3 offline
-	Address    string `json:"address"`   //
-	Port       int    `json:"port"`
-	NodeType   int    `json:"nodeType"` // 1 state, 2 archive
-	ChangeType int    `json:"-"`
-	NodeKey    string `json:"-"`
-}
-
-type ChainHeight struct {
-	ChainId           string       `json:"-"`
-	LatestBlockNumber *hexutil.Big `json:"latestBlockNumber"`
-}
-
-func NewRefresher(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Refresher, error) {
-	log.Printf("Init Refresher etcd endpoints: %v", etcdEndpoints)
+func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discover, error) {
+	log.Printf("Init Discover etcd endpoints: %v", etcdEndpoints)
 	etcdCli, err := clientv3.New(clientv3.Config{
 		Endpoints:   etcdEndpoints,
 		DialTimeout: 5 * time.Second,
@@ -60,7 +45,7 @@ func NewRefresher(ctx context.Context, etcdEndpoints []string, keyPrefix string)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	refresher := &Refresher{
+	refresher := &Discover{
 		etcdClient:  etcdCli,
 		watchCancel: cancel,
 		quit:        make(chan struct{}),
@@ -70,13 +55,13 @@ func NewRefresher(ctx context.Context, etcdEndpoints []string, keyPrefix string)
 	return refresher, err
 }
 
-func (r *Refresher) Close() error {
+func (r *Discover) Close() error {
 	close(r.quit)
 	r.watchCancel()
 	return r.etcdClient.Close()
 }
 
-func (r *Refresher) Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, error) {
+func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-chan *discovery.ChainHeight, error) {
 	// Initial request to get the current value of the key
 
 	resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
@@ -85,15 +70,15 @@ func (r *Refresher) Init(ctx context.Context) (<-chan *TargetNode, <-chan *Chain
 		log.Printf("failed to get initial value for: %+v", err)
 		return nil, nil, err
 	}
-	nodeChannel := make(chan *TargetNode, 1000)
-	heightChannel := make(chan *ChainHeight, 1000)
+	nodeChannel := make(chan *discovery.TargetNode, 1000)
+	heightChannel := make(chan *discovery.ChainHeight, 1000)
 	r.nodeChannel = nodeChannel
 	r.heightChan = heightChannel
 	for _, kv := range resp.Kvs {
 		if match := nodesPattern.FindStringSubmatch(string(kv.Key)); match != nil {
 			chainId := match[nodesPattern.SubexpIndex("chain")]
 			nodeKey := match[nodesPattern.SubexpIndex("node")]
-			var node TargetNode
+			var node discovery.TargetNode
 			err := json.Unmarshal(kv.Value, &node)
 			if err != nil {
 				log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", kv.Key, err, chainId)
@@ -107,7 +92,7 @@ func (r *Refresher) Init(ctx context.Context) (<-chan *TargetNode, <-chan *Chain
 		}
 		if match := lastBlockPattern.FindStringSubmatch(string(kv.Key)); match != nil {
 			chainId := match[lastBlockPattern.SubexpIndex("chain")]
-			var height ChainHeight
+			var height discovery.ChainHeight
 			err := json.Unmarshal(kv.Value, &height)
 			if err != nil {
 				log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", kv.Key, err, chainId)
@@ -125,7 +110,7 @@ func (r *Refresher) Init(ctx context.Context) (<-chan *TargetNode, <-chan *Chain
 
 }
 
-func (r *Refresher) watchConfig(ctx context.Context) {
+func (r *Discover) watchConfig(ctx context.Context) {
 	watchChan := r.etcdClient.Watch(ctx, r.keyPrefix, clientv3.WithPrefix(), clientv3.WithPrevKV(), clientv3.WithRev(r.watchRevision))
 	for {
 		select {
@@ -139,7 +124,7 @@ func (r *Refresher) watchConfig(ctx context.Context) {
 					if match := nodesPattern.FindStringSubmatch(string(key)); match != nil {
 						chainId := match[nodesPattern.SubexpIndex("chain")]
 						nodeKey := match[nodesPattern.SubexpIndex("node")]
-						var node TargetNode
+						var node discovery.TargetNode
 						err := json.Unmarshal(value, &node)
 						if err != nil {
 							log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", key, err, chainId)
@@ -153,7 +138,7 @@ func (r *Refresher) watchConfig(ctx context.Context) {
 					}
 					if match := lastBlockPattern.FindStringSubmatch(string(key)); match != nil {
 						chainId := match[lastBlockPattern.SubexpIndex("chain")]
-						var height ChainHeight
+						var height discovery.ChainHeight
 						err := json.Unmarshal(value, &height)
 						if err != nil {
 							log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", key, err, chainId)
@@ -169,7 +154,7 @@ func (r *Refresher) watchConfig(ctx context.Context) {
 					if match := nodesPattern.FindStringSubmatch(string(key)); match != nil {
 						chainId := match[nodesPattern.SubexpIndex("chain")]
 						nodeKey := match[nodesPattern.SubexpIndex("node")]
-						var node TargetNode
+						var node discovery.TargetNode
 						err := json.Unmarshal(value, &node)
 						if err != nil {
 							log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", key, err, chainId)

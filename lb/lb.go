@@ -7,6 +7,8 @@ import (
 	"net/http/httputil"
 	"time"
 
+	"github.com/Chaintable/nodex-proxy/discovery"
+	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
@@ -14,7 +16,6 @@ import (
 	"github.com/Chaintable/nodex-proxy/lb/selector/random"
 	"github.com/Chaintable/nodex-proxy/lb/selector/roundrobin"
 	"github.com/Chaintable/nodex-proxy/lib/log"
-	"github.com/Chaintable/nodex-proxy/node"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
 	"go.opentelemetry.io/otel/trace"
@@ -22,14 +23,14 @@ import (
 
 type LoadBalancer struct {
 	ctx              context.Context
-	nodeRefresherMap map[string]*node.Refresher
+	nodeRefresherMap map[string]*etcd.Discover
 	BufferPool       httputil.BufferPool
 	Config           types.Config
 	RpcMethodHandler types.RPCMethodHandlerI
 	Limiter          jsonrpc.Limiter
 	nodeSelector     selector.Strategy
-	nodeChannel      <-chan *node.TargetNode
-	heightChannel    <-chan *node.ChainHeight
+	nodeChannel      <-chan *discovery.TargetNode
+	heightChannel    <-chan *discovery.ChainHeight
 }
 
 var headerUserAgent = "User-Agent"
@@ -46,7 +47,7 @@ const (
 	DBKServerVersion = "x-dbk-server-version"
 )
 
-func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*node.Refresher, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, nodeChannel <-chan *node.TargetNode, heightChannel <-chan *node.ChainHeight) *LoadBalancer {
+func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
 	case "round_robin":
