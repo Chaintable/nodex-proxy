@@ -17,10 +17,11 @@ type Refresher struct {
 
 	quit chan struct{}
 
-	backends    []string
-	nodeChannel chan *TargetNode
-	heightChan  chan *ChainHeight
-	keyPrefix   string
+	backends      []string
+	nodeChannel   chan *TargetNode
+	heightChan    chan *ChainHeight
+	keyPrefix     string
+	watchRevision int64
 }
 
 const (
@@ -117,6 +118,7 @@ func (r *Refresher) Init(ctx context.Context) (<-chan *TargetNode, <-chan *Chain
 			continue
 		}
 	}
+	r.watchRevision = resp.Header.Revision
 	go r.watchConfig(ctx)
 
 	return nodeChannel, heightChannel, nil
@@ -124,7 +126,7 @@ func (r *Refresher) Init(ctx context.Context) (<-chan *TargetNode, <-chan *Chain
 }
 
 func (r *Refresher) watchConfig(ctx context.Context) {
-	watchChan := r.etcdClient.Watch(ctx, r.keyPrefix, clientv3.WithPrefix(), clientv3.WithPrevKV())
+	watchChan := r.etcdClient.Watch(ctx, r.keyPrefix, clientv3.WithPrefix(), clientv3.WithPrevKV(), clientv3.WithRev(r.watchRevision))
 	for {
 		select {
 		case <-r.quit:
