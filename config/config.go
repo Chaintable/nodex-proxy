@@ -16,8 +16,6 @@ type Config struct {
 
 type ReplicaNotificationSetting struct {
 	EtcdEndpoints []string `yaml:"etcd_endpoints"`
-	Key           string   `yaml:"key"`
-	ChainID       string   `yaml:"chain_id"`
 }
 
 var defaultConfig = Config{
