@@ -13,6 +13,8 @@ import (
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -65,6 +67,12 @@ func main() {
 		chainId := chi.URLParam(r, "chainId")
 		lb.ServeHTTP(rw, r, chainId)
 	})
+	router.Handle("/metrics", promhttp.InstrumentMetricHandler(
+		prometheus.DefaultRegisterer, promhttp.HandlerFor(
+			prometheus.DefaultGatherer,
+			promhttp.HandlerOpts{MaxRequestsInFlight: 1024},
+		),
+	))
 	server := http.Server{
 		Handler: router,
 	}

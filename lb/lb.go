@@ -3,6 +3,7 @@ package lb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httputil"
 	"time"
@@ -93,11 +94,21 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
 	requestContext := lb.generateRequestContext(r)
+	if requestContext.Error != nil {
+		_, object, _ := ejrpc.BadRequest(requestContext.Error)
+		data, _ := json.Marshal(object)
+		w.WriteHeader(200)
+		w.Write(data)
+		return
+	}
 	requestContext.ChainId = chainID
 
 	targetNode, err := lb.nodeSelector.GetNode(requestContext, "")
 	if err != nil {
-		http.Error(w, "No backends available", http.StatusServiceUnavailable)
+		_, object, _ := ejrpc.BadRequest(errors.New("no backends available"))
+		data, _ := json.Marshal(object)
+		w.WriteHeader(200)
+		w.Write(data)
 		return
 	}
 
