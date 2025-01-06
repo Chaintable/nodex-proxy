@@ -22,7 +22,7 @@ func newLabelNames(labelNames []string, name ...string) []string {
 }
 
 var (
-	commonLabelNames                 = []string{"host", "target"}
+	commonLabelNames                 = []string{"host", "target", "chain_id"}
 	methodCommonLabelNames           = newLabelNames(commonLabelNames, "method")
 	methodSourceDappCommonLabelNames = newLabelNames(methodCommonLabelNames, "sourcedapp")
 )
@@ -31,9 +31,9 @@ type CommonLabelMetrics struct {
 	labelValues []string
 }
 
-func NewCommonLabelMetrics(host types.ProcessorHost, target types.ProcessorTarget) CommonLabelMetrics {
+func NewCommonLabelMetrics(host types.ProcessorHost, target types.ProcessorTarget, chainID string) CommonLabelMetrics {
 	return CommonLabelMetrics{
-		labelValues: []string{"host", string(host), "target", string(target)},
+		labelValues: []string{"host", string(host), "target", string(target), "chain_id", chainID},
 	}
 }
 

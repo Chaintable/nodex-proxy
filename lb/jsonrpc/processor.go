@@ -110,7 +110,7 @@ func logRequest() types.PreProcessorFunc {
 
 func updatePreprocessorMetrics() types.PreProcessorFunc {
 	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
-		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target)
+		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, processData.ChainId)
 		sourceDapp := request.Header.Get(headerDappKey)
 		m.IncrCallsStarted(processData.Method, sourceDapp)
 		return request, response, processData
@@ -221,7 +221,7 @@ func observabilityLog(config types.ObservabilityLogProcessorConfig) types.PostPr
 }
 func updatePostProcessorMetrics() types.PostProcessorFunc {
 	return func(request *http.Request, response *http.Response, processData *types.RequestContext) *types.RequestContext {
-		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target)
+		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, processData.ChainId)
 		responseDuration := time.Since(processData.Start)
 
 		// basic request statistics
