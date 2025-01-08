@@ -57,7 +57,7 @@ var defaultConfig = Config{
 	OfficialNodeURL:        "",
 	BlockReaderCacheTTL:    1,
 	DefaultRPCTimeout:      5000,
-	ConnectionPoolSize:     2000,
+	ConnectionPoolSize:     1000,
 	RPCMethodTimeoutConfig: map[string]int{},
 	Processor: ProcessorConfig{
 		ObservabilityLog: ObservabilityLogProcessorConfig{
