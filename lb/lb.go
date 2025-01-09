@@ -172,6 +172,16 @@ func (lb *LoadBalancer) generateRequestContext(request *http.Request) *types.Req
 	requestContext := lb.beforeProcess(request)
 
 	requestContext.RawRequestBody, requestContext.RequestBody, requestContext.RequestBodySize, requestContext.Error = ejrpc.ParseRequest(request)
+	requestContext.IsBatch = len(requestContext.RequestBody) > 1
+	if !requestContext.IsBatch {
+		requestContext.Method = requestContext.RequestBody[0].Method
+	}
+	for _, req := range requestContext.RequestBody {
+		if requestContext.Error = ejrpc.ValidateRequest(req); requestContext.Error != nil {
+			_, requestContext.ResponseBody, requestContext.Error = ejrpc.BadRequest(requestContext.Error)
+			break
+		}
+	}
 	if requestContext.Error != nil {
 		return requestContext
 	}

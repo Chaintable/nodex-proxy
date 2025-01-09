@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	npprof "net/http/pprof"
 
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
@@ -67,6 +68,11 @@ func main() {
 		chainId := chi.URLParam(r, "chainId")
 		lb.ServeHTTP(rw, r, chainId)
 	})
+	router.HandleFunc("/debug/pprof/", npprof.Index)
+	router.HandleFunc("/debug/pprof/cmdline", npprof.Cmdline)
+	router.HandleFunc("/debug/pprof/profile", npprof.Profile)
+	router.HandleFunc("/debug/pprof/symbol", npprof.Symbol)
+	router.HandleFunc("/debug/pprof/trace", npprof.Trace)
 	router.Handle("/metrics", promhttp.InstrumentMetricHandler(
 		prometheus.DefaultRegisterer, promhttp.HandlerFor(
 			prometheus.DefaultGatherer,
