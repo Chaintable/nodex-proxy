@@ -91,7 +91,7 @@ func NewTransport(
 		rpcMethodHttpTransportMap: rpcMethodTransportMap,
 		logger:                    logger,
 		preProcessor: types.PreProcessorProcessors([]types.PreProcessorFunc{
-			parseJRPCRequestBody(),
+			//parseJRPCRequestBody(),
 			logRequest(),
 			jRPCMethodDenied(config.Processor.MethodDenied),
 			checkJRPCRequestBody(config.Processor.MethodNameChecker),
