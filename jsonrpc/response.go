@@ -2,11 +2,12 @@ package jsonrpc
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/goccy/go-json"
 )
 
 func TooManyRequestsResponse() (resp *http.Response, respObject *ResponseObject, err error) {

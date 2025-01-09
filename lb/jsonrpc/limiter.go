@@ -22,9 +22,10 @@ package jsonrpc
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"sync"
+
+	"github.com/goccy/go-json"
 
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"

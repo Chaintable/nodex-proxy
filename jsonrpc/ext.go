@@ -22,10 +22,11 @@ package jsonrpc
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+
+	"github.com/goccy/go-json"
 )
 
 var (
