@@ -59,12 +59,12 @@ func newHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) 
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          30 * connectionPoolSize,
-		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          1,
+		IdleConnTimeout:       1 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
 		ResponseHeaderTimeout: timeout,
-		MaxIdleConnsPerHost:   connectionPoolSize,
+		MaxIdleConnsPerHost:   1,
 	}
 }
 
