@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"strconv"
@@ -26,15 +27,19 @@ import (
 )
 
 type LoadBalancer struct {
-	ctx              context.Context
-	nodeRefresherMap map[string]*etcd.Discover
-	BufferPool       httputil.BufferPool
-	Config           types.Config
-	RpcMethodHandler types.RPCMethodHandlerI
-	Limiter          jsonrpc.Limiter
-	nodeSelector     selector.Strategy
-	nodeChannel      <-chan *discovery.TargetNode
-	heightChannel    <-chan *discovery.ChainHeight
+	ctx                   context.Context
+	nodeRefresherMap      map[string]*etcd.Discover
+	BufferPool            httputil.BufferPool
+	Config                types.Config
+	RpcMethodHandler      types.RPCMethodHandlerI
+	Limiter               jsonrpc.Limiter
+	nodeSelector          selector.Strategy
+	nodeChannel           <-chan *discovery.TargetNode
+	heightChannel         <-chan *discovery.ChainHeight
+	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
+	preProcessors         types.PreProcessorProcessors
+	postProcessors        types.PostProcessorProcessors
+	defaultHttpTransport  *http.Transport
 }
 
 var headerUserAgent = "User-Agent"
@@ -59,15 +64,30 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 	case "random":
 		nodeSelector = random.New(utils.PickNodes)
 	}
+	rpcMethodTransportMap := map[ejrpc.RPCMethod]*http.Transport{}
+	for m, t := range config.RPCMethodTimeoutConfig {
+		if t <= 0 {
+			t = config.DefaultRPCTimeout
+		}
+		rpcMethodTransportMap[ejrpc.RPCMethod(m)] = NewHttpTransportWithTimeout(time.Duration(t)*time.Millisecond, config.ConnectionPoolSize)
+	}
+	preProcessors := jsonrpc.GetPreProcessor(&config, rpcMethodHandler, limiter)
+	postProcessors := jsonrpc.GetPostProcessor(&config, rpcMethodHandler)
+	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
 	return &LoadBalancer{
-		ctx:              ctx,
-		nodeRefresherMap: nodeRefresherMap, BufferPool: utils.NewBufferPool(),
-		Config:           config,
-		RpcMethodHandler: rpcMethodHandler,
-		Limiter:          limiter,
-		nodeSelector:     nodeSelector,
-		nodeChannel:      nodeChannel,
-		heightChannel:    heightChannel,
+		ctx:                   ctx,
+		nodeRefresherMap:      nodeRefresherMap,
+		BufferPool:            utils.NewBufferPool(),
+		Config:                config,
+		RpcMethodHandler:      rpcMethodHandler,
+		Limiter:               limiter,
+		nodeSelector:          nodeSelector,
+		nodeChannel:           nodeChannel,
+		heightChannel:         heightChannel,
+		rpcMethodTransportMap: rpcMethodTransportMap,
+		preProcessors:         preProcessors,
+		postProcessors:        postProcessors,
+		defaultHttpTransport:  NewHttpTransportWithTimeout(defaultTimeout, config.ConnectionPoolSize),
 	}
 }
 
@@ -131,7 +151,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 
 	targetNode, err := lb.nodeSelector.GetNode(requestContext, "")
 	if err != nil {
-		_, object, _ := ejrpc.BadRequest(errors.New("no backends available"))
+		_, object, _ := ejrpc.BadGateway(errors.New("no backends available"))
 		data, _ := json.Marshal(object)
 		w.WriteHeader(200)
 		w.Write(data)
@@ -141,7 +161,14 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	reverseProxy := &httputil.ReverseProxy{
 		Director:   lb.forwardDirector(targetNode, r),
 		BufferPool: lb.BufferPool,
-		Transport:  jsonrpc.NewTransport(requestContext, lb.RpcMethodHandler, lb.Limiter, log.Logger(), &lb.Config),
+		Transport: jsonrpc.NewTransport(requestContext,
+			lb.Limiter,
+			log.Logger(),
+			&lb.Config,
+			lb.rpcMethodTransportMap,
+			lb.defaultHttpTransport,
+			lb.preProcessors,
+			lb.postProcessors),
 	}
 
 	reverseProxy.ServeHTTP(w, r)
@@ -175,7 +202,6 @@ func (lb *LoadBalancer) generateRequestContext(request *http.Request) *types.Req
 	if requestContext.Error != nil {
 		return requestContext
 	}
-
 	requestContext.IsBatch = len(requestContext.RequestBody) > 1
 	if !requestContext.IsBatch {
 		requestContext.Method = requestContext.RequestBody[0].Method
@@ -210,7 +236,6 @@ func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *t
 		}
 		var ctx types.BlockContext
 		if err := json.Unmarshal(lastBytes, &ctx); err != nil {
-			log.Error("failed to unmarshal params", err)
 			break
 		}
 		return &ctx
@@ -255,4 +280,21 @@ func originHostFromContext(ctx context.Context, defaultHost string) string {
 		return originHost
 	}
 	return defaultHost
+}
+
+func NewHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) *http.Transport {
+	return &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout:   timeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          20 * connectionPoolSize,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		ResponseHeaderTimeout: timeout,
+		MaxIdleConnsPerHost:   connectionPoolSize,
+	}
 }

@@ -51,64 +51,50 @@ type transport struct {
 	props         propagation.TextMapPropagator
 }
 
-func newHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) *http.Transport {
-	return &http.Transport{
-		Proxy: nil,
-		DialContext: (&net.Dialer{
-			Timeout:   timeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          20 * connectionPoolSize,
-		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: time.Second,
-		ResponseHeaderTimeout: timeout,
-		MaxIdleConnsPerHost:   connectionPoolSize,
+func GetPreProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter Limiter) types.PreProcessorProcessors {
+	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
+	return []types.PreProcessorFunc{
+		logRequest(),
+		jRPCMethodDenied(config.Processor.MethodDenied),
+		checkJRPCRequestBody(config.Processor.MethodNameChecker),
+		updatePreprocessorMetrics(),
+		rpcMethodLimiter(limiter),
+		rpcMethodHandlerProcessor(rpcMethodHandler.PreHandlerMap()),
+		requestMirror(defaultTimeout, config.Processor.RequestMirror),
+	}
+}
+
+func GetPostProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHandlerI) types.PostProcessorProcessors {
+	return []types.PostProcessorFunc{
+		parseJRPCResponseBody(),
+		logResponse(),
+		rpcMethodHandlerPostProcessor(rpcMethodHandler.PostHandlerMap()),
+		observabilityLog(config.Processor.ObservabilityLog),
+		updatePostProcessorMetrics(),
 	}
 }
 
 func NewTransport(
 	requestContext *types.RequestContext,
-	rpcMethodHandler types.RPCMethodHandlerI,
 	limiter Limiter,
 	logger *zap.Logger,
 	config *types.Config,
+	rpcMethodTransportMap map[jsonrpc.RPCMethod]*http.Transport,
+	defaultHttpTransport *http.Transport,
+	preProcessors types.PreProcessorProcessors,
+	postProcessors types.PostProcessorProcessors,
 ) *transport {
 	initTracer(*config)
-	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
-	rpcMethodTransportMap := map[jsonrpc.RPCMethod]*http.Transport{}
-	for m, t := range config.RPCMethodTimeoutConfig {
-		if t <= 0 {
-			t = config.DefaultRPCTimeout
-		}
-		rpcMethodTransportMap[jsonrpc.RPCMethod(m)] = newHttpTransportWithTimeout(time.Duration(t)*time.Millisecond, config.ConnectionPoolSize)
-	}
 	return &transport{
 		requestContext:            requestContext,
 		limiter:                   limiter,
-		defaultHttpTransport:      newHttpTransportWithTimeout(defaultTimeout, config.ConnectionPoolSize),
+		defaultHttpTransport:      defaultHttpTransport,
 		rpcMethodHttpTransportMap: rpcMethodTransportMap,
 		logger:                    logger,
-		preProcessor: types.PreProcessorProcessors([]types.PreProcessorFunc{
-			//parseJRPCRequestBody(),
-			logRequest(),
-			jRPCMethodDenied(config.Processor.MethodDenied),
-			checkJRPCRequestBody(config.Processor.MethodNameChecker),
-			updatePreprocessorMetrics(),
-			rpcMethodLimiter(limiter),
-			rpcMethodHandlerProcessor(rpcMethodHandler.PreHandlerMap()),
-			requestMirror(defaultTimeout, config.Processor.RequestMirror),
-		}).Call,
-		postProcessor: types.PostProcessorProcessors([]types.PostProcessorFunc{
-			parseJRPCResponseBody(),
-			logResponse(),
-			rpcMethodHandlerPostProcessor(rpcMethodHandler.PostHandlerMap()),
-			observabilityLog(config.Processor.ObservabilityLog),
-			updatePostProcessorMetrics(),
-		}).Call,
-		config: config,
-		props:  otel.GetTextMapPropagator(),
+		preProcessor:              preProcessors.Call,
+		postProcessor:             postProcessors.Call,
+		config:                    config,
+		props:                     otel.GetTextMapPropagator(),
 	}
 }
 
