@@ -151,7 +151,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 
 	targetNode, err := lb.nodeSelector.GetNode(requestContext, "")
 	if err != nil {
-		_, object, _ := ejrpc.BadRequest(errors.New("no backends available"))
+		_, object, _ := ejrpc.BadGateway(errors.New("no backends available"))
 		data, _ := json.Marshal(object)
 		w.WriteHeader(200)
 		w.Write(data)
