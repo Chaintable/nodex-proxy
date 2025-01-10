@@ -81,8 +81,9 @@ func NewTransport(
 			observabilityLog(config.Processor.ObservabilityLog),
 			updatePostProcessorMetrics(),
 		}).Call,
-		config: config,
-		props:  otel.GetTextMapPropagator(),
+		config:               config,
+		props:                otel.GetTextMapPropagator(),
+		defaultHttpTransport: defaultHttpTransport,
 	}
 }
 
