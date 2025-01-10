@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
@@ -112,6 +115,19 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 	}
 }
 
+func parseNumber(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+
+	// 判断是否以 "0x" 或 "0X" 开头
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		// 截掉前缀，再以 16 进制解析
+		return strconv.ParseInt(s[2:], 16, 64)
+	}
+
+	// 否则按 10 进制解析
+	return strconv.ParseInt(s, 10, 64)
+}
+
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
 	requestContext := lb.generateRequestContext(r)
 	if requestContext.Error != nil {
@@ -121,7 +137,17 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 		w.Write(data)
 		return
 	}
-	requestContext.ChainId = chainID
+
+	chainIDNum, err := parseNumber(chainID)
+	if err != nil {
+		_, object, _ := ejrpc.BadRequest(errors.New("invalid chain id"))
+		data, _ := json.Marshal(object)
+		w.WriteHeader(200)
+		w.Write(data)
+		return
+	}
+
+	requestContext.ChainId = fmt.Sprint(chainIDNum)
 
 	targetNode, err := lb.nodeSelector.GetNode(requestContext, "")
 	if err != nil {
