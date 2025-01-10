@@ -37,9 +37,8 @@ import (
 // transport used as default reverse-proxy transport that handle
 // incoming requests or outgoing responses.
 type transport struct {
-	requestContext            *types.RequestContext
-	defaultHttpTransport      *http.Transport
-	rpcMethodHttpTransportMap map[jsonrpc.RPCMethod]*http.Transport
+	requestContext       *types.RequestContext
+	defaultHttpTransport *http.Transport
 
 	limiter Limiter
 
@@ -51,45 +50,20 @@ type transport struct {
 	props         propagation.TextMapPropagator
 }
 
-func newHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) *http.Transport {
-	return &http.Transport{
-		Proxy: nil,
-		DialContext: (&net.Dialer{
-			Timeout:   timeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          20 * connectionPoolSize,
-		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: time.Second,
-		ResponseHeaderTimeout: timeout,
-		MaxIdleConnsPerHost:   connectionPoolSize,
-	}
-}
-
 func NewTransport(
 	requestContext *types.RequestContext,
 	rpcMethodHandler types.RPCMethodHandlerI,
+	defaultHttpTransport *http.Transport,
 	limiter Limiter,
 	logger *zap.Logger,
 	config *types.Config,
 ) *transport {
 	initTracer(*config)
 	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
-	rpcMethodTransportMap := map[jsonrpc.RPCMethod]*http.Transport{}
-	for m, t := range config.RPCMethodTimeoutConfig {
-		if t <= 0 {
-			t = config.DefaultRPCTimeout
-		}
-		rpcMethodTransportMap[jsonrpc.RPCMethod(m)] = newHttpTransportWithTimeout(time.Duration(t)*time.Millisecond, config.ConnectionPoolSize)
-	}
 	return &transport{
-		requestContext:            requestContext,
-		limiter:                   limiter,
-		defaultHttpTransport:      newHttpTransportWithTimeout(defaultTimeout, config.ConnectionPoolSize),
-		rpcMethodHttpTransportMap: rpcMethodTransportMap,
-		logger:                    logger,
+		requestContext: requestContext,
+		limiter:        limiter,
+		logger:         logger,
 		preProcessor: types.PreProcessorProcessors([]types.PreProcessorFunc{
 			//parseJRPCRequestBody(),
 			logRequest(),
@@ -126,15 +100,8 @@ func (t *transport) RoundTrip(request *http.Request) (response *http.Response, e
 		_, upstreamSpan := tracer.Start(
 			ctx,
 			"Upstream", trace.WithAttributes(attribute.String("rpc_method", string(processData.Method))))
-		var (
-			httpTransport *http.Transport
-			ok            bool
-		)
-		if httpTransport, ok = t.rpcMethodHttpTransportMap[processData.Method]; !ok {
-			httpTransport = t.defaultHttpTransport
-		}
 		t.props.Inject(ctx, propagation.HeaderCarrier(request.Header))
-		response, processData.Error = httpTransport.RoundTrip(request)
+		response, processData.Error = t.defaultHttpTransport.RoundTrip(request)
 		upstreamSpan.End()
 		if processData.Error != nil {
 			nerr, ok := processData.Error.(net.Error)
@@ -147,6 +114,6 @@ func (t *transport) RoundTrip(request *http.Request) (response *http.Response, e
 	}
 
 POSTPROCESS:
-	processData = t.postProcessor(request, response, processData)
+	t.postProcessor(request, response, processData)
 	return response, nil
 }

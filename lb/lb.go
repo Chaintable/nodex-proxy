@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"strconv"
@@ -26,15 +27,16 @@ import (
 )
 
 type LoadBalancer struct {
-	ctx              context.Context
-	nodeRefresherMap map[string]*etcd.Discover
-	BufferPool       httputil.BufferPool
-	Config           types.Config
-	RpcMethodHandler types.RPCMethodHandlerI
-	Limiter          jsonrpc.Limiter
-	nodeSelector     selector.Strategy
-	nodeChannel      <-chan *discovery.TargetNode
-	heightChannel    <-chan *discovery.ChainHeight
+	ctx                  context.Context
+	nodeRefresherMap     map[string]*etcd.Discover
+	BufferPool           httputil.BufferPool
+	Config               types.Config
+	RpcMethodHandler     types.RPCMethodHandlerI
+	Limiter              jsonrpc.Limiter
+	nodeSelector         selector.Strategy
+	nodeChannel          <-chan *discovery.TargetNode
+	heightChannel        <-chan *discovery.ChainHeight
+	defaultHttpTransport *http.Transport
 }
 
 var headerUserAgent = "User-Agent"
@@ -51,6 +53,22 @@ const (
 	DBKServerVersion = "x-dbk-server-version"
 )
 
+func newHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) *http.Transport {
+	return &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout:   timeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          20 * connectionPoolSize,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		ResponseHeaderTimeout: timeout,
+		MaxIdleConnsPerHost:   connectionPoolSize,
+	}
+}
 func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
@@ -62,12 +80,13 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 	return &LoadBalancer{
 		ctx:              ctx,
 		nodeRefresherMap: nodeRefresherMap, BufferPool: utils.NewBufferPool(),
-		Config:           config,
-		RpcMethodHandler: rpcMethodHandler,
-		Limiter:          limiter,
-		nodeSelector:     nodeSelector,
-		nodeChannel:      nodeChannel,
-		heightChannel:    heightChannel,
+		Config:               config,
+		RpcMethodHandler:     rpcMethodHandler,
+		Limiter:              limiter,
+		nodeSelector:         nodeSelector,
+		nodeChannel:          nodeChannel,
+		heightChannel:        heightChannel,
+		defaultHttpTransport: newHttpTransportWithTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond, config.ConnectionPoolSize),
 	}
 }
 
@@ -141,7 +160,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	reverseProxy := &httputil.ReverseProxy{
 		Director:   lb.forwardDirector(targetNode, r),
 		BufferPool: lb.BufferPool,
-		Transport:  jsonrpc.NewTransport(requestContext, lb.RpcMethodHandler, lb.Limiter, log.Logger(), &lb.Config),
+		Transport:  jsonrpc.NewTransport(requestContext, lb.RpcMethodHandler, lb.defaultHttpTransport, lb.Limiter, log.Logger(), &lb.Config),
 	}
 
 	reverseProxy.ServeHTTP(w, r)
