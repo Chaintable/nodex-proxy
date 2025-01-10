@@ -57,7 +57,7 @@ const (
 	DBKServerVersion = "x-dbk-server-version"
 )
 
-func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
+func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
 	case "round_robin":
@@ -82,7 +82,7 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		Config:                config,
 		RpcMethodHandler:      rpcMethodHandler,
 		Limiter:               limiter,
-		HeightMap:             jsonrpc.NewHeightMap(),
+		HeightMap:             heightMap,
 		nodeSelector:          nodeSelector,
 		nodeChannel:           nodeChannel,
 		heightChannel:         heightChannel,
