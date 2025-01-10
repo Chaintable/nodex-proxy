@@ -43,6 +43,8 @@ type transport struct {
 
 	limiter Limiter
 
+	heightMap HeightMap
+
 	logger *zap.Logger
 	config *types.Config
 
@@ -77,6 +79,7 @@ func GetPostProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHand
 func NewTransport(
 	requestContext *types.RequestContext,
 	limiter Limiter,
+	heightMap HeightMap,
 	logger *zap.Logger,
 	config *types.Config,
 	rpcMethodTransportMap map[jsonrpc.RPCMethod]*http.Transport,
