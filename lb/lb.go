@@ -229,7 +229,6 @@ func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *t
 		}
 		var ctx types.BlockContext
 		if err := json.Unmarshal(lastBytes, &ctx); err != nil {
-			log.Error("failed to unmarshal params", err)
 			break
 		}
 		return &ctx
