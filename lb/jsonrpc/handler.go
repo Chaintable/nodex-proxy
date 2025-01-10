@@ -37,8 +37,9 @@ import (
 // transport used as default reverse-proxy transport that handle
 // incoming requests or outgoing responses.
 type transport struct {
-	requestContext       *types.RequestContext
-	defaultHttpTransport *http.Transport
+	requestContext            *types.RequestContext
+	defaultHttpTransport      *http.Transport
+	rpcMethodHttpTransportMap map[jsonrpc.RPCMethod]*http.Transport
 
 	limiter Limiter
 
@@ -50,40 +51,50 @@ type transport struct {
 	props         propagation.TextMapPropagator
 }
 
+func GetPreProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter Limiter) types.PreProcessorProcessors {
+	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
+	return []types.PreProcessorFunc{
+		logRequest(),
+		jRPCMethodDenied(config.Processor.MethodDenied),
+		checkJRPCRequestBody(config.Processor.MethodNameChecker),
+		updatePreprocessorMetrics(),
+		rpcMethodLimiter(limiter),
+		rpcMethodHandlerProcessor(rpcMethodHandler.PreHandlerMap()),
+		requestMirror(defaultTimeout, config.Processor.RequestMirror),
+	}
+}
+
+func GetPostProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHandlerI) types.PostProcessorProcessors {
+	return []types.PostProcessorFunc{
+		parseJRPCResponseBody(),
+		logResponse(),
+		rpcMethodHandlerPostProcessor(rpcMethodHandler.PostHandlerMap()),
+		observabilityLog(config.Processor.ObservabilityLog),
+		updatePostProcessorMetrics(),
+	}
+}
+
 func NewTransport(
 	requestContext *types.RequestContext,
-	rpcMethodHandler types.RPCMethodHandlerI,
-	defaultHttpTransport *http.Transport,
 	limiter Limiter,
 	logger *zap.Logger,
 	config *types.Config,
+	rpcMethodTransportMap map[jsonrpc.RPCMethod]*http.Transport,
+	defaultHttpTransport *http.Transport,
+	preProcessors types.PreProcessorProcessors,
+	postProcessors types.PostProcessorProcessors,
 ) *transport {
 	initTracer(*config)
-	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
 	return &transport{
-		requestContext: requestContext,
-		limiter:        limiter,
-		logger:         logger,
-		preProcessor: types.PreProcessorProcessors([]types.PreProcessorFunc{
-			parseJRPCRequestBody(),
-			logRequest(),
-			jRPCMethodDenied(config.Processor.MethodDenied),
-			checkJRPCRequestBody(config.Processor.MethodNameChecker),
-			updatePreprocessorMetrics(),
-			rpcMethodLimiter(limiter),
-			rpcMethodHandlerProcessor(rpcMethodHandler.PreHandlerMap()),
-			requestMirror(defaultTimeout, config.Processor.RequestMirror),
-		}).Call,
-		postProcessor: types.PostProcessorProcessors([]types.PostProcessorFunc{
-			parseJRPCResponseBody(),
-			logResponse(),
-			rpcMethodHandlerPostProcessor(rpcMethodHandler.PostHandlerMap()),
-			observabilityLog(config.Processor.ObservabilityLog),
-			updatePostProcessorMetrics(),
-		}).Call,
-		config:               config,
-		props:                otel.GetTextMapPropagator(),
-		defaultHttpTransport: defaultHttpTransport,
+		requestContext:            requestContext,
+		limiter:                   limiter,
+		defaultHttpTransport:      defaultHttpTransport,
+		rpcMethodHttpTransportMap: rpcMethodTransportMap,
+		logger:                    logger,
+		preProcessor:              preProcessors.Call,
+		postProcessor:             postProcessors.Call,
+		config:                    config,
+		props:                     otel.GetTextMapPropagator(),
 	}
 }
 
@@ -101,8 +112,15 @@ func (t *transport) RoundTrip(request *http.Request) (response *http.Response, e
 		_, upstreamSpan := tracer.Start(
 			ctx,
 			"Upstream", trace.WithAttributes(attribute.String("rpc_method", string(processData.Method))))
+		var (
+			httpTransport *http.Transport
+			ok            bool
+		)
+		if httpTransport, ok = t.rpcMethodHttpTransportMap[processData.Method]; !ok {
+			httpTransport = t.defaultHttpTransport
+		}
 		t.props.Inject(ctx, propagation.HeaderCarrier(request.Header))
-		response, processData.Error = t.defaultHttpTransport.RoundTrip(request)
+		response, processData.Error = httpTransport.RoundTrip(request)
 		upstreamSpan.End()
 		if processData.Error != nil {
 			nerr, ok := processData.Error.(net.Error)
@@ -115,6 +133,6 @@ func (t *transport) RoundTrip(request *http.Request) (response *http.Response, e
 	}
 
 POSTPROCESS:
-	t.postProcessor(request, response, processData)
+	processData = t.postProcessor(request, response, processData)
 	return response, nil
 }
