@@ -33,6 +33,7 @@ type LoadBalancer struct {
 	Config                types.Config
 	RpcMethodHandler      types.RPCMethodHandlerI
 	Limiter               jsonrpc.Limiter
+	HeightMap             jsonrpc.HeightMap
 	nodeSelector          selector.Strategy
 	nodeChannel           <-chan *discovery.TargetNode
 	heightChannel         <-chan *discovery.ChainHeight
@@ -56,7 +57,7 @@ const (
 	DBKServerVersion = "x-dbk-server-version"
 )
 
-func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
+func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
 	case "round_robin":
@@ -81,6 +82,7 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		Config:                config,
 		RpcMethodHandler:      rpcMethodHandler,
 		Limiter:               limiter,
+		HeightMap:             heightMap,
 		nodeSelector:          nodeSelector,
 		nodeChannel:           nodeChannel,
 		heightChannel:         heightChannel,
@@ -110,6 +112,7 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			}
 
 		case chainHeight := <-lb.heightChannel:
+			lb.HeightMap.SetHeight(chainHeight.ChainId, chainHeight.LatestBlockNumber)
 			_ = lb.nodeSelector.UpdateChainHeight(lb.ctx, chainHeight.ChainId, chainHeight.LatestBlockNumber)
 		}
 	}
@@ -163,6 +166,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 		BufferPool: lb.BufferPool,
 		Transport: jsonrpc.NewTransport(requestContext,
 			lb.Limiter,
+			lb.HeightMap,
 			log.Logger(),
 			&lb.Config,
 			lb.rpcMethodTransportMap,

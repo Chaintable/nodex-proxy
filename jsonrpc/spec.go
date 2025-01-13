@@ -68,21 +68,7 @@ const (
 type RPCMethod string
 
 const (
-	EthBlockNumber                         RPCMethod = "eth_blockNumber"
-	EthGetBlockByNumber                    RPCMethod = "eth_getBlockByNumber"
-	EthGetBalance                          RPCMethod = "eth_getBalance"
-	EthGetCode                             RPCMethod = "eth_getCode"
-	EthGetStorageAt                        RPCMethod = "eth_getStorageAt"
-	EthGetTransactionCount                 RPCMethod = "eth_getTransactionCount"
-	EthGetBlockTransactionCountByNumber    RPCMethod = "eth_getBlockTransactionCountByNumber"
-	EthGetUncleCountByBlockNumber          RPCMethod = "eth_getUncleCountByBlockNumber"
-	EthGetTransactionByBlockNumberAndIndex RPCMethod = "eth_getTransactionByBlockNumberAndIndex"
-	EthGetUncleByBlockNumberAndIndex       RPCMethod = "eth_getUncleByBlockNumberAndIndex"
-	EthCall                                RPCMethod = "eth_call"
-	EthMultiCall                           RPCMethod = "eth_multiCall"
-	EthChainId                             RPCMethod = "eth_chainId"
-	NetVersion                             RPCMethod = "net_version"
-	EthGetLogs                             RPCMethod = "eth_getLogs"
+	GetLatestBlock RPCMethod = "getLatestBlock"
 )
 
 // ErrorCode is a json rpc 2.0 error code.

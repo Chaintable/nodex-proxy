@@ -2,6 +2,8 @@ package jsonrpc
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -279,15 +281,60 @@ func paramsCountLimit() types.PreProcessorFunc {
 }
 
 type GeneralRPCMethodHandler struct {
-	Config *types.Config
+	Config    *types.Config
+	HeightMap HeightMap
 }
 
 func (e *GeneralRPCMethodHandler) PreHandlerMap() map[jsonrpc.RPCMethod]types.PreProcessorFunc {
-	return map[jsonrpc.RPCMethod]types.PreProcessorFunc{}
+	return map[jsonrpc.RPCMethod]types.PreProcessorFunc{
+		jsonrpc.GetLatestBlock: getLatestBlock(e.HeightMap),
+	}
 }
 
 func (e *GeneralRPCMethodHandler) PostHandlerMap() map[jsonrpc.RPCMethod]types.PostProcessorFunc {
 	return map[jsonrpc.RPCMethod]types.PostProcessorFunc{}
+}
+
+func getLatestBlock(heightMap HeightMap) types.PreProcessorFunc {
+	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
+		if height := heightMap.GetHeight(processData.ChainId); height != nil {
+			// 构造新的 JSON-RPC 请求体
+			requestPayload := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"method":  "getBlockByHeight", // 目标方法名
+				"params": []interface{}{
+					height, // 传入的区块高度
+				},
+				"id": 1, // 可根据实际情况设置
+			}
+
+			// 将新请求体序列化为 JSON
+			rawBytes, err := json.Marshal(requestPayload)
+			if err != nil {
+				response, processData.ResponseBody, processData.Error = jsonrpc.ErrorResponse(
+					http.StatusInternalServerError,
+					&jsonrpc.ErrorObject{
+						Code:    jsonrpc.InternalErrorCode,
+						Message: "Failed to marshal new request body",
+					}, nil,
+				)
+				return request, response, processData
+			}
+			io.Copy(io.Discard, request.Body)
+			request.Body.Close()
+			request.Body = io.NopCloser(bytes.NewReader(rawBytes))
+			request.ContentLength = int64(len(rawBytes))
+			request.Header.Set("Content-Type", "application/json")
+			log.Info("getLatestBlock", log.Any("request", string(rawBytes)))
+
+		} else {
+			response, processData.ResponseBody, processData.Error = jsonrpc.ErrorResponse(http.StatusOK, &jsonrpc.ErrorObject{
+				Code:    jsonrpc.InvalidParamsCode,
+				Message: jsonrpc.InvalidParamsMsg,
+			}, nil)
+		}
+		return request, response, processData
+	}
 }
 
 func copyRequest(dst *http.Request, src *http.Request) {

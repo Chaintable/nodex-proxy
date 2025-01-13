@@ -58,10 +58,11 @@ func main() {
 	}
 
 	limiter := jsonrpc.NewMethodLimiter(config.ProxyConfig.Processor.RateLimiter.RpcMethods)
+	heightMap := jsonrpc.NewHeightMap()
 	lb := lb.NewLoadBalancer(
 		ctx,
 		nodeRefresherMap, *config.ProxyConfig,
-		&jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig}, limiter, nodeChannel, heightChan)
+		&jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig, HeightMap: heightMap}, limiter, heightMap, nodeChannel, heightChan)
 	go lb.BackgroundRefreshNode()
 	router := chi.NewRouter()
 	router.HandleFunc("/{chainId}", func(rw http.ResponseWriter, r *http.Request) {
