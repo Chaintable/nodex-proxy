@@ -2,7 +2,6 @@ package jsonrpc
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 	"regexp"
@@ -309,7 +308,7 @@ func getLatestBlock(heightMap HeightMap) types.PreProcessorFunc {
 			}
 
 			// 将新请求体序列化为 JSON
-			rawBytes, err := json.Marshal(requestPayload)
+			rawBytes, err := nJson.Marshal(requestPayload)
 			if err != nil {
 				response, processData.ResponseBody, processData.Error = jsonrpc.ErrorResponse(
 					http.StatusInternalServerError,
