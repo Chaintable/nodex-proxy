@@ -2,9 +2,9 @@ package lb
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	nJson "github.com/goccy/go-json"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -135,7 +135,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	requestContext := lb.generateRequestContext(r)
 	if requestContext.Error != nil {
 		_, object, _ := ejrpc.BadRequest(requestContext.Error)
-		data, _ := json.Marshal(object)
+		data, _ := nJson.Marshal(object)
 		w.WriteHeader(200)
 		w.Write(data)
 		return
@@ -144,7 +144,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	chainIDNum, err := parseNumber(chainID)
 	if err != nil {
 		_, object, _ := ejrpc.BadRequest(errors.New("invalid chain id"))
-		data, _ := json.Marshal(object)
+		data, _ := nJson.Marshal(object)
 		w.WriteHeader(200)
 		w.Write(data)
 		return
@@ -155,7 +155,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 	targetNode, err := lb.nodeSelector.GetNode(requestContext, "")
 	if err != nil {
 		_, object, _ := ejrpc.BadGateway(errors.New("no backends available"))
-		data, _ := json.Marshal(object)
+		data, _ := nJson.Marshal(object)
 		w.WriteHeader(200)
 		w.Write(data)
 		return
@@ -224,7 +224,7 @@ func (lb *LoadBalancer) generateRequestContext(request *http.Request) *types.Req
 func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {
 	for _, value := range requestBody {
 		var arr []interface{}
-		err := json.Unmarshal(value.Params, &arr)
+		err := nJson.Unmarshal(value.Params, &arr)
 		if err != nil {
 			log.Error("failed to unmarshal params", err)
 			break
@@ -233,13 +233,13 @@ func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			break
 		}
 		lastElem := arr[len(arr)-1]
-		lastBytes, err := json.Marshal(lastElem)
+		lastBytes, err := nJson.Marshal(lastElem)
 		if err != nil {
 			log.Error("failed to marshal params", err)
 			break
 		}
 		var ctx types.BlockContext
-		if err := json.Unmarshal(lastBytes, &ctx); err != nil {
+		if err := nJson.Unmarshal(lastBytes, &ctx); err != nil {
 			break
 		}
 		return &ctx
