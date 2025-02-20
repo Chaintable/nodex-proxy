@@ -87,7 +87,7 @@ func NewTransport(
 	preProcessors types.PreProcessorProcessors,
 	postProcessors types.PostProcessorProcessors,
 ) *transport {
-	initTracer(*config)
+	//initTracer(*config)
 	return &transport{
 		requestContext:            requestContext,
 		limiter:                   limiter,

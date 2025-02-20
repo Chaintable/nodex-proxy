@@ -22,8 +22,8 @@ package jsonrpc
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
+	nJson "github.com/goccy/go-json"
 	"io"
 	"net/http"
 )
@@ -60,7 +60,7 @@ func ParseRequest(r *http.Request) ([]byte, []*RequestObject, int, error) {
 	reqs := make([]*RequestObject, 0)
 	switch {
 	case IsBatch(body):
-		if err := json.Unmarshal(body, &reqs); err != nil {
+		if err := nJson.Unmarshal(body, &reqs); err != nil {
 			return nil, nil, size, ErrParseBatch
 		}
 		return body, reqs, size, nil
@@ -68,7 +68,7 @@ func ParseRequest(r *http.Request) ([]byte, []*RequestObject, int, error) {
 	}
 
 	var req RequestObject
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := nJson.Unmarshal(body, &req); err != nil {
 		return nil, nil, size, ErrParseSingle
 	}
 	reqs = append(reqs, &req)
