@@ -2,15 +2,17 @@ package lb
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	nJson "github.com/goccy/go-json"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"strconv"
 	"strings"
 	"time"
+
+	nJson "github.com/goccy/go-json"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
@@ -217,8 +219,32 @@ func (lb *LoadBalancer) generateRequestContext(request *http.Request) *types.Req
 		}
 	}
 
-	requestContext.BlockContext = lb.parseBlockContext(requestContext.RequestBody)
+	requestContext.BlockContext = lb.ParseBlockContext(requestContext.RequestBody)
 	return requestContext
+}
+
+func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {
+	for _, value := range requestBody {
+		var arr []json.RawMessage
+		err := nJson.Unmarshal(value.Params, &arr)
+		if err != nil {
+			log.Error("failed to unmarshal params", err)
+			break
+		}
+
+		if len(arr) <= 0 {
+			break
+		}
+		lastElem := arr[len(arr)-1]
+
+		var ctx types.BlockContext
+		if err := nJson.Unmarshal(lastElem, &ctx); err != nil {
+			break
+		}
+
+		return &ctx
+	}
+	return nil
 }
 
 func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {

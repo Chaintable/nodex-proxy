@@ -115,6 +115,19 @@ type ResponseObject struct {
 	ID json.RawMessage `json:"id"`
 }
 
+// ResponseObject represents a response object.
+type RawResponseObject struct {
+	// Jsonrpc specifies the version of the JSON-RPC protocol.
+	// Must be exactly "2.0".
+	Jsonrpc string `json:"jsonrpc"`
+	// Error contains the error object if an error occurred while processing the request.
+	Error *ErrorObject `json:"error,omitempty"`
+	// Result contains the result of the called method.
+	Result json.RawMessage `json:"result,omitempty"`
+	// ID contains the client established request id or null.
+	ID json.RawMessage `json:"id"`
+}
+
 // Error implement error interface.
 func (eo *ErrorObject) Error() string {
 	return fmt.Sprintf("code: %v, err_msg: %v", eo.Code, eo.Message)
