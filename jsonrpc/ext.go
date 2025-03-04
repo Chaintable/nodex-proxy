@@ -23,9 +23,10 @@ package jsonrpc
 import (
 	"bytes"
 	"errors"
-	nJson "github.com/goccy/go-json"
 	"io"
 	"net/http"
+
+	nJson "github.com/bytedance/sonic"
 )
 
 var (

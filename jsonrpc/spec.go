@@ -21,8 +21,9 @@
 package jsonrpc
 
 import (
-	"encoding/json"
 	"fmt"
+
+	json "github.com/bytedance/sonic"
 )
 
 // Error codes
@@ -97,9 +98,9 @@ type RequestObject struct {
 	Method RPCMethod `json:"method"`
 	// Params is a structured value that holds the parameter values to be used during
 	// the invocation of the method.
-	Params json.RawMessage `json:"params"`
+	Params json.NoCopyRawMessage `json:"params"`
 	// ID is a unique identifier established by the client.
-	ID json.RawMessage `json:"id"`
+	ID json.NoCopyRawMessage `json:"id"`
 }
 
 // ResponseObject represents a response object.
@@ -112,7 +113,20 @@ type ResponseObject struct {
 	// Result contains the result of the called method.
 	Result interface{} `json:"result,omitempty"`
 	// ID contains the client established request id or null.
-	ID json.RawMessage `json:"id"`
+	ID json.NoCopyRawMessage `json:"id"`
+}
+
+// ResponseObject represents a response object.
+type RawResponseObject struct {
+	// Jsonrpc specifies the version of the JSON-RPC protocol.
+	// Must be exactly "2.0".
+	Jsonrpc string `json:"jsonrpc"`
+	// Error contains the error object if an error occurred while processing the request.
+	Error *ErrorObject `json:"error,omitempty"`
+	// Result contains the result of the called method.
+	Result json.NoCopyRawMessage `json:"result,omitempty"`
+	// ID contains the client established request id or null.
+	ID json.NoCopyRawMessage `json:"id"`
 }
 
 // Error implement error interface.

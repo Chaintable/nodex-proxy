@@ -27,7 +27,7 @@ func ReadBodyDataFromHTTPResponse(resp *http.Response) ([]byte, error) {
 		err  error
 		body []byte
 	)
-	body, resp.Body, err = getReaderData(resp.Body)
+
 	switch resp.Header.Get("Content-Encoding") {
 	case "gzip":
 		log.Debug("The response is gzip encoded")
@@ -45,7 +45,14 @@ func ReadBodyDataFromHTTPResponse(resp *http.Response) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+	default:
+		body = make([]byte, 0, resp.ContentLength)
+		_, err = resp.Body.Read(body)
+		if err != nil {
+			return nil, err
+		}
 	}
+
 	if err != nil {
 		return nil, err
 	}

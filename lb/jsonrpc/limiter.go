@@ -22,9 +22,10 @@ package jsonrpc
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"sync"
+
+	json "github.com/bytedance/sonic"
 
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
@@ -115,7 +116,7 @@ func (ls *methodLimiter) rateLimitUpdateHandler() http.Handler {
 		case http.MethodGet:
 			all := ls.getAllLimits()
 			var body bytes.Buffer
-			err := json.NewEncoder(&body).Encode(&all)
+			err := json.ConfigStd.NewEncoder(&body).Encode(&all)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -125,7 +126,7 @@ func (ls *methodLimiter) rateLimitUpdateHandler() http.Handler {
 			w.Write(body.Bytes())
 		case http.MethodPut:
 			payload := make(map[string]int)
-			err := json.NewDecoder(r.Body).Decode(&payload)
+			err := json.ConfigStd.NewDecoder(r.Body).Decode(&payload)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return

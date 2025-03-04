@@ -3,15 +3,23 @@ package types
 import (
 	"context"
 	"net/http"
+	"reflect"
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
+	"github.com/bytedance/sonic"
+	nJson "github.com/bytedance/sonic"
 	"github.com/ethereum/go-ethereum/rpc"
-	nJson "github.com/goccy/go-json"
 	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
 )
+
+func init() {
+	_ = sonic.Pretouch(reflect.TypeOf(RequestContext{}))
+	_ = sonic.Pretouch(reflect.TypeOf(jsonrpc.RequestObject{}))
+	_ = sonic.Pretouch(reflect.TypeOf(jsonrpc.RawResponseObject{}))
+}
 
 type (
 	ProcessorTarget string

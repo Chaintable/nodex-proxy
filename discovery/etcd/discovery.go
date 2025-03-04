@@ -2,13 +2,14 @@ package etcd
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"regexp"
 	"time"
 
+	json "github.com/bytedance/sonic"
+
 	"github.com/Chaintable/nodex-proxy/discovery"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type Discover struct {

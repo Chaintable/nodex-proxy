@@ -13,7 +13,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
-	nJson "github.com/goccy/go-json"
+	nJson "github.com/bytedance/sonic"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -171,8 +171,9 @@ func parseJRPCResponseBody() types.PostProcessorFunc {
 			if jsonrpc.IsBatch(body) {
 				return processData
 			}
-			processData.ResponseBody = &jsonrpc.ResponseObject{}
-			if processData.Error = nJson.Unmarshal(body, processData.ResponseBody); processData.Error != nil {
+
+			rawBody := &jsonrpc.RawResponseObject{}
+			if processData.Error = nJson.Unmarshal(body, rawBody); processData.Error != nil {
 				log.Error(
 					"parseJRPCResponseBody error",
 					processData.Error,
@@ -181,6 +182,13 @@ func parseJRPCResponseBody() types.PostProcessorFunc {
 				)
 			}
 			processData.ResponseBodySize = len(body)
+
+			processData.ResponseBody = &jsonrpc.ResponseObject{
+				Jsonrpc: rawBody.Jsonrpc,
+				Error:   rawBody.Error,
+				Result:  rawBody.Result,
+				ID:      rawBody.ID,
+			}
 			if processData.ResponseBody.Error != nil {
 				processData.Error = processData.ResponseBody.Error
 			}
