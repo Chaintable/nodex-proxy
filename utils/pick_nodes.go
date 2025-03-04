@@ -6,6 +6,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 type PickNodesFunc func(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node) []*lbnode.Node
@@ -21,8 +22,17 @@ func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archi
 	if len(archiveNodes) == 0 {
 		archiveNodes = stateNodes
 	}
+	// stateNodes strategy:
+	// when Equals and blockNumber is LatestBlockNumber or PendingBlockNumber, return stateNodes
+	// when Equals and blockNumber is less than 64 blocks behind the latest block, return stateNodes
+	// when Equals and blockNumber is more than 64 blocks behind the latest block, return archiveNodes
+	// when Contains, return stateNodes
 	if blockContext != nil {
-		if blockContext.Type == "equal" && blockContext.BlockId.BlockNumber != nil {
+		if blockContext.Type == "Equals" && blockContext.BlockId.BlockNumber != nil {
+			if *blockContext.BlockId.BlockNumber == rpc.LatestBlockNumber ||
+				*blockContext.BlockId.BlockNumber == rpc.PendingBlockNumber {
+				return stateNodes
+			}
 			stateBlockHeightLow := big.NewInt(0)
 			stateBlockHeightLow.Sub(blockHeight.ToInt(), big.NewInt(64))
 			if big.NewInt(blockContext.BlockId.BlockNumber.Int64()).Cmp(stateBlockHeightLow) >= 0 {
@@ -30,6 +40,8 @@ func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archi
 			} else {
 				return archiveNodes
 			}
+		} else if blockContext.Type == "Contains" {
+			return stateNodes
 		} else {
 			return archiveNodes
 		}
