@@ -13,7 +13,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
-	nJson "github.com/goccy/go-json"
+	nJson "github.com/bytedance/sonic"
 	"go.opentelemetry.io/otel/attribute"
 )
 

@@ -46,8 +46,8 @@ func ReadBodyDataFromHTTPResponse(resp *http.Response) ([]byte, error) {
 			return nil, err
 		}
 	default:
-		data := make([]byte, 0, resp.ContentLength)
-		_, err = resp.Body.Read(data)
+		body = make([]byte, 0, resp.ContentLength)
+		_, err = resp.Body.Read(body)
 		if err != nil {
 			return nil, err
 		}

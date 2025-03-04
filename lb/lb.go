@@ -2,7 +2,6 @@ package lb
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -12,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	nJson "github.com/goccy/go-json"
+	nJson "github.com/bytedance/sonic"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
@@ -225,7 +224,7 @@ func (lb *LoadBalancer) generateRequestContext(request *http.Request) *types.Req
 
 func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {
 	for _, value := range requestBody {
-		var arr []json.RawMessage
+		var arr []nJson.NoCopyRawMessage
 		err := nJson.Unmarshal(value.Params, &arr)
 		if err != nil {
 			log.Error("failed to unmarshal params", err)

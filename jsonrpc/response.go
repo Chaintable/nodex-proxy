@@ -2,11 +2,12 @@ package jsonrpc
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+
+	json "github.com/bytedance/sonic"
 )
 
 func TooManyRequestsResponse() (resp *http.Response, respObject *ResponseObject, err error) {

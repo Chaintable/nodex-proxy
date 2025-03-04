@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
-	nJson "github.com/goccy/go-json"
+	nJson "github.com/bytedance/sonic"
 	"github.com/stretchr/testify/require"
 )
 
