@@ -21,12 +21,10 @@
 package jsonrpc
 
 import (
-	"bytes"
 	"errors"
-	"io"
-	"net/http"
 
-	nJson "github.com/bytedance/sonic"
+	"github.com/bytedance/sonic"
+	"github.com/cloudwego/hertz/pkg/protocol"
 )
 
 var (
@@ -44,15 +42,15 @@ var (
 
 // ParseRequest parse the jsonrpc request, unpack it into one RequestObject or
 // more to []RequestObject.
-func ParseRequest(r *http.Request) ([]byte, []*RequestObject, int, error) {
-	if r.Body == nil {
-		return nil, nil, 0, ErrEmptyBody
-	}
-	body, err := io.ReadAll(r.Body)
+func ParseRequest(r *protocol.Request) ([]byte, []*RequestObject, int, error) {
+	//if r.Body == nil {
+	//	return nil, nil, 0, ErrEmptyBody
+	//}
+	body, err := r.BodyE()
 
-	// handle whether err is encountered or not
-	r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewBuffer(body))
+	//// handle whether err is encountered or not
+	//r.Body.Close()
+	//r.Body = io.NopCloser(bytes.NewBuffer(body))
 	if err != nil {
 		return nil, nil, 0, ErrReadBody
 	}
@@ -61,7 +59,7 @@ func ParseRequest(r *http.Request) ([]byte, []*RequestObject, int, error) {
 	reqs := make([]*RequestObject, 0)
 	switch {
 	case IsBatch(body):
-		if err := nJson.Unmarshal(body, &reqs); err != nil {
+		if err := sonic.Unmarshal(body, &reqs); err != nil {
 			return nil, nil, size, ErrParseBatch
 		}
 		return body, reqs, size, nil
@@ -69,7 +67,7 @@ func ParseRequest(r *http.Request) ([]byte, []*RequestObject, int, error) {
 	}
 
 	var req RequestObject
-	if err := nJson.Unmarshal(body, &req); err != nil {
+	if err := sonic.Unmarshal(body, &req); err != nil {
 		return nil, nil, size, ErrParseSingle
 	}
 	reqs = append(reqs, &req)

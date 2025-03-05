@@ -4,19 +4,20 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net"
-	"net/http"
-	npprof "net/http/pprof"
-
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
+	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/go-chi/chi/v5"
+	"github.com/hertz-contrib/pprof"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"net"
+	"net/http"
 )
 
 func parseCmdlineAndLoadConfig() config.Config {
@@ -64,33 +65,38 @@ func main() {
 		nodeRefresherMap, *config.ProxyConfig,
 		&jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig, HeightMap: heightMap}, limiter, heightMap, nodeChannel, heightChan)
 	go lb.BackgroundRefreshNode()
-	router := chi.NewRouter()
-	router.HandleFunc("/{chainId}", func(rw http.ResponseWriter, r *http.Request) {
-		chainId := chi.URLParam(r, "chainId")
-		lb.ServeHTTP(rw, r, chainId)
-	})
-	router.HandleFunc("/debug/pprof/", npprof.Index)
-	router.HandleFunc("/debug/pprof/cmdline", npprof.Cmdline)
-	router.HandleFunc("/debug/pprof/profile", npprof.Profile)
-	router.HandleFunc("/debug/pprof/symbol", npprof.Symbol)
-	router.HandleFunc("/debug/pprof/trace", npprof.Trace)
-	router.Handle("/metrics", promhttp.InstrumentMetricHandler(
-		prometheus.DefaultRegisterer, promhttp.HandlerFor(
-			prometheus.DefaultGatherer,
-			promhttp.HandlerOpts{MaxRequestsInFlight: 1024},
-		),
-	))
-	server := http.Server{
-		Handler: router,
-	}
-	// 启动服务器
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", config.Listen))
-	if err != nil {
-		log.Fatal("listen failed: %v\n", err)
-	}
-	server.Serve(listener)
 
-	// sig := <-sigChan
+	go func() {
+		router := chi.NewRouter()
+		router.Handle("/metrics", promhttp.InstrumentMetricHandler(
+			prometheus.DefaultRegisterer, promhttp.HandlerFor(
+				prometheus.DefaultGatherer,
+				promhttp.HandlerOpts{MaxRequestsInFlight: 1024},
+			),
+		))
+		mServer := http.Server{
+			Handler: router,
+		}
+		// 启动服务器
+		listener, err := net.Listen("tcp", fmt.Sprintf(":%s", config.MetricListen))
+		if err != nil {
+			log.Fatal("listen failed: %v\n", err)
+		}
+		err = mServer.Serve(listener)
+		if err != nil {
+			return
+		}
+	}()
+
+	h := server.Default(server.WithHostPorts(fmt.Sprintf("0.0.0.0:%s", config.Listen)))
+
+	pprof.Register(h)
+
+	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
+		chainId := c.Param("chainId")
+		lb.ServeHTTP(ctx, c, chainId)
+	})
+	h.Spin()
 
 	for _, refresher := range nodeRefresherMap {
 		refresher.Close()

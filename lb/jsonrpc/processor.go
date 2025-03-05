@@ -23,28 +23,29 @@ const (
 	headerDappKey     = "x-api-dapp"
 )
 
-func parseJRPCRequestBody() types.PreProcessorFunc {
-	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
-		if processData.RequestBody == nil {
-			processData.RawRequestBody, processData.RequestBody, processData.RequestBodySize, processData.Error = jsonrpc.ParseRequest(request)
-			if processData.Error != nil {
-				response, processData.ResponseBody, processData.Error = jsonrpc.BadRequest(processData.Error)
-				return request, response, processData
-			}
-			processData.IsBatch = len(processData.RequestBody) > 1
-			if !processData.IsBatch {
-				processData.Method = processData.RequestBody[0].Method
-			}
-			for _, req := range processData.RequestBody {
-				if processData.Error = jsonrpc.ValidateRequest(req); processData.Error != nil {
-					response, processData.ResponseBody, processData.Error = jsonrpc.BadRequest(processData.Error)
-					break
-				}
-			}
-		}
-		return request, response, processData
-	}
-}
+//
+//func parseJRPCRequestBody() types.PreProcessorFunc {
+//	return func(request *http.Request, response *http.Response, processData *types.RequestContext) (*http.Request, *http.Response, *types.RequestContext) {
+//		if processData.RequestBody == nil {
+//			processData.RawRequestBody, processData.RequestBody, processData.RequestBodySize, processData.Error = jsonrpc.ParseRequest(request)
+//			if processData.Error != nil {
+//				response, processData.ResponseBody, processData.Error = jsonrpc.BadRequest(processData.Error)
+//				return request, response, processData
+//			}
+//			processData.IsBatch = len(processData.RequestBody) > 1
+//			if !processData.IsBatch {
+//				processData.Method = processData.RequestBody[0].Method
+//			}
+//			for _, req := range processData.RequestBody {
+//				if processData.Error = jsonrpc.ValidateRequest(req); processData.Error != nil {
+//					response, processData.ResponseBody, processData.Error = jsonrpc.BadRequest(processData.Error)
+//					break
+//				}
+//			}
+//		}
+//		return request, response, processData
+//	}
+//}
 
 func jRPCMethodDenied(deniedMethods *[]jsonrpc.RPCMethod) types.PreProcessorFunc {
 	deniedMethodMap := map[jsonrpc.RPCMethod]struct{}{}
