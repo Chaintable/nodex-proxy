@@ -66,6 +66,19 @@ func GetPreProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHandl
 	}
 }
 
+func GetPreProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethodHandlerIHertz, limiter Limiter) types.PreProcessorProcessorsHertz {
+	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
+	return []types.ProcessorFuncHertz{
+		logRequestHertz(),
+		jRPCMethodDeniedHertz(config.Processor.MethodDenied),
+		checkJRPCRequestBodyHertz(config.Processor.MethodNameChecker),
+		updatePreprocessorMetricsHertz(),
+		rpcMethodLimiterHertz(limiter),
+		rpcMethodHandlerProcessorHertz(rpcMethodHandler.PreHandlerMap()),
+		requestMirrorHertz(defaultTimeout, config.Processor.RequestMirror),
+	}
+}
+
 func GetPostProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHandlerI) types.PostProcessorProcessors {
 	return []types.PostProcessorFunc{
 		parseJRPCResponseBody(),
@@ -73,6 +86,16 @@ func GetPostProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHand
 		rpcMethodHandlerPostProcessor(rpcMethodHandler.PostHandlerMap()),
 		observabilityLog(config.Processor.ObservabilityLog),
 		updatePostProcessorMetrics(),
+	}
+}
+
+func GetPostProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethodHandlerIHertz) types.PostProcessorProcessorsHertz {
+	return []types.ProcessorFuncHertz{
+		parseJRPCResponseBodyHertz(),
+		logResponseHertz(),
+		rpcMethodHandlerPostProcessorHertz(rpcMethodHandler.PostHandlerMap()),
+		observabilityLogHertz(config.Processor.ObservabilityLog),
+		updatePostProcessorMetricsHertz(),
 	}
 }
 
@@ -104,7 +127,7 @@ func NewTransport(
 // RoundTrip implements RoundTrip Method for interface of http.RoundTripper.
 func (t *transport) RoundTrip(request *http.Request) (response *http.Response, err error) {
 	ctx := request.Context()
-	ctx, roundTripSpan := tracer.Start(
+	ctx, roundTripSpan := Tracer.Start(
 		ctx,
 		"RoundTrip")
 	defer roundTripSpan.End()
@@ -112,7 +135,7 @@ func (t *transport) RoundTrip(request *http.Request) (response *http.Response, e
 	request, response, processData = t.preProcessor(request, response, processData)
 	if response == nil {
 		processData.UpstreamRelated = true
-		_, upstreamSpan := tracer.Start(
+		_, upstreamSpan := Tracer.Start(
 			ctx,
 			"Upstream", trace.WithAttributes(attribute.String("rpc_method", string(processData.Method))))
 		var (

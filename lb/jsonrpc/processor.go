@@ -229,6 +229,7 @@ func observabilityLog(config types.ObservabilityLogProcessorConfig) types.PostPr
 	}
 	return nil
 }
+
 func updatePostProcessorMetrics() types.PostProcessorFunc {
 	return func(request *http.Request, response *http.Response, processData *types.RequestContext) *types.RequestContext {
 		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, processData.ChainId)
@@ -345,9 +346,9 @@ func getLatestBlock(heightMap HeightMap) types.PreProcessorFunc {
 	}
 }
 
-func copyRequest(dst *http.Request, src *http.Request) {
+func copyRequest(dst *http.Request, srcHeader map[string][]string) {
 	dst.Header = make(http.Header)
-	for h, val := range src.Header {
+	for h, val := range srcHeader {
 		dst.Header[h] = val
 	}
 	dst.Host = types.MirrorRequestHost
@@ -367,7 +368,7 @@ func requestMirror(timeout time.Duration, config types.RequestMirrorConfig) type
 			log.Error("mirror request error", err)
 			return
 		}
-		copyRequest(mirrorRequest, request)
+		copyRequest(mirrorRequest, request.Header)
 		resp, err := httpClient.Do(mirrorRequest)
 		if err != nil {
 			log.Error("mirror request error", err)

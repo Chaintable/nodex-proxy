@@ -63,7 +63,9 @@ func main() {
 	lb := lb.NewLoadBalancer(
 		ctx,
 		nodeRefresherMap, *config.ProxyConfig,
-		&jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig, HeightMap: heightMap}, limiter, heightMap, nodeChannel, heightChan)
+		&jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig, HeightMap: heightMap},
+		&jsonrpc.GeneralRPCMethodHertzHandler{Config: config.ProxyConfig, HeightMap: heightMap},
+		limiter, heightMap, nodeChannel, heightChan)
 	go lb.BackgroundRefreshNode()
 
 	go func() {

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"strconv"
 	"strings"
 	"time"
@@ -40,7 +43,9 @@ type LoadBalancer struct {
 	heightChannel         <-chan *discovery.ChainHeight
 	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
 	preProcessors         types.PreProcessorProcessors
+	preProcessorsHertz    types.PreProcessorProcessorsHertz
 	postProcessors        types.PostProcessorProcessors
+	postProcessorsHertz   types.PostProcessorProcessorsHertz
 	defaultHttpTransport  *http.Transport
 }
 
@@ -58,7 +63,7 @@ const (
 	DBKServerVersion = "x-dbk-server-version"
 )
 
-func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
+func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
 	case "round_robin":
@@ -73,9 +78,6 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		}
 		rpcMethodTransportMap[ejrpc.RPCMethod(m)] = NewHttpTransportWithTimeout(time.Duration(t)*time.Millisecond, config.ConnectionPoolSize)
 	}
-	preProcessors := jsonrpc.GetPreProcessor(&config, rpcMethodHandler, limiter)
-	postProcessors := jsonrpc.GetPostProcessor(&config, rpcMethodHandler)
-	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
 	return &LoadBalancer{
 		ctx:                   ctx,
 		nodeRefresherMap:      nodeRefresherMap,
@@ -87,9 +89,11 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		nodeChannel:           nodeChannel,
 		heightChannel:         heightChannel,
 		rpcMethodTransportMap: rpcMethodTransportMap,
-		preProcessors:         preProcessors,
-		postProcessors:        postProcessors,
-		defaultHttpTransport:  NewHttpTransportWithTimeout(defaultTimeout, config.ConnectionPoolSize),
+		preProcessors:         jsonrpc.GetPreProcessor(&config, rpcMethodHandler, limiter),
+		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter),
+		postProcessors:        jsonrpc.GetPostProcessor(&config, rpcMethodHandler),
+		postProcessorsHertz:   jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
+		defaultHttpTransport:  NewHttpTransportWithTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond, config.ConnectionPoolSize),
 	}
 }
 
@@ -167,8 +171,43 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		c.JSON(consts.StatusOK, object)
 		return
 	}
+	ctx, roundTripSpan := jsonrpc.Tracer.Start(
+		ctx,
+		"RoundTrip")
+	defer roundTripSpan.End()
 
-	targetNode.ReverseProxy.ServeHTTP(ctx, c)
+	ctx, c, requestContext = lb.preProcessorsHertz.Call(ctx, c, requestContext)
+	if len(c.Response.Body()) == 0 { // need to query upstream
+		requestContext.UpstreamRelated = true
+		_, upstreamSpan := jsonrpc.Tracer.Start(
+			ctx,
+			"Upstream",
+			trace.WithAttributes(attribute.String("rpc_method", string(requestContext.Method))),
+		)
+
+		props := otel.GetTextMapPropagator()
+
+		httpHeaders := http.Header{}
+		c.Request.Header.VisitAll(func(key, value []byte) {
+			// 为了确保后续使用不会受到影响，复制 key 和 value 的内容
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			valueCopy := make([]byte, len(value))
+			copy(valueCopy, value)
+
+			httpHeaders.Set(string(keyCopy), string(valueCopy))
+		})
+
+		props.Inject(ctx, propagation.HeaderCarrier(httpHeaders))
+		targetNode.ReverseProxy.ServeHTTP(ctx, c)
+		upstreamSpan.End()
+
+		if c.Response.StatusCode() == 0 {
+			// TODO
+		}
+	}
+
+	_, _, _ = lb.postProcessorsHertz.Call(ctx, c, requestContext)
 
 	//reverseProxy := &httputil.ReverseProxy{
 	//	Director:   lb.forwardDirector(targetNode, &c.Request),
