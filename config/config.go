@@ -20,8 +20,8 @@ type ReplicaNotificationSetting struct {
 }
 
 var defaultConfig = Config{
-	Listen:       ":8663",
-	MetricListen: ":8664",
+	Listen:       "8663",
+	MetricListen: "8664",
 }
 
 func LoadConfig(configPath string) Config {

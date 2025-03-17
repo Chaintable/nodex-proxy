@@ -202,27 +202,19 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		targetNode.ReverseProxy.ServeHTTP(ctx, c)
 		upstreamSpan.End()
 
-		if c.Response.StatusCode() == 0 {
-			// TODO
+		if c.Response.StatusCode() == consts.StatusGatewayTimeout {
+			_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
+			c.JSON(consts.StatusGatewayTimeout, object)
+			return
+		}
+		if c.Response.StatusCode() == consts.StatusBadGateway {
+			_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy bad gateway"))
+			c.JSON(consts.StatusBadGateway, object)
+			return
 		}
 	}
 
 	_, _, _ = lb.postProcessorsHertz.Call(ctx, c, requestContext)
-
-	//reverseProxy := &httputil.ReverseProxy{
-	//	Director:   lb.forwardDirector(targetNode, &c.Request),
-	//	Transport: jsonrpc.NewTransport(requestContext,
-	//		lb.Limiter,
-	//		lb.HeightMap,
-	//		log.Logger(),
-	//		&lb.Config,
-	//		lb.rpcMethodTransportMap,
-	//		lb.defaultHttpTransport,
-	//		lb.preProcessors,
-	//		lb.postProcessors),
-	//}
-	//
-	//reverseProxy.ServeHTTP(w, r)
 }
 
 func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *protocol.Request) func(*http.Request) {

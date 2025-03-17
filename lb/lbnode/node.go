@@ -2,6 +2,7 @@ package lbnode
 
 import (
 	"fmt"
+	rconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/hertz-contrib/reverseproxy"
 	"sync"
 )
@@ -22,6 +23,12 @@ type Node struct {
 }
 type Option func(*Node)
 
+func WithReverseProxyMaxConnsPerHost(maxConnsPerHost int) func(o *rconfig.ClientOptions) {
+	return func(o *rconfig.ClientOptions) {
+		o.MaxConnsPerHost = maxConnsPerHost
+	}
+}
+
 func New(key, ip string, port, weight int, opts ...Option) (*Node, error) {
 	if weight <= 0 {
 		weight = 1
@@ -37,7 +44,7 @@ func New(key, ip string, port, weight int, opts ...Option) (*Node, error) {
 		opt(node)
 	}
 
-	proxy, err := reverseproxy.NewSingleHostReverseProxy(fmt.Sprintf("http://%s", node.Addr()))
+	proxy, err := reverseproxy.NewSingleHostReverseProxy(fmt.Sprintf("http://%s", node.Addr()), rconfig.ClientOption{F: WithReverseProxyMaxConnsPerHost(2048)})
 	if err != nil {
 		return node, err
 	}
