@@ -2,6 +2,8 @@ package lbnode
 
 import (
 	"fmt"
+	rconfig "github.com/cloudwego/hertz/pkg/common/config"
+	"github.com/hertz-contrib/reverseproxy"
 	"sync"
 )
 
@@ -17,10 +19,17 @@ type Node struct {
 	currentHandling int64
 	stateType       int
 	lock            sync.RWMutex
+	ReverseProxy    *reverseproxy.ReverseProxy
 }
 type Option func(*Node)
 
-func New(key, ip string, port, weight int, opts ...Option) *Node {
+func WithReverseProxyMaxConnsPerHost(maxConnsPerHost int) func(o *rconfig.ClientOptions) {
+	return func(o *rconfig.ClientOptions) {
+		o.MaxConnsPerHost = maxConnsPerHost
+	}
+}
+
+func New(key, ip string, port, weight int, opts ...Option) (*Node, error) {
 	if weight <= 0 {
 		weight = 1
 	}
@@ -34,7 +43,13 @@ func New(key, ip string, port, weight int, opts ...Option) *Node {
 	for _, opt := range opts {
 		opt(node)
 	}
-	return node
+
+	proxy, err := reverseproxy.NewSingleHostReverseProxy(fmt.Sprintf("http://%s", node.Addr()), rconfig.ClientOption{F: WithReverseProxyMaxConnsPerHost(2048)})
+	if err != nil {
+		return node, err
+	}
+	node.ReverseProxy = proxy
+	return node, nil
 }
 func (node *Node) Key() string {
 	return node.key
@@ -148,6 +163,7 @@ func (node *Node) Clone() *Node {
 		lock:            sync.RWMutex{},
 		currentHandling: node.currentHandling,
 		stateType:       node.stateType,
+		ReverseProxy:    node.ReverseProxy,
 	}
 	return &n
 }

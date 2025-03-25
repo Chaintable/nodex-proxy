@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
-	"net/http/httputil"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"strconv"
 	"strings"
 	"time"
-
-	nJson "github.com/bytedance/sonic"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
@@ -24,23 +22,27 @@ import (
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
+	"github.com/bytedance/sonic"
+	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/protocol"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"go.opentelemetry.io/otel/trace"
+	"net"
+	"net/http"
 )
 
 type LoadBalancer struct {
 	ctx                   context.Context
 	nodeRefresherMap      map[string]*etcd.Discover
-	BufferPool            httputil.BufferPool
 	Config                types.Config
-	RpcMethodHandler      types.RPCMethodHandlerI
 	Limiter               jsonrpc.Limiter
 	HeightMap             jsonrpc.HeightMap
 	nodeSelector          selector.Strategy
 	nodeChannel           <-chan *discovery.TargetNode
 	heightChannel         <-chan *discovery.ChainHeight
 	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
-	preProcessors         types.PreProcessorProcessors
-	postProcessors        types.PostProcessorProcessors
+	preProcessorsHertz    types.PreProcessorProcessorsHertz
+	postProcessorsHertz   types.PostProcessorProcessorsHertz
 	defaultHttpTransport  *http.Transport
 }
 
@@ -58,7 +60,7 @@ const (
 	DBKServerVersion = "x-dbk-server-version"
 )
 
-func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
+func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
 	case "round_robin":
@@ -73,24 +75,19 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		}
 		rpcMethodTransportMap[ejrpc.RPCMethod(m)] = NewHttpTransportWithTimeout(time.Duration(t)*time.Millisecond, config.ConnectionPoolSize)
 	}
-	preProcessors := jsonrpc.GetPreProcessor(&config, rpcMethodHandler, limiter)
-	postProcessors := jsonrpc.GetPostProcessor(&config, rpcMethodHandler)
-	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
 	return &LoadBalancer{
 		ctx:                   ctx,
 		nodeRefresherMap:      nodeRefresherMap,
-		BufferPool:            utils.NewBufferPool(),
 		Config:                config,
-		RpcMethodHandler:      rpcMethodHandler,
 		Limiter:               limiter,
 		HeightMap:             heightMap,
 		nodeSelector:          nodeSelector,
 		nodeChannel:           nodeChannel,
 		heightChannel:         heightChannel,
 		rpcMethodTransportMap: rpcMethodTransportMap,
-		preProcessors:         preProcessors,
-		postProcessors:        postProcessors,
-		defaultHttpTransport:  NewHttpTransportWithTimeout(defaultTimeout, config.ConnectionPoolSize),
+		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter),
+		postProcessorsHertz:   jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
+		defaultHttpTransport:  NewHttpTransportWithTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond, config.ConnectionPoolSize),
 	}
 }
 
@@ -103,7 +100,11 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			chainId := tempNode.ChainId
 			role := tempNode.NodeType
 			changeType := tempNode.ChangeType
-			targetNode := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultLoadBalancerWeight)
+			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultLoadBalancerWeight)
+			if err != nil {
+				log.Error("failed to create node", err)
+				continue
+			}
 			targetNode.SetState(tempNode.StateType)
 			switch changeType {
 			case 0:
@@ -132,22 +133,19 @@ func parseNumber(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
 }
 
-func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
-	requestContext := lb.generateRequestContext(r)
+// func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
+func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, chainID string) {
+	requestContext := lb.generateRequestContext(ctx, &c.Request)
 	if requestContext.Error != nil {
 		_, object, _ := ejrpc.BadRequest(requestContext.Error)
-		data, _ := nJson.Marshal(object)
-		w.WriteHeader(200)
-		w.Write(data)
+		c.JSON(consts.StatusOK, object)
 		return
 	}
 
 	chainIDNum, err := parseNumber(chainID)
 	if err != nil {
 		_, object, _ := ejrpc.BadRequest(errors.New("invalid chain id"))
-		data, _ := nJson.Marshal(object)
-		w.WriteHeader(200)
-		w.Write(data)
+		c.JSON(consts.StatusOK, object)
 		return
 	}
 
@@ -155,43 +153,77 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainI
 
 	targetNode, err := lb.nodeSelector.GetNode(requestContext, "")
 	if err != nil {
+		log.Error("failed to get node, err ", err)
 		_, object, _ := ejrpc.BadGateway(errors.New("no backends available"))
-		data, _ := nJson.Marshal(object)
-		w.WriteHeader(200)
-		w.Write(data)
+		c.JSON(consts.StatusOK, object)
 		return
 	}
 
-	reverseProxy := &httputil.ReverseProxy{
-		Director:   lb.forwardDirector(targetNode, r),
-		BufferPool: lb.BufferPool,
-		Transport: jsonrpc.NewTransport(requestContext,
-			lb.Limiter,
-			lb.HeightMap,
-			log.Logger(),
-			&lb.Config,
-			lb.rpcMethodTransportMap,
-			lb.defaultHttpTransport,
-			lb.preProcessors,
-			lb.postProcessors),
+	if targetNode.ReverseProxy == nil {
+		log.Error("failed to get node, err ", errors.New("no reverse proxy available"))
+		_, object, _ := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+		c.JSON(consts.StatusOK, object)
+		return
+	}
+	ctx, roundTripSpan := jsonrpc.Tracer.Start(
+		ctx,
+		"RoundTrip")
+	defer roundTripSpan.End()
+
+	ctx, c, requestContext = lb.preProcessorsHertz.Call(ctx, c, requestContext)
+	if len(c.Response.Body()) == 0 { // need to query upstream
+		requestContext.UpstreamRelated = true
+		_, upstreamSpan := jsonrpc.Tracer.Start(
+			ctx,
+			"Upstream",
+			trace.WithAttributes(attribute.String("rpc_method", string(requestContext.Method))),
+		)
+
+		props := otel.GetTextMapPropagator()
+
+		httpHeaders := http.Header{}
+		c.Request.Header.VisitAll(func(key, value []byte) {
+			// 为了确保后续使用不会受到影响，复制 key 和 value 的内容
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			valueCopy := make([]byte, len(value))
+			copy(valueCopy, value)
+
+			httpHeaders.Set(string(keyCopy), string(valueCopy))
+		})
+
+		props.Inject(ctx, propagation.HeaderCarrier(httpHeaders))
+		targetNode.ReverseProxy.ServeHTTP(ctx, c)
+		upstreamSpan.End()
+
+		if c.Response.StatusCode() == consts.StatusGatewayTimeout {
+			_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
+			c.JSON(consts.StatusGatewayTimeout, object)
+			return
+		}
+		if c.Response.StatusCode() == consts.StatusBadGateway {
+			_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy bad gateway"))
+			c.JSON(consts.StatusBadGateway, object)
+			return
+		}
 	}
 
-	reverseProxy.ServeHTTP(w, r)
+	_, _, _ = lb.postProcessorsHertz.Call(ctx, c, requestContext)
 }
 
-func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *http.Request) func(*http.Request) {
+func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *protocol.Request) func(*http.Request) {
 
 	return func(outReq *http.Request) {
 		outReq.URL = cloneURL(outReq.URL)
 		outReq.URL.Scheme = "http"
 		outReq.URL.Host = host.Addr()
-		outReq.URL.Path = inReq.URL.Path
-		outReq.URL.RawPath = inReq.URL.RawPath
-		outReq.URL.RawQuery = inReq.URL.RawQuery
+		outReq.URL.Path = inReq.URI().String()
+		outReq.URL.RawPath = inReq.URI().String()
+		outReq.URL.RawQuery = string(inReq.QueryString())
 		outReq.RequestURI = ""
-		outReq.Host = inReq.Host
+		outReq.Host = string(inReq.Host())
 		if outReq.Host == "" {
-			outReq.Host = inReq.URL.Host
+			outReq.Host = string(inReq.URI().Host())
 		}
 
 		if _, ok := outReq.Header[headerUserAgent]; !ok {
@@ -200,8 +232,8 @@ func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *http.Request) 
 	}
 }
 
-func (lb *LoadBalancer) generateRequestContext(request *http.Request) *types.RequestContext {
-	requestContext := lb.beforeProcess(request)
+func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *protocol.Request) *types.RequestContext {
+	requestContext := lb.beforeProcess(ctx, request)
 
 	requestContext.RawRequestBody, requestContext.RequestBody, requestContext.RequestBodySize, requestContext.Error = ejrpc.ParseRequest(request)
 	if requestContext.Error != nil {
@@ -224,8 +256,8 @@ func (lb *LoadBalancer) generateRequestContext(request *http.Request) *types.Req
 
 func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {
 	for _, value := range requestBody {
-		var arr []nJson.NoCopyRawMessage
-		err := nJson.Unmarshal(value.Params, &arr)
+		var arr []sonic.NoCopyRawMessage
+		err := sonic.Unmarshal(value.Params, &arr)
 		if err != nil {
 			log.Error("failed to unmarshal params", err)
 			break
@@ -237,7 +269,7 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 		lastElem := arr[len(arr)-1]
 
 		var ctx types.BlockContext
-		if err := nJson.Unmarshal(lastElem, &ctx); err != nil {
+		if err := sonic.Unmarshal(lastElem, &ctx); err != nil {
 			break
 		}
 
@@ -249,7 +281,7 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {
 	for _, value := range requestBody {
 		var arr []interface{}
-		err := nJson.Unmarshal(value.Params, &arr)
+		err := sonic.Unmarshal(value.Params, &arr)
 		if err != nil {
 			log.Error("failed to unmarshal params", err)
 			break
@@ -258,13 +290,13 @@ func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			break
 		}
 		lastElem := arr[len(arr)-1]
-		lastBytes, err := nJson.Marshal(lastElem)
+		lastBytes, err := sonic.Marshal(lastElem)
 		if err != nil {
 			log.Error("failed to marshal params", err)
 			break
 		}
 		var ctx types.BlockContext
-		if err := nJson.Unmarshal(lastBytes, &ctx); err != nil {
+		if err := sonic.Unmarshal(lastBytes, &ctx); err != nil {
 			break
 		}
 		return &ctx
@@ -272,8 +304,7 @@ func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *t
 	return nil
 }
 
-func (lb *LoadBalancer) beforeProcess(request *http.Request) *types.RequestContext {
-	ctx := request.Context()
+func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Request) *types.RequestContext {
 	span := trace.SpanFromContext(ctx)
 	traceID := span.SpanContext().TraceID().String()
 
@@ -295,7 +326,7 @@ func (lb *LoadBalancer) beforeProcess(request *http.Request) *types.RequestConte
 
 		Start:           time.Now(),
 		Method:          "unknown",
-		Host:            types.ProcessorHost(originHostFromContext(ctx, request.Host)),
+		Host:            types.ProcessorHost(originHostFromContext(ctx, string(request.Host()))),
 		Target:          "native",
 		UpstreamRelated: false,
 	}

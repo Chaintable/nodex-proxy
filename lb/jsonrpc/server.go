@@ -37,7 +37,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-var tracer = otel.Tracer("jrpcx")
+var Tracer = otel.Tracer("jrpcx")
 
 func initTracer(config types.Config) error {
 	traceConfig := config.Observability.Trace

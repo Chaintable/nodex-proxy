@@ -2,6 +2,7 @@ package types
 
 import (
 	"context"
+	"github.com/cloudwego/hertz/pkg/app"
 	"net/http"
 	"reflect"
 	"time"
@@ -76,12 +77,17 @@ type RequestContext struct {
 type (
 	// PreProcessorFunc emphasizes the preprocessing of the **request**,
 	// and when the request meets certain conditions, the response is pre-built to achieve the purpose of preprocessing.
-	PreProcessorFunc func(request *http.Request, response *http.Response, processData *RequestContext) (*http.Request, *http.Response, *RequestContext)
+	PreProcessorFunc   func(request *http.Request, response *http.Response, processData *RequestContext) (*http.Request, *http.Response, *RequestContext)
+	ProcessorFuncHertz func(ctx context.Context, c *app.RequestContext, processData *RequestContext) (context.Context, *app.RequestContext, *RequestContext)
 	// PostProcessorFunc emphasizes the **observation and recording of the response**, to achieve specific requirements,
 	// and **does not modify the response**.
-	PostProcessorFunc       func(request *http.Request, response *http.Response, processData *RequestContext) *RequestContext
-	PreProcessorProcessors  []PreProcessorFunc
-	PostProcessorProcessors []PostProcessorFunc
+	PostProcessorFunc func(request *http.Request, response *http.Response, processData *RequestContext) *RequestContext
+
+	PreProcessorProcessors []PreProcessorFunc
+
+	PreProcessorProcessorsHertz  []ProcessorFuncHertz
+	PostProcessorProcessors      []PostProcessorFunc
+	PostProcessorProcessorsHertz []ProcessorFuncHertz
 )
 
 func (p PreProcessorProcessors) Call(request *http.Request, response *http.Response, processData *RequestContext) (*http.Request, *http.Response, *RequestContext) {
@@ -96,6 +102,18 @@ func (p PreProcessorProcessors) Call(request *http.Request, response *http.Respo
 	return request, response, processData
 }
 
+func (p PreProcessorProcessorsHertz) Call(ctx context.Context, c *app.RequestContext, processData *RequestContext) (context.Context, *app.RequestContext, *RequestContext) {
+	for _, processFunc := range p {
+		if processFunc != nil {
+			ctx, c, processData = processFunc(ctx, c, processData)
+		}
+		if len(c.Response.Body()) == 0 {
+			break
+		}
+	}
+	return ctx, c, processData
+}
+
 func (p PostProcessorProcessors) Call(request *http.Request, response *http.Response, processData *RequestContext) *RequestContext {
 	for _, processFunc := range p {
 		if processFunc != nil {
@@ -103,6 +121,15 @@ func (p PostProcessorProcessors) Call(request *http.Request, response *http.Resp
 		}
 	}
 	return processData
+}
+
+func (p PostProcessorProcessorsHertz) Call(ctx context.Context, c *app.RequestContext, processData *RequestContext) (context.Context, *app.RequestContext, *RequestContext) {
+	for _, processFunc := range p {
+		if processFunc != nil {
+			ctx, c, processData = processFunc(ctx, c, processData)
+		}
+	}
+	return ctx, c, processData
 }
 
 func (p *RequestContext) LogAttributes() []attribute.KeyValue {

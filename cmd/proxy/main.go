@@ -4,19 +4,20 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net"
-	"net/http"
-	npprof "net/http/pprof"
-
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
+	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/go-chi/chi/v5"
+	"github.com/hertz-contrib/pprof"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"net"
+	"net/http"
 )
 
 func parseCmdlineAndLoadConfig() config.Config {
@@ -40,14 +41,14 @@ func parseCmdlineAndLoadConfig() config.Config {
 }
 
 func main() {
-	config := parseCmdlineAndLoadConfig()
-	log.Info("config: %", zap.Any("config", config))
+	cmdlineAndLoadConfig := parseCmdlineAndLoadConfig()
+	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
 	log.ProductionModeWithoutStackTrace()
 
 	var nodeRefresherMap = make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	nodeRefresher, err := etcd.New(ctx, config.EtcdEndpoints, config.ProxyConfig.EtcdPrefix)
+	nodeRefresher, err := etcd.New(ctx, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix)
 	if err != nil {
 		log.Fatal("New refresher failed: %v\n", err)
 	}
@@ -57,40 +58,46 @@ func main() {
 		log.Fatal("Init node refresher failed: %v\n", err)
 	}
 
-	limiter := jsonrpc.NewMethodLimiter(config.ProxyConfig.Processor.RateLimiter.RpcMethods)
+	limiter := jsonrpc.NewMethodLimiter(cmdlineAndLoadConfig.ProxyConfig.Processor.RateLimiter.RpcMethods)
 	heightMap := jsonrpc.NewHeightMap()
-	lb := lb.NewLoadBalancer(
+	loadBalancer := lb.NewLoadBalancer(
 		ctx,
-		nodeRefresherMap, *config.ProxyConfig,
-		&jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig, HeightMap: heightMap}, limiter, heightMap, nodeChannel, heightChan)
-	go lb.BackgroundRefreshNode()
-	router := chi.NewRouter()
-	router.HandleFunc("/{chainId}", func(rw http.ResponseWriter, r *http.Request) {
-		chainId := chi.URLParam(r, "chainId")
-		lb.ServeHTTP(rw, r, chainId)
-	})
-	router.HandleFunc("/debug/pprof/", npprof.Index)
-	router.HandleFunc("/debug/pprof/cmdline", npprof.Cmdline)
-	router.HandleFunc("/debug/pprof/profile", npprof.Profile)
-	router.HandleFunc("/debug/pprof/symbol", npprof.Symbol)
-	router.HandleFunc("/debug/pprof/trace", npprof.Trace)
-	router.Handle("/metrics", promhttp.InstrumentMetricHandler(
-		prometheus.DefaultRegisterer, promhttp.HandlerFor(
-			prometheus.DefaultGatherer,
-			promhttp.HandlerOpts{MaxRequestsInFlight: 1024},
-		),
-	))
-	server := http.Server{
-		Handler: router,
-	}
-	// 启动服务器
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", config.Listen))
-	if err != nil {
-		log.Fatal("listen failed: %v\n", err)
-	}
-	server.Serve(listener)
+		nodeRefresherMap, *cmdlineAndLoadConfig.ProxyConfig,
+		&jsonrpc.GeneralRPCMethodHertzHandler{Config: cmdlineAndLoadConfig.ProxyConfig, HeightMap: heightMap},
+		limiter, heightMap, nodeChannel, heightChan)
+	go loadBalancer.BackgroundRefreshNode()
 
-	// sig := <-sigChan
+	go func() {
+		router := chi.NewRouter()
+		router.Handle("/metrics", promhttp.InstrumentMetricHandler(
+			prometheus.DefaultRegisterer, promhttp.HandlerFor(
+				prometheus.DefaultGatherer,
+				promhttp.HandlerOpts{MaxRequestsInFlight: 1024},
+			),
+		))
+		mServer := http.Server{
+			Handler: router,
+		}
+		// 启动服务器
+		listener, err := net.Listen("tcp", fmt.Sprintf(":%s", cmdlineAndLoadConfig.MetricListen))
+		if err != nil {
+			log.Fatal("listen failed: %v\n", err)
+		}
+		err = mServer.Serve(listener)
+		if err != nil {
+			return
+		}
+	}()
+
+	h := server.Default(server.WithHostPorts(fmt.Sprintf("0.0.0.0:%s", cmdlineAndLoadConfig.Listen)))
+
+	pprof.Register(h)
+
+	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
+		chainId := c.Param("chainId")
+		loadBalancer.ServeHTTP(ctx, c, chainId)
+	})
+	h.Spin()
 
 	for _, refresher := range nodeRefresherMap {
 		refresher.Close()
