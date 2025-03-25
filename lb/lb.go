@@ -35,16 +35,13 @@ type LoadBalancer struct {
 	ctx                   context.Context
 	nodeRefresherMap      map[string]*etcd.Discover
 	Config                types.Config
-	RpcMethodHandler      types.RPCMethodHandlerI
 	Limiter               jsonrpc.Limiter
 	HeightMap             jsonrpc.HeightMap
 	nodeSelector          selector.Strategy
 	nodeChannel           <-chan *discovery.TargetNode
 	heightChannel         <-chan *discovery.ChainHeight
 	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
-	preProcessors         types.PreProcessorProcessors
 	preProcessorsHertz    types.PreProcessorProcessorsHertz
-	postProcessors        types.PostProcessorProcessors
 	postProcessorsHertz   types.PostProcessorProcessorsHertz
 	defaultHttpTransport  *http.Transport
 }
@@ -63,7 +60,7 @@ const (
 	DBKServerVersion = "x-dbk-server-version"
 )
 
-func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandler types.RPCMethodHandlerI, rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
+func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
 	case "round_robin":
@@ -82,16 +79,13 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		ctx:                   ctx,
 		nodeRefresherMap:      nodeRefresherMap,
 		Config:                config,
-		RpcMethodHandler:      rpcMethodHandler,
 		Limiter:               limiter,
 		HeightMap:             heightMap,
 		nodeSelector:          nodeSelector,
 		nodeChannel:           nodeChannel,
 		heightChannel:         heightChannel,
 		rpcMethodTransportMap: rpcMethodTransportMap,
-		preProcessors:         jsonrpc.GetPreProcessor(&config, rpcMethodHandler, limiter),
 		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter),
-		postProcessors:        jsonrpc.GetPostProcessor(&config, rpcMethodHandler),
 		postProcessorsHertz:   jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
 		defaultHttpTransport:  NewHttpTransportWithTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond, config.ConnectionPoolSize),
 	}

@@ -53,19 +53,6 @@ type transport struct {
 	props         propagation.TextMapPropagator
 }
 
-func GetPreProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHandlerI, limiter Limiter) types.PreProcessorProcessors {
-	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
-	return []types.PreProcessorFunc{
-		logRequest(),
-		jRPCMethodDenied(config.Processor.MethodDenied),
-		checkJRPCRequestBody(config.Processor.MethodNameChecker),
-		updatePreprocessorMetrics(),
-		rpcMethodLimiter(limiter),
-		rpcMethodHandlerProcessor(rpcMethodHandler.PreHandlerMap()),
-		requestMirror(defaultTimeout, config.Processor.RequestMirror),
-	}
-}
-
 func GetPreProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethodHandlerIHertz, limiter Limiter) types.PreProcessorProcessorsHertz {
 	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
 	return []types.ProcessorFuncHertz{
@@ -76,16 +63,6 @@ func GetPreProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethod
 		rpcMethodLimiterHertz(limiter),
 		rpcMethodHandlerProcessorHertz(rpcMethodHandler.PreHandlerMap()),
 		requestMirrorHertz(defaultTimeout, config.Processor.RequestMirror),
-	}
-}
-
-func GetPostProcessor(config *types.Config, rpcMethodHandler types.RPCMethodHandlerI) types.PostProcessorProcessors {
-	return []types.PostProcessorFunc{
-		parseJRPCResponseBody(),
-		logResponse(),
-		rpcMethodHandlerPostProcessor(rpcMethodHandler.PostHandlerMap()),
-		observabilityLog(config.Processor.ObservabilityLog),
-		updatePostProcessorMetrics(),
 	}
 }
 

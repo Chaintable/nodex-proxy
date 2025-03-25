@@ -41,14 +41,14 @@ func parseCmdlineAndLoadConfig() config.Config {
 }
 
 func main() {
-	config := parseCmdlineAndLoadConfig()
-	log.Info("config: %", zap.Any("config", config))
+	cmdlineAndLoadConfig := parseCmdlineAndLoadConfig()
+	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
 	log.ProductionModeWithoutStackTrace()
 
 	var nodeRefresherMap = make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	nodeRefresher, err := etcd.New(ctx, config.EtcdEndpoints, config.ProxyConfig.EtcdPrefix)
+	nodeRefresher, err := etcd.New(ctx, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix)
 	if err != nil {
 		log.Fatal("New refresher failed: %v\n", err)
 	}
@@ -58,15 +58,14 @@ func main() {
 		log.Fatal("Init node refresher failed: %v\n", err)
 	}
 
-	limiter := jsonrpc.NewMethodLimiter(config.ProxyConfig.Processor.RateLimiter.RpcMethods)
+	limiter := jsonrpc.NewMethodLimiter(cmdlineAndLoadConfig.ProxyConfig.Processor.RateLimiter.RpcMethods)
 	heightMap := jsonrpc.NewHeightMap()
-	lb := lb.NewLoadBalancer(
+	loadBalancer := lb.NewLoadBalancer(
 		ctx,
-		nodeRefresherMap, *config.ProxyConfig,
-		&jsonrpc.GeneralRPCMethodHandler{Config: config.ProxyConfig, HeightMap: heightMap},
-		&jsonrpc.GeneralRPCMethodHertzHandler{Config: config.ProxyConfig, HeightMap: heightMap},
+		nodeRefresherMap, *cmdlineAndLoadConfig.ProxyConfig,
+		&jsonrpc.GeneralRPCMethodHertzHandler{Config: cmdlineAndLoadConfig.ProxyConfig, HeightMap: heightMap},
 		limiter, heightMap, nodeChannel, heightChan)
-	go lb.BackgroundRefreshNode()
+	go loadBalancer.BackgroundRefreshNode()
 
 	go func() {
 		router := chi.NewRouter()
@@ -80,7 +79,7 @@ func main() {
 			Handler: router,
 		}
 		// 启动服务器
-		listener, err := net.Listen("tcp", fmt.Sprintf(":%s", config.MetricListen))
+		listener, err := net.Listen("tcp", fmt.Sprintf(":%s", cmdlineAndLoadConfig.MetricListen))
 		if err != nil {
 			log.Fatal("listen failed: %v\n", err)
 		}
@@ -90,13 +89,13 @@ func main() {
 		}
 	}()
 
-	h := server.Default(server.WithHostPorts(fmt.Sprintf("0.0.0.0:%s", config.Listen)))
+	h := server.Default(server.WithHostPorts(fmt.Sprintf("0.0.0.0:%s", cmdlineAndLoadConfig.Listen)))
 
 	pprof.Register(h)
 
 	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
 		chainId := c.Param("chainId")
-		lb.ServeHTTP(ctx, c, chainId)
+		loadBalancer.ServeHTTP(ctx, c, chainId)
 	})
 	h.Spin()
 

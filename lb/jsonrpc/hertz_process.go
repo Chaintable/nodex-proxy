@@ -16,6 +16,12 @@ import (
 	"time"
 )
 
+const (
+	headerBizKey      = "x-api-biz"
+	headerScenarioKey = "x-api-scenario"
+	headerDappKey     = "x-api-dapp"
+)
+
 func logRequestHertz() types.ProcessorFuncHertz {
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
 		if types.DebugInfo.DebugModeEnable() {
