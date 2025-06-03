@@ -1,2 +1,4 @@
 .idea
 config.yaml
+.vscode
+cmd/proxy/__debug_bin*

@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/propagation"
+	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
@@ -27,8 +30,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"go.opentelemetry.io/otel/trace"
-	"net"
-	"net/http"
 )
 
 type LoadBalancer struct {
@@ -37,7 +38,7 @@ type LoadBalancer struct {
 	Config                types.Config
 	Limiter               jsonrpc.Limiter
 	HeightMap             jsonrpc.HeightMap
-	nodeSelector          selector.Strategy
+	NodeSelector          selector.Strategy
 	nodeChannel           <-chan *discovery.TargetNode
 	heightChannel         <-chan *discovery.ChainHeight
 	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
@@ -81,7 +82,7 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		Config:                config,
 		Limiter:               limiter,
 		HeightMap:             heightMap,
-		nodeSelector:          nodeSelector,
+		NodeSelector:          nodeSelector,
 		nodeChannel:           nodeChannel,
 		heightChannel:         heightChannel,
 		rpcMethodTransportMap: rpcMethodTransportMap,
@@ -108,14 +109,14 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			targetNode.SetState(tempNode.StateType)
 			switch changeType {
 			case 0:
-				_ = lb.nodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
+				_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
 			case 1:
-				_ = lb.nodeSelector.RemoveNode(lb.ctx, chainId, role, targetNode)
+				_ = lb.NodeSelector.RemoveNode(lb.ctx, chainId, role, targetNode)
 			}
 
 		case chainHeight := <-lb.heightChannel:
 			lb.HeightMap.SetHeight(chainHeight.ChainId, chainHeight.LatestBlockNumber)
-			_ = lb.nodeSelector.UpdateChainHeight(lb.ctx, chainHeight.ChainId, chainHeight.LatestBlockNumber)
+			_ = lb.NodeSelector.UpdateChainHeight(lb.ctx, chainHeight.ChainId, chainHeight.LatestBlockNumber)
 		}
 	}
 }
@@ -151,7 +152,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 
 	requestContext.ChainId = fmt.Sprint(chainIDNum)
 
-	targetNode, err := lb.nodeSelector.GetNode(requestContext, "")
+	targetNode, err := lb.NodeSelector.GetNode(requestContext, "")
 	if err != nil {
 		log.Error("failed to get node, err ", err)
 		_, object, _ := ejrpc.BadGateway(errors.New("no backends available"))

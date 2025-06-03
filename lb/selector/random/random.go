@@ -2,6 +2,7 @@ package random
 
 import (
 	"context"
+	"sync"
 
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/types"
@@ -14,6 +15,7 @@ type Random struct {
 	stateNodes   map[string][]*lbnode.Node
 	chainHeight  map[string]*hexutil.Big
 	pickNodeFunc utils.PickNodesFunc
+	lock         sync.RWMutex
 }
 
 func New(pickNodeFunc utils.PickNodesFunc) *Random {
@@ -26,6 +28,9 @@ func New(pickNodeFunc utils.PickNodesFunc) *Random {
 }
 
 func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, error) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
 	var tempNodes []*lbnode.Node
 	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId])
 
@@ -52,6 +57,9 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 }
 
 func (r *Random) UpsertNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	
 	if role == 2 {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
@@ -86,6 +94,9 @@ func (r *Random) UpsertNode(_ context.Context, chainId string, role int, node *l
 }
 
 func (r *Random) RemoveNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	
 	if role == 2 {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
@@ -115,10 +126,29 @@ func (r *Random) RemoveNode(_ context.Context, chainId string, role int, node *l
 }
 
 func (r *Random) UpdateChainHeight(_ context.Context, chainId string, chainHeight *hexutil.Big) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	
 	r.chainHeight[chainId] = chainHeight
 	return nil
 }
 
 func (r *Random) String() string {
 	return "Random"
+}
+
+func (r *Random) GetArchiveNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	
+	nodes, exists := r.archiveNodes[chainId]
+	return nodes, exists
+}
+
+func (r *Random) GetStateNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	
+	nodes, exists := r.stateNodes[chainId]
+	return nodes, exists
 }

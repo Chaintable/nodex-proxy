@@ -4,10 +4,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
+
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
+	"github.com/Chaintable/nodex-proxy/lb/weight"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -16,8 +20,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
-	"net"
-	"net/http"
 )
 
 func parseCmdlineAndLoadConfig() config.Config {
@@ -93,10 +95,21 @@ func main() {
 
 	pprof.Register(h)
 
+	// Initialize weight handler
+	weightHandler := weight.NewHandler(loadBalancer.NodeSelector)
+
+	// Add weight management endpoints
+	h.POST("/:chainId/setWeight", weightHandler.SetWeight)
+	h.GET("/:chainId/getWeight", weightHandler.GetWeight)
+	h.DELETE("/:chainId/deleteWeight", weightHandler.DeleteWeight)
+	h.GET("/:chainId/getAllNodes", weightHandler.GetAllNodes)
+	h.GET("/:chainId/debug_chooseOneNode", weightHandler.ChooseOneNode)
+
 	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
 		chainId := c.Param("chainId")
 		loadBalancer.ServeHTTP(ctx, c, chainId)
 	})
+
 	h.Spin()
 
 	for _, refresher := range nodeRefresherMap {
