@@ -2,6 +2,7 @@ package roundrobin
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
@@ -131,6 +132,26 @@ func (r *RoundRobin) UpdateChainHeight(_ context.Context, chainId string, chainH
 
 func (r *RoundRobin) String() string {
 	return "Weighted Round Robin"
+}
+
+func (r *RoundRobin) GetAllChainsIDs() []string {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	chainsMap := make(map[string]bool)
+	for chainId := range r.archiveNodes {
+		chainsMap[chainId] = true
+	}
+	for chainId := range r.stateNodes {
+		chainsMap[chainId] = true
+	}
+
+	chains := make([]string, 0, len(chainsMap))
+	for chainId := range chainsMap {
+		chains = append(chains, chainId)
+	}
+	sort.Strings(chains)
+	return chains
 }
 
 func (r *RoundRobin) GetArchiveNodes(chainId string) ([]*lbnode.Node, bool) {

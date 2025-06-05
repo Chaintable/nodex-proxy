@@ -9,9 +9,9 @@ import (
 
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
+	"github.com/Chaintable/nodex-proxy/http_handler"
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
-	"github.com/Chaintable/nodex-proxy/lb/weight"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -46,6 +46,7 @@ func main() {
 	cmdlineAndLoadConfig := parseCmdlineAndLoadConfig()
 	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
 	log.ProductionModeWithoutStackTrace()
+	// log.DevelopmentMode()
 
 	var nodeRefresherMap = make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -95,15 +96,22 @@ func main() {
 
 	pprof.Register(h)
 
-	// Initialize weight handler
-	weightHandler := weight.NewHandler(loadBalancer.NodeSelector)
+	handler, err := http_handler.NewHandler(ctx, loadBalancer.NodeSelector, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix)
+	if err != nil {
+		log.Fatal("New handler failed: %v\n", err)
+	}
 
 	// Add weight management endpoints
-	h.POST("/:chainId/setWeight", weightHandler.SetWeight)
-	h.GET("/:chainId/getWeight", weightHandler.GetWeight)
-	h.DELETE("/:chainId/deleteWeight", weightHandler.DeleteWeight)
-	h.GET("/:chainId/getAllNodes", weightHandler.GetAllNodes)
-	h.GET("/:chainId/debug_chooseOneNode", weightHandler.ChooseOneNode)
+	h.GET("/getChains", handler.GetAllChainsIDs)
+	h.POST("/:chainId/setWeight", handler.SetWeight)
+	h.GET("/:chainId/getWeight", handler.GetWeight)
+	h.DELETE("/:chainId/deleteWeight", handler.DeleteWeight)
+
+	h.GET("/:chainId/getAllNodes", handler.GetAllNodes)
+	h.GET("/:chainId/debug_chooseOneNode", handler.ChooseOneNode)
+	h.POST("/:chainId/addNode", handler.AddNode)
+	h.DELETE("/:chainId/deleteNode/:nodeId", handler.DeleteNode)
+	h.PUT("/:chainId/updateNode/:nodeId", handler.UpdateNode)
 
 	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
 		chainId := c.Param("chainId")

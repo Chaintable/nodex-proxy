@@ -140,6 +140,13 @@ func (node *Node) IncrConns(n int64) int64 {
 	return node.conns
 }
 
+func (node *Node) State() int {
+	node.lock.RLock()
+	defer node.lock.RUnlock()
+
+	return node.stateType
+}
+
 func (node *Node) Available() bool {
 
 	node.lock.RLock()

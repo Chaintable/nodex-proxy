@@ -2,13 +2,13 @@ package etcd
 
 import (
 	"context"
-	"log"
 	"regexp"
 	"time"
 
 	json "github.com/bytedance/sonic"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -36,13 +36,10 @@ var (
 )
 
 func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discover, error) {
-	log.Printf("Init Discover etcd endpoints: %v", etcdEndpoints)
-	etcdCli, err := clientv3.New(clientv3.Config{
-		Endpoints:   etcdEndpoints,
-		DialTimeout: 5 * time.Second,
-	})
+	log.Info("Init Discover etcd endpoints", log.Any("endpoints", etcdEndpoints))
+	etcdCli, err := NewEtcdClient(ctx, etcdEndpoints)
 	if err != nil {
-		log.Fatalf("connectting etcd failed: %v\n", err)
+		log.Fatal("connecting etcd failed", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -56,6 +53,14 @@ func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discov
 	return refresher, err
 }
 
+func NewEtcdClient(ctx context.Context, etcdEndpoints []string) (*clientv3.Client, error) {
+	etcdCli, err := clientv3.New(clientv3.Config{
+		Endpoints:   etcdEndpoints,
+		DialTimeout: 5 * time.Second,
+	})
+	return etcdCli, err
+}
+
 func (r *Discover) Close() error {
 	close(r.quit)
 	r.watchCancel()
@@ -66,9 +71,9 @@ func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-ch
 	// Initial request to get the current value of the key
 
 	resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
-	log.Printf("get key resp: %+v, key: %s ", resp, r.keyPrefix)
+	log.Info("get key resp", log.Any("resp", resp), log.Any("key", r.keyPrefix))
 	if err != nil {
-		log.Printf("failed to get initial value for: %+v", err)
+		log.Error("failed to get initial value", err)
 		return nil, nil, err
 	}
 	nodeChannel := make(chan *discovery.TargetNode, 1000)
@@ -82,7 +87,7 @@ func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-ch
 			var node discovery.TargetNode
 			err := json.Unmarshal(kv.Value, &node)
 			if err != nil {
-				log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", kv.Key, err, chainId)
+				log.Error("failed to unmarshal value for key", err, log.Any("key", kv.Key), log.Any("chain_id", chainId))
 				continue
 			}
 			node.NodeKey = nodeKey
@@ -96,7 +101,7 @@ func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-ch
 			var height discovery.ChainHeight
 			err := json.Unmarshal(kv.Value, &height)
 			if err != nil {
-				log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", kv.Key, err, chainId)
+				log.Error("failed to unmarshal value for key", err, log.Any("key", kv.Key), log.Any("chain_id", chainId))
 				continue
 			}
 			height.ChainId = chainId
@@ -108,7 +113,6 @@ func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-ch
 	go r.watchConfig(ctx)
 
 	return nodeChannel, heightChannel, nil
-
 }
 
 func (r *Discover) watchConfig(ctx context.Context) {
@@ -128,7 +132,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						var node discovery.TargetNode
 						err := json.Unmarshal(value, &node)
 						if err != nil {
-							log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", key, err, chainId)
+							log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
 							continue
 						}
 						node.NodeKey = nodeKey
@@ -142,14 +146,14 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						var height discovery.ChainHeight
 						err := json.Unmarshal(value, &height)
 						if err != nil {
-							log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", key, err, chainId)
+							log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
 							continue
 						}
 						height.ChainId = chainId
 						r.heightChan <- &height
 						continue
 					}
-				} else if event.Type == clientv3.EventTypeDelete {
+				} else {
 					key := event.Kv.Key
 					value := event.PrevKv.Value
 					if match := nodesPattern.FindStringSubmatch(string(key)); match != nil {
@@ -158,7 +162,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						var node discovery.TargetNode
 						err := json.Unmarshal(value, &node)
 						if err != nil {
-							log.Printf("failed to unmarshal value for key %s: %+v, chain id: %v", key, err, chainId)
+							log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
 							continue
 						}
 						node.NodeKey = nodeKey

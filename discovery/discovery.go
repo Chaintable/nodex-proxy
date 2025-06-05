@@ -14,6 +14,7 @@ type TargetNode struct {
 	NodeType   int    `json:"nodeType"` // 1 state, 2 archive
 	ChangeType int    `json:"-"`
 	NodeKey    string `json:"-"`
+	Weight     int    `json:"weight"` // 0-100
 }
 
 type ChainHeight struct {

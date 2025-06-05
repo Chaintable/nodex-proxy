@@ -2,6 +2,7 @@ package random
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
@@ -59,7 +60,7 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 func (r *Random) UpsertNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
-	
+
 	if role == 2 {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
@@ -96,7 +97,7 @@ func (r *Random) UpsertNode(_ context.Context, chainId string, role int, node *l
 func (r *Random) RemoveNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
-	
+
 	if role == 2 {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
@@ -128,7 +129,7 @@ func (r *Random) RemoveNode(_ context.Context, chainId string, role int, node *l
 func (r *Random) UpdateChainHeight(_ context.Context, chainId string, chainHeight *hexutil.Big) error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
-	
+
 	r.chainHeight[chainId] = chainHeight
 	return nil
 }
@@ -140,7 +141,7 @@ func (r *Random) String() string {
 func (r *Random) GetArchiveNodes(chainId string) ([]*lbnode.Node, bool) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
-	
+
 	nodes, exists := r.archiveNodes[chainId]
 	return nodes, exists
 }
@@ -148,7 +149,27 @@ func (r *Random) GetArchiveNodes(chainId string) ([]*lbnode.Node, bool) {
 func (r *Random) GetStateNodes(chainId string) ([]*lbnode.Node, bool) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
-	
+
 	nodes, exists := r.stateNodes[chainId]
 	return nodes, exists
+}
+
+func (r *Random) GetAllChainsIDs() []string {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	chainsMap := make(map[string]bool)
+	for chainId := range r.archiveNodes {
+		chainsMap[chainId] = true
+	}
+	for chainId := range r.stateNodes {
+		chainsMap[chainId] = true
+	}
+
+	chains := make([]string, 0, len(chainsMap))
+	for chainId := range chainsMap {
+		chains = append(chains, chainId)
+	}
+	sort.Strings(chains)
+	return chains
 }

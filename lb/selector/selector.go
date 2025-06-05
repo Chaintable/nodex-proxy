@@ -22,4 +22,5 @@ type Strategy interface {
 	// New methods for weight management
 	GetArchiveNodes(chainId string) ([]*lbnode.Node, bool)
 	GetStateNodes(chainId string) ([]*lbnode.Node, bool)
+	GetAllChainsIDs() []string
 }
