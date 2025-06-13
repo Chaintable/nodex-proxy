@@ -169,6 +169,7 @@ func (h *Handler) GetAllNodes(ctx context.Context, c *app.RequestContext) {
 			"ip":     node.IP(),
 			"port":   node.Port(),
 			"state":  node.State(),
+			"source": node.Source(),
 		})
 	}
 
@@ -180,6 +181,7 @@ func (h *Handler) GetAllNodes(ctx context.Context, c *app.RequestContext) {
 			"ip":     node.IP(),
 			"port":   node.Port(),
 			"state":  node.State(),
+			"source": node.Source(),
 		})
 	}
 
@@ -286,6 +288,7 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 		Port:      req.Port,
 		NodeType:  req.NodeType,
 		Weight:    req.Weight,
+		Source:    "manual",
 	}
 
 	nodeDataBytes, err := json.Marshal(nodeData)
@@ -308,6 +311,7 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 		"port":   req.Port,
 		"state":  req.State,
 		"weight": req.Weight,
+		"source": "manual",
 	})
 }
 
@@ -348,6 +352,17 @@ func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// check source is manual
+	var nodeData discovery.TargetNode
+	if err := json.Unmarshal(nodes.Kvs[0].Value, &nodeData); err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to parse existing node data"})
+		return
+	}
+	if nodeData.Source != "manual" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "only manual nodes can be deleted"})
+		return
+	}
+
 	// Delete node from etcd
 	_, err = h.etcdClient.Delete(ctx, nodeKey)
 	if err != nil {
@@ -364,8 +379,8 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 
 	// 定义请求结构体
 	type UpdateNodeRequest struct {
-		IP       string `json:"ip"`
-		Port     int    `json:"port"`
+		IP   string `json:"ip"`
+		Port int    `json:"port"`
 	}
 
 	var req UpdateNodeRequest
@@ -399,6 +414,11 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	if nodeData.Source != "manual" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "only manual nodes can be updated"})
+		return
+	}
+
 	// Update node data
 	if req.IP != "" {
 		nodeData.Address = req.IP
@@ -421,10 +441,10 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 	}
 
 	c.JSON(consts.StatusOK, map[string]interface{}{
-		"nodeId":    nodeId,
-		"ip":        nodeData.Address,
-		"port":      nodeData.Port,
+		"nodeId":   nodeId,
+		"ip":       nodeData.Address,
+		"port":     nodeData.Port,
 		"nodeType": nodeData.NodeType,
-		"state":     nodeData.StateType,
+		"state":    nodeData.StateType,
 	})
 }
