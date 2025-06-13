@@ -18,6 +18,7 @@ type Node struct {
 	currentWeight   int
 	currentHandling int64
 	stateType       int
+	source          string
 	lock            sync.RWMutex
 	ReverseProxy    *reverseproxy.ReverseProxy
 }
@@ -29,7 +30,7 @@ func WithReverseProxyMaxConnsPerHost(maxConnsPerHost int) func(o *rconfig.Client
 	}
 }
 
-func New(key, ip string, port, weight int, opts ...Option) (*Node, error) {
+func New(key, ip string, port, weight int, source string, opts ...Option) (*Node, error) {
 	if weight <= 0 {
 		weight = 1
 	}
@@ -39,6 +40,7 @@ func New(key, ip string, port, weight int, opts ...Option) (*Node, error) {
 		port:          port,
 		weight:        weight,
 		currentWeight: weight,
+		source:        source,
 	}
 	for _, opt := range opts {
 		opt(node)
@@ -120,6 +122,10 @@ func (node *Node) Addr() string {
 	return fmt.Sprintf("%s:%d", node.IP(), node.Port())
 }
 
+func (node *Node) Source() string {
+	return node.source
+}
+
 // Conns returns conns
 func (node *Node) Conns() int64 {
 	node.lock.RLock()
@@ -164,6 +170,7 @@ func (node *Node) Clone() *Node {
 		ip:              node.ip,
 		port:            node.port,
 		weight:          node.weight,
+		source:          node.source,
 		shardingKey:     node.shardingKey,
 		conns:           node.conns,
 		currentWeight:   node.currentWeight,

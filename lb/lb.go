@@ -101,7 +101,7 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			chainId := tempNode.ChainId
 			role := tempNode.NodeType
 			changeType := tempNode.ChangeType
-			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultLoadBalancerWeight)
+			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultLoadBalancerWeight, tempNode.Source)
 			if err != nil {
 				log.Error("failed to create node", err)
 				continue
