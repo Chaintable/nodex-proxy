@@ -10,6 +10,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/lb/selector"
+	"github.com/Chaintable/nodex-proxy/lb/selector/random"
 	"github.com/Chaintable/nodex-proxy/lb/selector/roundrobin"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/cloudwego/hertz/pkg/app"
@@ -65,26 +66,89 @@ func (h *Handler) SetWeight(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	if weight < 0 || weight > types.DefaultLoadBalancerWeight {
+	if weight < 0 || weight > types.DefaultWeight {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "weight must be between 0 and 100"})
 		return
 	}
 
-	// Get nodes for the chain
-	archiveNodes, _ := h.nodeSelector.GetArchiveNodes(chainId)
-	stateNodes, _ := h.nodeSelector.GetStateNodes(chainId)
-
-	// Search in both archive and state nodes
-	if h.updateNodeWeight(archiveNodes, nodeKey, weight) || h.updateNodeWeight(stateNodes, nodeKey, weight) {
-		c.JSON(consts.StatusOK, map[string]interface{}{
-			"node":    nodeKey,
-			"weight":  weight,
-			"message": "weight updated successfully",
-		})
+	_, err = h.findNode(chainId, nodeKey)
+	if err != nil {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
 		return
 	}
 
-	c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+	err = h.setWeight(ctx, chainId, nodeKey, weight)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to set weight: %v", err)})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"node":    nodeKey,
+		"weight":  weight,
+		"message": "weight updated successfully",
+	})
+}
+
+func (h *Handler) setWeight(ctx context.Context, chainId string, nodeKey string, weight int) error {
+	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+
+	// Get the current value and revision
+	resp, err := h.etcdClient.Get(ctx, gatewayKey)
+	if err != nil {
+		return err
+	}
+
+	var modRevision int64
+	gateway := discovery.Gateway{}
+	if len(resp.Kvs) > 0 {
+		modRevision = resp.Kvs[0].ModRevision
+		err = json.Unmarshal(resp.Kvs[0].Value, &gateway)
+		if err != nil {
+			return err
+		}
+	}
+
+	exist := false
+	for i, nodeStatus := range gateway.Status {
+		if nodeStatus.NodeKey == nodeKey {
+			gateway.Status[i].Weight = weight
+			exist = true
+			break
+		}
+	}
+
+	if !exist {
+		gateway.Status = append(gateway.Status, discovery.GatewayStatus{
+			NodeKey: nodeKey,
+			Weight:  weight,
+		})
+	}
+
+	gatewayBytes, err := json.Marshal(gateway)
+	if err != nil {
+		return err
+	}
+
+	// Create a transaction
+	txn := h.etcdClient.Txn(ctx)
+
+	// Compare the value hasn't changed since we read it
+	txnResp, err := txn.
+		If(clientv3.Compare(clientv3.ModRevision(gatewayKey), "=", modRevision)).
+		Then(clientv3.OpPut(gatewayKey, string(gatewayBytes))).
+		Else(clientv3.OpGet(gatewayKey)).
+		Commit()
+
+	if err != nil {
+		return err
+	}
+
+	if !txnResp.Succeeded {
+		return fmt.Errorf("concurrent modification detected, please retry")
+	}
+
+	return nil
 }
 
 func (h *Handler) GetWeight(ctx context.Context, c *app.RequestContext) {
@@ -96,28 +160,35 @@ func (h *Handler) GetWeight(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// Get nodes for the chain
+	node, err := h.findNode(chainId, nodeKey)
+	if err != nil {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+		return
+	}
+
+	weight := h.getNodeWeight(chainId, node)
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"node":   nodeKey,
+		"weight": weight,
+	})
+}
+
+func (h *Handler) findNode(chainId string, nodeKey string) (*lbnode.Node, error) {
 	archiveNodes, _ := h.nodeSelector.GetArchiveNodes(chainId)
 	stateNodes, _ := h.nodeSelector.GetStateNodes(chainId)
 
-	// Search in both archive and state nodes
-	if weight, found := h.getNodeWeight(archiveNodes, nodeKey); found {
-		c.JSON(consts.StatusOK, map[string]interface{}{
-			"node":   nodeKey,
-			"weight": weight,
-		})
-		return
+	for _, node := range archiveNodes {
+		if node.Key() == nodeKey {
+			return node, nil
+		}
 	}
-
-	if weight, found := h.getNodeWeight(stateNodes, nodeKey); found {
-		c.JSON(consts.StatusOK, map[string]interface{}{
-			"node":   nodeKey,
-			"weight": weight,
-		})
-		return
+	for _, node := range stateNodes {
+		if node.Key() == nodeKey {
+			return node, nil
+		}
 	}
-
-	c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+	return nil, fmt.Errorf("node not found")
 }
 
 func (h *Handler) DeleteWeight(ctx context.Context, c *app.RequestContext) {
@@ -135,22 +206,23 @@ func (h *Handler) DeleteWeight(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// Get nodes for the chain
-	archiveNodes, _ := h.nodeSelector.GetArchiveNodes(chainId)
-	stateNodes, _ := h.nodeSelector.GetStateNodes(chainId)
-
-	// Search in both archive and state nodes
-	if h.updateNodeWeight(archiveNodes, nodeKey, types.DefaultLoadBalancerWeight) ||
-		h.updateNodeWeight(stateNodes, nodeKey, types.DefaultLoadBalancerWeight) {
-		c.JSON(consts.StatusOK, map[string]interface{}{
-			"node":    nodeKey,
-			"weight":  types.DefaultLoadBalancerWeight,
-			"message": "reset to default weight 100",
-		})
+	_, err := h.findNode(chainId, nodeKey)
+	if err != nil {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
 		return
 	}
 
-	c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+	err = h.setWeight(ctx, chainId, nodeKey, types.DefaultWeight)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to reset weight to default: %v", err)})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"node":    nodeKey,
+		"weight":  types.DefaultWeight,
+		"message": "reset to default weight 100",
+	})
 }
 
 func (h *Handler) GetAllNodes(ctx context.Context, c *app.RequestContext) {
@@ -261,7 +333,7 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	if req.Weight < 0 || req.Weight > types.DefaultLoadBalancerWeight {
+	if req.Weight < 0 || req.Weight > types.DefaultWeight {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "weight must be between 0 and 100"})
 		return
 	}
@@ -315,24 +387,17 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-// Helper functions
-func (h *Handler) updateNodeWeight(nodes []*lbnode.Node, nodeKey string, weight int) bool {
-	for _, node := range nodes {
-		if node.Key() == nodeKey {
-			node.SetWeight(weight)
-			return true
+func (h *Handler) getNodeWeight(chainId string, node *lbnode.Node) int {
+	switch h.nodeSelector.(type) {
+	case *random.Random:
+		weight, exists := h.nodeSelector.(*random.Random).GatewayStrategy.GetWeightForNode(chainId, node.Key())
+		if !exists {
+			return types.DefaultWeight
 		}
+		return weight
+	default:
+		return node.Weight()
 	}
-	return false
-}
-
-func (h *Handler) getNodeWeight(nodes []*lbnode.Node, nodeKey string) (int, bool) {
-	for _, node := range nodes {
-		if node.Key() == nodeKey {
-			return node.Weight(), true
-		}
-	}
-	return 0, false
 }
 
 func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {

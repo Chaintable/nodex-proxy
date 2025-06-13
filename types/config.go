@@ -43,7 +43,7 @@ const (
 )
 
 var (
-	DefaultLoadBalancerWeight     = 100
+	DefaultWeight                 = 100
 	DefaultLoadBalancerTargetPort = 80
 )
 
