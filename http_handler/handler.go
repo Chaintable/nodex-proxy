@@ -10,6 +10,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/lb/selector"
+	"github.com/Chaintable/nodex-proxy/lb/selector/random"
 	"github.com/Chaintable/nodex-proxy/lb/selector/roundrobin"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/cloudwego/hertz/pkg/app"
@@ -65,59 +66,164 @@ func (h *Handler) SetWeight(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	if weight < 0 || weight > types.DefaultLoadBalancerWeight {
+	if weight < 0 || weight > types.DefaultWeight {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "weight must be between 0 and 100"})
 		return
 	}
 
-	// Get nodes for the chain
-	archiveNodes, _ := h.nodeSelector.GetArchiveNodes(chainId)
-	stateNodes, _ := h.nodeSelector.GetStateNodes(chainId)
-
-	// Search in both archive and state nodes
-	if h.updateNodeWeight(archiveNodes, nodeKey, weight) || h.updateNodeWeight(stateNodes, nodeKey, weight) {
-		c.JSON(consts.StatusOK, map[string]interface{}{
-			"node":    nodeKey,
-			"weight":  weight,
-			"message": "weight updated successfully",
-		})
+	_, err = h.findNode(chainId, nodeKey)
+	if err != nil {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
 		return
 	}
 
-	c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+	err = h.setWeight(ctx, chainId, nodeKey, weight)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to set weight: %v", err)})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"node":    nodeKey,
+		"weight":  weight,
+		"message": "weight updated successfully",
+	})
+}
+
+func (h *Handler) generateGatewayWeight(ctx context.Context, chainId string, nodeKey string, weight int) ([]byte, error) {
+	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+	resp, err := h.etcdClient.Get(ctx, gatewayKey)
+	if err != nil {
+		return nil, err
+	}
+
+	gateway := discovery.Gateway{}
+	if len(resp.Kvs) > 0 {
+		err = json.Unmarshal(resp.Kvs[0].Value, &gateway)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	nodeIndex := -1
+	for i, nodeStatus := range gateway.Status {
+		if nodeStatus.NodeKey == nodeKey {
+			nodeIndex = i
+			break
+		}
+	}
+
+	// only add to gateway if weight is not default(100)
+	if weight == types.DefaultWeight {
+		if nodeIndex != -1 {
+			// if node exists, remove it from gateway
+			gateway.Status = append(gateway.Status[:nodeIndex], gateway.Status[nodeIndex+1:]...)
+		}
+		// if node doesn't exist, do nothing
+	} else {
+		if nodeIndex != -1 {
+			// if node exists, update its weight
+			gateway.Status[nodeIndex].Weight = weight
+		} else {
+			// if node doesn't exist, add it to gateway
+			gateway.Status = append(gateway.Status, discovery.GatewayStatus{
+				NodeKey: nodeKey,
+				Weight:  weight,
+			})
+		}
+	}
+
+	return json.Marshal(gateway)
+}
+
+func (h *Handler) setWeight(ctx context.Context, chainId string, nodeKey string, weight int) error {
+	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+
+	// Get the current value and revision
+	resp, err := h.etcdClient.Get(ctx, gatewayKey)
+	if err != nil {
+		return err
+	}
+
+	var modRevision int64
+	if len(resp.Kvs) > 0 {
+		modRevision = resp.Kvs[0].ModRevision
+	}
+
+	gatewayBytes, err := h.generateGatewayWeight(ctx, chainId, nodeKey, weight)
+	if err != nil {
+		return err
+	}
+
+	// Create a transaction
+	txn := h.etcdClient.Txn(ctx)
+
+	// Compare the value hasn't changed since we read it
+	txnResp, err := txn.
+		If(clientv3.Compare(clientv3.ModRevision(gatewayKey), "=", modRevision)).
+		Then(clientv3.OpPut(gatewayKey, string(gatewayBytes))).
+		Else(clientv3.OpGet(gatewayKey)).
+		Commit()
+
+	if err != nil {
+		return err
+	}
+
+	if !txnResp.Succeeded {
+		return fmt.Errorf("concurrent modification detected, please retry")
+	}
+
+	return nil
 }
 
 func (h *Handler) GetWeight(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	nodeKey := c.Query("node")
 
+	if chainId == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId parameter is required"})
+		return
+	}
+
 	if nodeKey == "" {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "node parameter is required"})
 		return
 	}
 
-	// Get nodes for the chain
-	archiveNodes, _ := h.nodeSelector.GetArchiveNodes(chainId)
-	stateNodes, _ := h.nodeSelector.GetStateNodes(chainId)
-
-	// Search in both archive and state nodes
-	if weight, found := h.getNodeWeight(archiveNodes, nodeKey); found {
+	// return weights for all the nodes in the chain
+	if nodeKey == "all" {
+		weights := h.getChainWeights(chainId)
 		c.JSON(consts.StatusOK, map[string]interface{}{
-			"node":   nodeKey,
-			"weight": weight,
+			"weights": weights,
 		})
 		return
 	}
 
-	if weight, found := h.getNodeWeight(stateNodes, nodeKey); found {
-		c.JSON(consts.StatusOK, map[string]interface{}{
-			"node":   nodeKey,
-			"weight": weight,
-		})
+	// return weight for a specific node
+	node, err := h.findNode(chainId, nodeKey)
+	if err != nil {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
 		return
 	}
 
-	c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+	weight := h.getNodeWeight(chainId, node)
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"weights": map[string]int{
+			nodeKey: weight,
+		},
+	})
+}
+
+func (h *Handler) findNode(chainId string, nodeKey string) (*lbnode.Node, error) {
+	allNodes, _ := h.nodeSelector.GetAllNodes(chainId)
+
+	for _, node := range allNodes {
+		if node.Key() == nodeKey {
+			return node, nil
+		}
+	}
+	return nil, fmt.Errorf("node not found")
 }
 
 func (h *Handler) DeleteWeight(ctx context.Context, c *app.RequestContext) {
@@ -135,22 +241,23 @@ func (h *Handler) DeleteWeight(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// Get nodes for the chain
-	archiveNodes, _ := h.nodeSelector.GetArchiveNodes(chainId)
-	stateNodes, _ := h.nodeSelector.GetStateNodes(chainId)
-
-	// Search in both archive and state nodes
-	if h.updateNodeWeight(archiveNodes, nodeKey, types.DefaultLoadBalancerWeight) ||
-		h.updateNodeWeight(stateNodes, nodeKey, types.DefaultLoadBalancerWeight) {
-		c.JSON(consts.StatusOK, map[string]interface{}{
-			"node":    nodeKey,
-			"weight":  types.DefaultLoadBalancerWeight,
-			"message": "reset to default weight 100",
-		})
+	_, err := h.findNode(chainId, nodeKey)
+	if err != nil {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
 		return
 	}
 
-	c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+	err = h.setWeight(ctx, chainId, nodeKey, types.DefaultWeight)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to reset weight to default: %v", err)})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"node":    nodeKey,
+		"weight":  types.DefaultWeight,
+		"message": "reset to default weight 100",
+	})
 }
 
 func (h *Handler) GetAllNodes(ctx context.Context, c *app.RequestContext) {
@@ -261,7 +368,7 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	if req.Weight < 0 || req.Weight > types.DefaultLoadBalancerWeight {
+	if req.Weight < 0 || req.Weight > types.DefaultWeight {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "weight must be between 0 and 100"})
 		return
 	}
@@ -274,7 +381,7 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 	// todo: check if node already exists
 	nodes, err := h.etcdClient.Get(ctx, nodeKey)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get node from etcd"})
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to get node from etcd: %v", err)})
 		return
 	}
 	if len(nodes.Kvs) > 0 {
@@ -293,14 +400,41 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 
 	nodeDataBytes, err := json.Marshal(nodeData)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to marshal node data"})
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to marshal node data: %v", err)})
 		return
 	}
 
-	// todo: txn & add weight
-	_, err = h.etcdClient.Put(ctx, nodeKey, string(nodeDataBytes))
+	// Prepare gateway update if weight is not default
+	var gatewayBytes []byte
+	if req.Weight != types.DefaultWeight {
+		gatewayBytes, err = h.generateGatewayWeight(ctx, chainId, req.NodeId, req.Weight)
+		if err != nil {
+			c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to prepare gateway update: %v", err)})
+			return
+		}
+	}
+
+	txn := h.etcdClient.Txn(ctx)
+	txn = txn.If(clientv3.Compare(clientv3.Version(nodeKey), "=", 0))
+	if req.Weight != types.DefaultWeight {
+		gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+		txn = txn.Then(
+			clientv3.OpPut(nodeKey, string(nodeDataBytes)),
+			clientv3.OpPut(gatewayKey, string(gatewayBytes)),
+		)
+	} else {
+		txn = txn.Then(clientv3.OpPut(nodeKey, string(nodeDataBytes)))
+	}
+
+	// Commit transaction
+	txnResp, err := txn.Commit()
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to store node in etcd"})
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to commit transaction: %v", err)})
+		return
+	}
+
+	if !txnResp.Succeeded {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "concurrent modification detected, please retry"})
 		return
 	}
 
@@ -315,24 +449,28 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-// Helper functions
-func (h *Handler) updateNodeWeight(nodes []*lbnode.Node, nodeKey string, weight int) bool {
-	for _, node := range nodes {
-		if node.Key() == nodeKey {
-			node.SetWeight(weight)
-			return true
+func (h *Handler) getNodeWeight(chainId string, node *lbnode.Node) int {
+	switch h.nodeSelector.(type) {
+	case *random.Random:
+		weight, exists := h.nodeSelector.(*random.Random).GatewayStrategy.GetWeightForNode(chainId, node.Key())
+		if !exists {
+			return types.DefaultWeight
 		}
+		return weight
+	default:
+		return node.Weight()
 	}
-	return false
 }
 
-func (h *Handler) getNodeWeight(nodes []*lbnode.Node, nodeKey string) (int, bool) {
-	for _, node := range nodes {
-		if node.Key() == nodeKey {
-			return node.Weight(), true
-		}
+func (h *Handler) getChainWeights(chainId string) map[string]int {
+	switch h.nodeSelector.(type) {
+	case *random.Random:
+		weights, _ := h.nodeSelector.(*random.Random).GatewayStrategy.GetWeightForChain(chainId)
+		return weights
+	default:
+		weights := make(map[string]int)
+		return weights
 	}
-	return 0, false
 }
 
 func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
@@ -363,10 +501,32 @@ func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// Delete node from etcd
-	_, err = h.etcdClient.Delete(ctx, nodeKey)
+	// Prepare gateway update to remove node weight
+	gatewayBytes, err := h.generateGatewayWeight(ctx, chainId, nodeId, types.DefaultWeight)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to delete node from etcd"})
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to prepare gateway update"})
+		return
+	}
+
+	// Create transaction to delete node and update gateway
+	txn := h.etcdClient.Txn(ctx)
+	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+
+	// Delete node and update gateway in the same transaction
+	txnResp, err := txn.
+		Then(
+			clientv3.OpDelete(nodeKey),
+			clientv3.OpPut(gatewayKey, string(gatewayBytes)),
+		).
+		Commit()
+
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to commit transaction: %v", err)})
+		return
+	}
+
+	if !txnResp.Succeeded {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "concurrent modification detected, please retry"})
 		return
 	}
 

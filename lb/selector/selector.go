@@ -20,6 +20,7 @@ type Strategy interface {
 	UpdateChainHeight(ctx context.Context, chainId string, chainHeight *hexutil.Big) error
 
 	// New methods for weight management
+	GetAllNodes(chainId string) ([]*lbnode.Node, bool)
 	GetArchiveNodes(chainId string) ([]*lbnode.Node, bool)
 	GetStateNodes(chainId string) ([]*lbnode.Node, bool)
 	GetAllChainsIDs() []string

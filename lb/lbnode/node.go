@@ -34,6 +34,9 @@ func New(key, ip string, port, weight int, source string, opts ...Option) (*Node
 	if weight <= 0 {
 		weight = 1
 	}
+	if source == "" {
+		source = "official"
+	}
 	node := &Node{
 		key:           key,
 		ip:            ip,

@@ -38,9 +38,11 @@ type LoadBalancer struct {
 	Config                types.Config
 	Limiter               jsonrpc.Limiter
 	HeightMap             jsonrpc.HeightMap
+	GatewayStrategy       jsonrpc.GatewayStrategy
 	NodeSelector          selector.Strategy
 	nodeChannel           <-chan *discovery.TargetNode
 	heightChannel         <-chan *discovery.ChainHeight
+	gatewayChannel        <-chan *discovery.Gateway
 	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
 	preProcessorsHertz    types.PreProcessorProcessorsHertz
 	postProcessorsHertz   types.PostProcessorProcessorsHertz
@@ -61,13 +63,17 @@ const (
 	DBKServerVersion = "x-dbk-server-version"
 )
 
-func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config, rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap, nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight) *LoadBalancer {
+func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config,
+	rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap,
+	nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight,
+	gatewayChannel <-chan *discovery.Gateway) *LoadBalancer {
+	gatewayStrategy := jsonrpc.NewGatewayStrategy()
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
 	case "round_robin":
 		nodeSelector = roundrobin.New(utils.PickNodes)
 	case "random":
-		nodeSelector = random.New(utils.PickNodes)
+		nodeSelector = random.New(utils.PickNodes, gatewayStrategy)
 	}
 	rpcMethodTransportMap := map[ejrpc.RPCMethod]*http.Transport{}
 	for m, t := range config.RPCMethodTimeoutConfig {
@@ -82,9 +88,11 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		Config:                config,
 		Limiter:               limiter,
 		HeightMap:             heightMap,
+		GatewayStrategy:       gatewayStrategy,
 		NodeSelector:          nodeSelector,
 		nodeChannel:           nodeChannel,
 		heightChannel:         heightChannel,
+		gatewayChannel:        gatewayChannel,
 		rpcMethodTransportMap: rpcMethodTransportMap,
 		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter),
 		postProcessorsHertz:   jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
@@ -101,24 +109,35 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			chainId := tempNode.ChainId
 			role := tempNode.NodeType
 			changeType := tempNode.ChangeType
-			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultLoadBalancerWeight, tempNode.Source)
+			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultWeight, tempNode.Source)
 			if err != nil {
 				log.Error("failed to create node", err)
 				continue
 			}
 			targetNode.SetState(tempNode.StateType)
 			switch changeType {
-			case 0:
+			case etcd.EVENT_PUT:
 				_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
-			case 1:
+			case etcd.EVENT_DELETE:
 				_ = lb.NodeSelector.RemoveNode(lb.ctx, chainId, role, targetNode)
 			}
 
 		case chainHeight := <-lb.heightChannel:
 			lb.HeightMap.SetHeight(chainHeight.ChainId, chainHeight.LatestBlockNumber)
 			_ = lb.NodeSelector.UpdateChainHeight(lb.ctx, chainHeight.ChainId, chainHeight.LatestBlockNumber)
+
+		case gateway := <-lb.gatewayChannel:
+			chainId := gateway.ChainId
+
+			switch gateway.ChangeType {
+			case etcd.EVENT_PUT:
+				lb.GatewayStrategy.UpdateWeightForChain(chainId, gateway.Status)
+			case etcd.EVENT_DELETE:
+				lb.GatewayStrategy.DeleteWeightForChain(chainId)
+			}
 		}
 	}
+
 }
 
 func parseNumber(s string) (int64, error) {

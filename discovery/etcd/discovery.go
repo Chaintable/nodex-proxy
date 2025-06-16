@@ -18,21 +18,23 @@ type Discover struct {
 
 	quit chan struct{}
 
-	backends      []string
-	nodeChannel   chan *discovery.TargetNode
-	heightChan    chan *discovery.ChainHeight
-	keyPrefix     string
-	watchRevision int64
+	backends       []string
+	nodeChannel    chan *discovery.TargetNode
+	heightChan     chan *discovery.ChainHeight
+	gatewayChannel chan *discovery.Gateway
+	keyPrefix      string
+	watchRevision  int64
 }
 
 const (
-	addNode = 0 + iota
-	delNode
+	EVENT_PUT = 0 + iota
+	EVENT_DELETE
 )
 
 var (
 	lastBlockPattern = regexp.MustCompile(`^(?P<chain>.*?)/lastBlockNumber$`)
 	nodesPattern     = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
+	gateWayPattern = regexp.MustCompile(`^(?P<chain>.*?)/gateway$`)
 )
 
 func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discover, error) {
@@ -67,19 +69,23 @@ func (r *Discover) Close() error {
 	return r.etcdClient.Close()
 }
 
-func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-chan *discovery.ChainHeight, error) {
+func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-chan *discovery.ChainHeight, <-chan *discovery.Gateway, error) {
 	// Initial request to get the current value of the key
 
 	resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
 	log.Info("get key resp", log.Any("resp", resp), log.Any("key", r.keyPrefix))
 	if err != nil {
 		log.Error("failed to get initial value", err)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	// todo: fix channel potential stuck issue
 	nodeChannel := make(chan *discovery.TargetNode, 1000)
 	heightChannel := make(chan *discovery.ChainHeight, 1000)
+	gatewayChannel := make(chan *discovery.Gateway, 1000)
 	r.nodeChannel = nodeChannel
 	r.heightChan = heightChannel
+	r.gatewayChannel = gatewayChannel
+
 	for _, kv := range resp.Kvs {
 		if match := nodesPattern.FindStringSubmatch(string(kv.Key)); match != nil {
 			chainId := match[nodesPattern.SubexpIndex("chain")]
@@ -91,7 +97,7 @@ func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-ch
 				continue
 			}
 			node.NodeKey = nodeKey
-			node.ChangeType = addNode
+			node.ChangeType = EVENT_PUT
 			node.ChainId = chainId
 			nodeChannel <- &node
 			continue
@@ -108,11 +114,23 @@ func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-ch
 			heightChannel <- &height
 			continue
 		}
+		if match := gateWayPattern.FindStringSubmatch(string(kv.Key)); match != nil {
+			chainId := match[gateWayPattern.SubexpIndex("chain")]
+			var gateway discovery.Gateway
+			err := json.Unmarshal(kv.Value, &gateway)
+			if err != nil {
+				log.Error("failed to unmarshal value for key", err, log.Any("key", kv.Key), log.Any("chain_id", chainId))
+				continue
+			}
+			gateway.ChainId = chainId
+			gateway.ChangeType = EVENT_PUT
+			gatewayChannel <- &gateway
+		}
 	}
 	r.watchRevision = resp.Header.Revision
 	go r.watchConfig(ctx)
 
-	return nodeChannel, heightChannel, nil
+	return nodeChannel, heightChannel, gatewayChannel, nil
 }
 
 func (r *Discover) watchConfig(ctx context.Context) {
@@ -136,7 +154,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 							continue
 						}
 						node.NodeKey = nodeKey
-						node.ChangeType = addNode
+						node.ChangeType = EVENT_PUT
 						node.ChainId = chainId
 						r.nodeChannel <- &node
 						continue
@@ -153,6 +171,19 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						r.heightChan <- &height
 						continue
 					}
+					if match := gateWayPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := match[gateWayPattern.SubexpIndex("chain")]
+						var gateway discovery.Gateway
+						err := json.Unmarshal(value, &gateway)
+						if err != nil {
+							log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
+							continue
+						}
+						gateway.ChainId = chainId
+						gateway.ChangeType = EVENT_PUT
+						r.gatewayChannel <- &gateway
+						continue
+					}
 				} else {
 					key := event.Kv.Key
 					value := event.PrevKv.Value
@@ -166,9 +197,23 @@ func (r *Discover) watchConfig(ctx context.Context) {
 							continue
 						}
 						node.NodeKey = nodeKey
-						node.ChangeType = delNode
+						node.ChangeType = EVENT_DELETE
 						node.ChainId = chainId
 						r.nodeChannel <- &node
+						continue
+					}
+					if match := gateWayPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := match[gateWayPattern.SubexpIndex("chain")]
+						var gateway discovery.Gateway
+						err := json.Unmarshal(value, &gateway)
+						if err != nil {
+							log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
+							continue
+						}
+						gateway.ChainId = chainId
+						gateway.ChangeType = EVENT_DELETE
+						r.gatewayChannel <- &gateway
+						continue
 					}
 				}
 			}

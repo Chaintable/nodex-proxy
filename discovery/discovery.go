@@ -23,6 +23,17 @@ type ChainHeight struct {
 	LatestBlockNumber *hexutil.Big `json:"latestBlockNumber"`
 }
 
+type Gateway struct {
+	ChainId    string          `json:"-"`
+	ChangeType int             `json:"-"`
+	Status     []GatewayStatus `json:"status"`
+}
+
+type GatewayStatus struct {
+	NodeKey string `json:"node_key"`
+	Weight  int    `json:"weight"`
+}
+
 type Discover interface {
 	Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, error)
 	Close() error
