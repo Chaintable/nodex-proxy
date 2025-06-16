@@ -154,6 +154,16 @@ func (r *RoundRobin) GetAllChainsIDs() []string {
 	return chains
 }
 
+func (r *RoundRobin) GetAllNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	var nodes []*lbnode.Node
+	nodes = append(nodes, r.archiveNodes[chainId]...)
+	nodes = append(nodes, r.stateNodes[chainId]...)
+	return nodes, len(nodes) > 0
+}
+
 func (r *RoundRobin) GetArchiveNodes(chainId string) ([]*lbnode.Node, bool) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()

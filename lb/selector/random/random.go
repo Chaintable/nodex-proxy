@@ -148,6 +148,16 @@ func (r *Random) String() string {
 	return "Random"
 }
 
+func (r *Random) GetAllNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	var nodes []*lbnode.Node
+	nodes = append(nodes, r.archiveNodes[chainId]...)
+	nodes = append(nodes, r.stateNodes[chainId]...)
+	return nodes, len(nodes) > 0
+}
+
 func (r *Random) GetArchiveNodes(chainId string) ([]*lbnode.Node, bool) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()

@@ -53,10 +53,8 @@ func (g *gatewayStrategy) UpdateWeightForChain(chainId string, status []discover
 	g.Lock()
 	defer g.Unlock()
 
+	g.gatewayMap[chainId] = make(map[string]int)
 	for _, status := range status {
-		if _, exists := g.gatewayMap[chainId]; !exists {
-			g.gatewayMap[chainId] = make(map[string]int)
-		}
 		g.gatewayMap[chainId][status.NodeKey] = status.Weight
 	}
 }
