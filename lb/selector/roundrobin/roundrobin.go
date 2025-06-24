@@ -2,36 +2,39 @@ package roundrobin
 
 import (
 	"context"
+	"sort"
+	"sync"
+
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	cmap "github.com/orcaman/concurrent-map/v2"
 )
 
 type RoundRobin struct {
-	archiveNodes cmap.ConcurrentMap[string, []*lbnode.Node] //map[string][]*lbnode.Node
-	stateNodes   cmap.ConcurrentMap[string, []*lbnode.Node] //map[string][]*lbnode.Node
-	chainHeight  cmap.ConcurrentMap[string, *hexutil.Big]   //map[string]*hexutil.Big
+	archiveNodes map[string][]*lbnode.Node
+	stateNodes   map[string][]*lbnode.Node
+	chainHeight  map[string]*hexutil.Big
 	pickNodeFunc utils.PickNodesFunc
+	lock         sync.RWMutex
 }
 
 func New(pickNodeFunc utils.PickNodesFunc) *RoundRobin {
 	return &RoundRobin{
-		archiveNodes: cmap.New[[]*lbnode.Node](),
-		stateNodes:   cmap.New[[]*lbnode.Node](),
-		chainHeight:  cmap.New[*hexutil.Big](),
+		archiveNodes: make(map[string][]*lbnode.Node),
+		stateNodes:   make(map[string][]*lbnode.Node),
+		chainHeight:  make(map[string]*hexutil.Big),
 		pickNodeFunc: pickNodeFunc,
 	}
 }
 
 func (r *RoundRobin) GetNode(ctx *types.RequestContext, requestKey string) (*lbnode.Node, error) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
 	var best *lbnode.Node
 	total := 0
-	height, _ := r.chainHeight.Get(ctx.ChainId)
-	archiveNodes, _ := r.archiveNodes.Get(ctx.ChainId)
-	stateNodes, _ := r.stateNodes.Get(ctx.ChainId)
-	nodes := r.pickNodeFunc(ctx.BlockContext, height, archiveNodes, stateNodes)
+	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId])
 
 	for _, node := range nodes {
 		node.IncrCurrentWeight(node.EffectWeight())
@@ -54,10 +57,13 @@ func (r *RoundRobin) GetNode(ctx *types.RequestContext, requestKey string) (*lbn
 }
 
 func (r *RoundRobin) UpsertNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
 	if role == 2 {
-		nodes, exists := r.archiveNodes.Get(chainId)
+		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
-			r.archiveNodes.Set(chainId, []*lbnode.Node{node})
+			r.archiveNodes[chainId] = []*lbnode.Node{node}
 			return nil
 		}
 
@@ -69,11 +75,11 @@ func (r *RoundRobin) UpsertNode(_ context.Context, chainId string, role int, nod
 			}
 		}
 
-		r.archiveNodes.Set(chainId, append(nodes, node))
+		r.archiveNodes[chainId] = append(nodes, node)
 	} else {
-		nodes, exists := r.stateNodes.Get(chainId)
+		nodes, exists := r.stateNodes[chainId]
 		if !exists {
-			r.stateNodes.Set(chainId, []*lbnode.Node{node})
+			r.stateNodes[chainId] = []*lbnode.Node{node}
 			return nil
 		}
 		for i, existingNode := range nodes {
@@ -82,32 +88,33 @@ func (r *RoundRobin) UpsertNode(_ context.Context, chainId string, role int, nod
 				return nil
 			}
 		}
-		r.stateNodes.Set(chainId, append(nodes, node))
+		r.stateNodes[chainId] = append(nodes, node)
 	}
 	return nil
 }
+
 func (r *RoundRobin) RemoveNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
 	if role == 2 {
-		nodes, exists := r.archiveNodes.Get(chainId)
+		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
 			return nil
 		}
 
 		for i, existingNode := range nodes {
 			if existingNode.Key() == node.Key() {
-				r.archiveNodes.Set(chainId, append(nodes[:i], nodes[i+1:]...))
+				r.archiveNodes[chainId] = append(nodes[:i], nodes[i+1:]...)
 				return nil
 			}
 		}
 	} else {
-		nodes, exists := r.stateNodes.Get(chainId)
+		nodes, exists := r.stateNodes[chainId]
 		if !exists {
 			return nil
 		}
 
 		for i, existingNode := range nodes {
 			if existingNode.Key() == node.Key() {
-				r.stateNodes.Set(chainId, append(nodes[:i], nodes[i+1:]...))
+				r.stateNodes[chainId] = append(nodes[:i], nodes[i+1:]...)
 				return nil
 			}
 		}
@@ -116,10 +123,59 @@ func (r *RoundRobin) RemoveNode(_ context.Context, chainId string, role int, nod
 }
 
 func (r *RoundRobin) UpdateChainHeight(_ context.Context, chainId string, chainHeight *hexutil.Big) error {
-	r.chainHeight.Set(chainId, chainHeight)
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	r.chainHeight[chainId] = chainHeight
 	return nil
 }
 
 func (r *RoundRobin) String() string {
 	return "Weighted Round Robin"
+}
+
+func (r *RoundRobin) GetAllChainsIDs() []string {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	chainsMap := make(map[string]bool)
+	for chainId := range r.archiveNodes {
+		chainsMap[chainId] = true
+	}
+	for chainId := range r.stateNodes {
+		chainsMap[chainId] = true
+	}
+
+	chains := make([]string, 0, len(chainsMap))
+	for chainId := range chainsMap {
+		chains = append(chains, chainId)
+	}
+	sort.Strings(chains)
+	return chains
+}
+
+func (r *RoundRobin) GetAllNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	var nodes []*lbnode.Node
+	nodes = append(nodes, r.archiveNodes[chainId]...)
+	nodes = append(nodes, r.stateNodes[chainId]...)
+	return nodes, len(nodes) > 0
+}
+
+func (r *RoundRobin) GetArchiveNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	nodes, exists := r.archiveNodes[chainId]
+	return nodes, exists
+}
+
+func (r *RoundRobin) GetStateNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	nodes, exists := r.stateNodes[chainId]
+	return nodes, exists
 }

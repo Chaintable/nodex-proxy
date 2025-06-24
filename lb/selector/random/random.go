@@ -2,7 +2,10 @@ package random
 
 import (
 	"context"
+	"sort"
+	"sync"
 
+	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
@@ -10,39 +13,64 @@ import (
 )
 
 type Random struct {
-	archiveNodes map[string][]*lbnode.Node
-	stateNodes   map[string][]*lbnode.Node
-	chainHeight  map[string]*hexutil.Big
-	pickNodeFunc utils.PickNodesFunc
+	archiveNodes    map[string][]*lbnode.Node
+	stateNodes      map[string][]*lbnode.Node
+	chainHeight     map[string]*hexutil.Big
+	pickNodeFunc    utils.PickNodesFunc
+	GatewayStrategy jsonrpc.GatewayStrategy
+	lock            sync.RWMutex
 }
 
-func New(pickNodeFunc utils.PickNodesFunc) *Random {
+func New(pickNodeFunc utils.PickNodesFunc, gatewayStrategy jsonrpc.GatewayStrategy) *Random {
 	return &Random{
-		archiveNodes: make(map[string][]*lbnode.Node),
-		stateNodes:   make(map[string][]*lbnode.Node),
-		chainHeight:  make(map[string]*hexutil.Big),
-		pickNodeFunc: pickNodeFunc,
+		archiveNodes:    make(map[string][]*lbnode.Node),
+		stateNodes:      make(map[string][]*lbnode.Node),
+		chainHeight:     make(map[string]*hexutil.Big),
+		pickNodeFunc:    pickNodeFunc,
+		GatewayStrategy: gatewayStrategy,
 	}
 }
 
 func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, error) {
-	var tempNodes []*lbnode.Node
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
 	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId])
+	if len(nodes) == 0 {
+		return nil, utils.ErrNoAvailableNode
+	}
+
+	// filter nodes by method route
+	if r.GatewayStrategy != nil && !ctx.IsBatch {
+		nodes = r.GatewayStrategy.FilterNodesByMethod(ctx.ChainId, string(ctx.Method), nodes)
+		if len(nodes) == 0 {
+			return nil, utils.ErrNoAvailableNode
+		}
+	}
+
+	weights, _ := r.GatewayStrategy.GetWeightForChain(ctx.ChainId)
 
 	weightSum := 0
 	for _, node := range nodes {
-		tempNodes = append(tempNodes, node)
-		weightSum += node.EffectWeight()
+		weight, exists := weights[node.Key()]
+		if !exists {
+			// if not exists in gateway, set default weight
+			weights[node.Key()] = types.DefaultWeight
+			weightSum += types.DefaultWeight
+		} else {
+			weightSum += weight
+		}
 	}
 
-	if len(tempNodes) == 0 {
+	if weightSum == 0 {
 		return nil, utils.ErrNoAvailableNode
 	}
-	returnWeight := utils.RangeRandom(0, int64(weightSum))
-	tempWeight := 0
-	for _, node := range tempNodes {
-		tempWeight += node.EffectWeight()
-		if int64(tempWeight) >= returnWeight {
+
+	targetWeight := utils.RangeRandom(0, int64(weightSum))
+	curWeight := 0
+	for _, node := range nodes {
+		curWeight += weights[node.Key()]
+		if int64(curWeight) >= targetWeight {
 			finalNode := node.Clone()
 			return finalNode, nil
 		}
@@ -52,6 +80,9 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 }
 
 func (r *Random) UpsertNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
 	if role == 2 {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
@@ -86,6 +117,9 @@ func (r *Random) UpsertNode(_ context.Context, chainId string, role int, node *l
 }
 
 func (r *Random) RemoveNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
 	if role == 2 {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
@@ -115,10 +149,59 @@ func (r *Random) RemoveNode(_ context.Context, chainId string, role int, node *l
 }
 
 func (r *Random) UpdateChainHeight(_ context.Context, chainId string, chainHeight *hexutil.Big) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
 	r.chainHeight[chainId] = chainHeight
 	return nil
 }
 
 func (r *Random) String() string {
 	return "Random"
+}
+
+func (r *Random) GetAllNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	var nodes []*lbnode.Node
+	nodes = append(nodes, r.archiveNodes[chainId]...)
+	nodes = append(nodes, r.stateNodes[chainId]...)
+	return nodes, len(nodes) > 0
+}
+
+func (r *Random) GetArchiveNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	nodes, exists := r.archiveNodes[chainId]
+	return nodes, exists
+}
+
+func (r *Random) GetStateNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	nodes, exists := r.stateNodes[chainId]
+	return nodes, exists
+}
+
+func (r *Random) GetAllChainsIDs() []string {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	chainsMap := make(map[string]bool)
+	for chainId := range r.archiveNodes {
+		chainsMap[chainId] = true
+	}
+	for chainId := range r.stateNodes {
+		chainsMap[chainId] = true
+	}
+
+	chains := make([]string, 0, len(chainsMap))
+	for chainId := range chainsMap {
+		chains = append(chains, chainId)
+	}
+	sort.Strings(chains)
+	return chains
 }

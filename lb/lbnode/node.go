@@ -2,9 +2,10 @@ package lbnode
 
 import (
 	"fmt"
+	"sync"
+
 	rconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/hertz-contrib/reverseproxy"
-	"sync"
 )
 
 type Node struct {
@@ -18,10 +19,20 @@ type Node struct {
 	currentWeight   int
 	currentHandling int64
 	stateType       int
+	source          string
 	lock            sync.RWMutex
 	ReverseProxy    *reverseproxy.ReverseProxy
 }
 type Option func(*Node)
+
+func WithSource(source string) Option {
+	return func(node *Node) {
+		if source == "" {
+			source = "official"
+		}
+		node.source = source
+	}
+}
 
 func WithReverseProxyMaxConnsPerHost(maxConnsPerHost int) func(o *rconfig.ClientOptions) {
 	return func(o *rconfig.ClientOptions) {
@@ -120,6 +131,10 @@ func (node *Node) Addr() string {
 	return fmt.Sprintf("%s:%d", node.IP(), node.Port())
 }
 
+func (node *Node) Source() string {
+	return node.source
+}
+
 // Conns returns conns
 func (node *Node) Conns() int64 {
 	node.lock.RLock()
@@ -140,6 +155,13 @@ func (node *Node) IncrConns(n int64) int64 {
 	return node.conns
 }
 
+func (node *Node) State() int {
+	node.lock.RLock()
+	defer node.lock.RUnlock()
+
+	return node.stateType
+}
+
 func (node *Node) Available() bool {
 
 	node.lock.RLock()
@@ -157,6 +179,7 @@ func (node *Node) Clone() *Node {
 		ip:              node.ip,
 		port:            node.port,
 		weight:          node.weight,
+		source:          node.source,
 		shardingKey:     node.shardingKey,
 		conns:           node.conns,
 		currentWeight:   node.currentWeight,

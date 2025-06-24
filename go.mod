@@ -11,7 +11,6 @@ require (
 	github.com/go-kit/kit v0.9.0
 	github.com/hertz-contrib/pprof v0.1.2
 	github.com/hertz-contrib/reverseproxy v1.0.6
-	github.com/orcaman/concurrent-map/v2 v2.0.1
 	github.com/prometheus/client_golang v1.20.5
 	github.com/stretchr/testify v1.10.0
 	go.etcd.io/etcd/client/v3 v3.5.17

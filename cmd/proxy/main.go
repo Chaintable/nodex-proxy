@@ -4,8 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
+
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
+	"github.com/Chaintable/nodex-proxy/http_handler"
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
@@ -16,8 +20,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
-	"net"
-	"net/http"
 )
 
 func parseCmdlineAndLoadConfig() config.Config {
@@ -44,6 +46,7 @@ func main() {
 	cmdlineAndLoadConfig := parseCmdlineAndLoadConfig()
 	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
 	log.ProductionModeWithoutStackTrace()
+	// log.DevelopmentMode()
 
 	var nodeRefresherMap = make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -53,7 +56,7 @@ func main() {
 		log.Fatal("New refresher failed: %v\n", err)
 	}
 	defer nodeRefresher.Close()
-	nodeChannel, heightChan, err := nodeRefresher.Init(ctx)
+	nodeChannel, heightChan, gatewayChannel, err := nodeRefresher.Init(ctx)
 	if err != nil {
 		log.Fatal("Init node refresher failed: %v\n", err)
 	}
@@ -64,7 +67,7 @@ func main() {
 		ctx,
 		nodeRefresherMap, *cmdlineAndLoadConfig.ProxyConfig,
 		&jsonrpc.GeneralRPCMethodHertzHandler{Config: cmdlineAndLoadConfig.ProxyConfig, HeightMap: heightMap},
-		limiter, heightMap, nodeChannel, heightChan)
+		limiter, heightMap, nodeChannel, heightChan, gatewayChannel)
 	go loadBalancer.BackgroundRefreshNode()
 
 	go func() {
@@ -93,10 +96,35 @@ func main() {
 
 	pprof.Register(h)
 
+	handler, err := http_handler.NewHandler(ctx, loadBalancer.NodeSelector, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix)
+	if err != nil {
+		log.Fatal("New handler failed: %v\n", err)
+	}
+
+	// Add weight management endpoints
+	h.GET("/getChains", handler.GetAllChainsIDs)
+	h.POST("/:chainId/setWeight", handler.SetWeight)
+	h.GET("/:chainId/getWeight", handler.GetWeight)
+	h.DELETE("/:chainId/deleteWeight", handler.DeleteWeight)
+
+	h.GET("/:chainId/getAllNodes", handler.GetAllNodes)
+	h.GET("/:chainId/debug_chooseOneNode", handler.ChooseOneNode)
+	h.POST("/:chainId/addNode", handler.AddNode)
+	h.DELETE("/:chainId/deleteNode/:nodeKey", handler.DeleteNode)
+	h.PUT("/:chainId/updateNode/:nodeKey", handler.UpdateNode)
+
+	// Add method route management endpoints
+	h.POST("/:chainId/addMethodRoute", handler.AddMethodRoute)
+	h.POST("/:chainId/removeMethodRoute", handler.RemoveMethodRoute)
+	h.DELETE("/:chainId/deleteMethodRoute/:method", handler.DeleteMethodRoute)
+	h.GET("/:chainId/getAllMethodRoutes", handler.GetMethodRoutes)
+	h.GET("/:chainId/getMethodRoute/:method", handler.GetMethodRoute)
+
 	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
 		chainId := c.Param("chainId")
 		loadBalancer.ServeHTTP(ctx, c, chainId)
 	})
+
 	h.Spin()
 
 	for _, refresher := range nodeRefresherMap {

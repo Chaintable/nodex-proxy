@@ -18,4 +18,10 @@ type Strategy interface {
 	UpsertNode(ctx context.Context, chainId string, role int, node *lbnode.Node) error
 	RemoveNode(ctx context.Context, chainId string, role int, node *lbnode.Node) error
 	UpdateChainHeight(ctx context.Context, chainId string, chainHeight *hexutil.Big) error
+
+	// New methods for weight management
+	GetAllNodes(chainId string) ([]*lbnode.Node, bool)
+	GetArchiveNodes(chainId string) ([]*lbnode.Node, bool)
+	GetStateNodes(chainId string) ([]*lbnode.Node, bool)
+	GetAllChainsIDs() []string
 }
