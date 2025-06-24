@@ -15,7 +15,7 @@ type TargetNode struct {
 	ChangeType int    `json:"-"`
 	NodeKey    string `json:"-"`
 	Weight     int    `json:"weight"` // 0-100
-	Source     string `json:"source"` // custom, official
+	Source     string `json:"source"` // manual, official
 }
 
 type ChainHeight struct {
@@ -24,17 +24,24 @@ type ChainHeight struct {
 }
 
 type Gateway struct {
-	ChainId    string          `json:"-"`
-	ChangeType int             `json:"-"`
-	Status     []GatewayStatus `json:"status"`
+	ChainId    string       `json:"-"`
+	ChangeType int          `json:"-"`
+	Weights    []WeightInfo `json:"weights,omitempty"`
+	// method -> methodRoute
+	MethodRoutes map[string]MethodRoute `json:"method_routes,omitempty"`
 }
 
-type GatewayStatus struct {
+type WeightInfo struct {
 	NodeKey string `json:"node_key"`
 	Weight  int    `json:"weight"`
 }
 
+type MethodRoute struct {
+	IncludeNodeKeys map[string]bool `json:"include_node_keys"`
+	ExcludeNodeKeys map[string]bool `json:"exclude_node_keys"`
+}
+
 type Discover interface {
-	Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, error)
+	Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, <-chan *Gateway, error)
 	Close() error
 }
