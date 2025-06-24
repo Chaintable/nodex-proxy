@@ -91,14 +91,14 @@ func (h *Handler) SetWeight(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-func (h *Handler) generateGatewayWeight(ctx context.Context, chainId string, nodeKey string, weight int) ([]byte, error) {
+func (h *Handler) generateGatewayWeight(ctx context.Context, chainId string, nodeKey string, weight int) (*discovery.Gateway, error) {
 	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
 	resp, err := h.etcdClient.Get(ctx, gatewayKey)
 	if err != nil {
 		return nil, err
 	}
 
-	gateway := discovery.Gateway{}
+	gateway := &discovery.Gateway{}
 	if len(resp.Kvs) > 0 {
 		err = json.Unmarshal(resp.Kvs[0].Value, &gateway)
 		if err != nil {
@@ -106,35 +106,9 @@ func (h *Handler) generateGatewayWeight(ctx context.Context, chainId string, nod
 		}
 	}
 
-	nodeIndex := -1
-	for i, weightInfo := range gateway.Weights {
-		if weightInfo.NodeKey == nodeKey {
-			nodeIndex = i
-			break
-		}
-	}
+	gateway.SetWeight(nodeKey, weight)
 
-	// only add to gateway if weight is not default(100)
-	if weight == types.DefaultWeight {
-		if nodeIndex != -1 {
-			// if node exists, remove it from gateway
-			gateway.Weights = append(gateway.Weights[:nodeIndex], gateway.Weights[nodeIndex+1:]...)
-		}
-		// if node doesn't exist, do nothing
-	} else {
-		if nodeIndex != -1 {
-			// if node exists, update its weight
-			gateway.Weights[nodeIndex].Weight = weight
-		} else {
-			// if node doesn't exist, add it to gateway
-			gateway.Weights = append(gateway.Weights, discovery.WeightInfo{
-				NodeKey: nodeKey,
-				Weight:  weight,
-			})
-		}
-	}
-
-	return json.Marshal(gateway)
+	return gateway, nil
 }
 
 func (h *Handler) setWeight(ctx context.Context, chainId string, nodeKey string, weight int) error {
@@ -151,7 +125,12 @@ func (h *Handler) setWeight(ctx context.Context, chainId string, nodeKey string,
 		modRevision = resp.Kvs[0].ModRevision
 	}
 
-	gatewayBytes, err := h.generateGatewayWeight(ctx, chainId, nodeKey, weight)
+	gateway, err := h.generateGatewayWeight(ctx, chainId, nodeKey, weight)
+	if err != nil {
+		return err
+	}
+
+	gatewayBytes, err := json.Marshal(gateway)
 	if err != nil {
 		return err
 	}
@@ -338,7 +317,7 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 	// 定义请求结构体
 	type AddNodeRequest struct {
 		NodeType int    `json:"node_type"`
-		NodeId   string `json:"node_id"`
+		NodeKey  string `json:"node_key"`
 		IP       string `json:"ip"`
 		Port     int    `json:"port"`
 		State    int    `json:"state"`
@@ -374,19 +353,19 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	if req.NodeId == "" {
-		req.NodeId = fmt.Sprintf("%s_%d", req.IP, req.Port)
+	if req.NodeKey == "" {
+		req.NodeKey = fmt.Sprintf("%s_%d", req.IP, req.Port)
 	}
 
-	nodeKey := h.keyPrefix + chainId + "/nodes/" + req.NodeId
+	etcdKey := h.keyPrefix + chainId + "/nodes/" + req.NodeKey
 	// todo: check if node already exists
-	nodes, err := h.etcdClient.Get(ctx, nodeKey)
+	nodes, err := h.etcdClient.Get(ctx, etcdKey)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to get node from etcd: %v", err)})
 		return
 	}
 	if len(nodes.Kvs) > 0 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("node %s already exists", req.NodeId)})
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("node %s already exists", req.NodeKey)})
 		return
 	}
 
@@ -408,23 +387,29 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 	// Prepare gateway update if weight is not default
 	var gatewayBytes []byte
 	if req.Weight != types.DefaultWeight {
-		gatewayBytes, err = h.generateGatewayWeight(ctx, chainId, req.NodeId, req.Weight)
+		gateway, err := h.generateGatewayWeight(ctx, chainId, req.NodeKey, req.Weight)
 		if err != nil {
 			c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to prepare gateway update: %v", err)})
+			return
+		}
+
+		gatewayBytes, err = json.Marshal(gateway)
+		if err != nil {
+			c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to marshal gateway: %v", err)})
 			return
 		}
 	}
 
 	txn := h.etcdClient.Txn(ctx)
-	txn = txn.If(clientv3.Compare(clientv3.Version(nodeKey), "=", 0))
+	txn = txn.If(clientv3.Compare(clientv3.Version(etcdKey), "=", 0))
 	if req.Weight != types.DefaultWeight {
 		gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
 		txn = txn.Then(
-			clientv3.OpPut(nodeKey, string(nodeDataBytes)),
+			clientv3.OpPut(etcdKey, string(nodeDataBytes)),
 			clientv3.OpPut(gatewayKey, string(gatewayBytes)),
 		)
 	} else {
-		txn = txn.Then(clientv3.OpPut(nodeKey, string(nodeDataBytes)))
+		txn = txn.Then(clientv3.OpPut(etcdKey, string(nodeDataBytes)))
 	}
 
 	// Commit transaction
@@ -441,7 +426,7 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 
 	// Return success response
 	c.JSON(consts.StatusOK, map[string]interface{}{
-		"node":   req.NodeId,
+		"node":   req.NodeKey,
 		"ip":     req.IP,
 		"port":   req.Port,
 		"state":  req.State,
@@ -476,18 +461,18 @@ func (h *Handler) getChainWeights(chainId string) map[string]int {
 
 func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
-	nodeId := c.Param("nodeId")
+	nodeKey := c.Param("nodeKey")
 
-	nodeKey := h.keyPrefix + chainId + "/nodes/" + nodeId
+	etcdKey := h.keyPrefix + chainId + "/nodes/" + nodeKey
 
 	// Check if node exists
-	nodes, err := h.etcdClient.Get(ctx, nodeKey)
+	nodes, err := h.etcdClient.Get(ctx, etcdKey)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get node from etcd"})
 		return
 	}
 	if len(nodes.Kvs) == 0 {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("node %s not found", nodeId)})
+		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("node %s not found", nodeKey)})
 		return
 	}
 
@@ -502,10 +487,21 @@ func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// Prepare gateway update to remove node weight
-	gatewayBytes, err := h.generateGatewayWeight(ctx, chainId, nodeId, types.DefaultWeight)
+	// Get current Gateway config to clean up method routes
+	gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to prepare gateway update"})
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to get gateway config: %v", err)})
+		return
+	}
+
+	gateway.SetWeight(nodeKey, types.DefaultWeight)
+	// Clean up method routes - remove the node from all method routes
+	gateway.ClearMethodRoute(nodeKey)
+
+	// Prepare gateway update to remove node weight and clean up method routes
+	gatewayBytes, err := json.Marshal(gateway)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to marshal gateway config"})
 		return
 	}
 
@@ -515,8 +511,9 @@ func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
 
 	// Delete node and update gateway in the same transaction
 	txnResp, err := txn.
+		If(clientv3.Compare(clientv3.ModRevision(gatewayKey), "=", modRevision)).
 		Then(
-			clientv3.OpDelete(nodeKey),
+			clientv3.OpDelete(etcdKey),
 			clientv3.OpPut(gatewayKey, string(gatewayBytes)),
 		).
 		Commit()
@@ -531,12 +528,12 @@ func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	c.JSON(consts.StatusOK, map[string]string{"message": fmt.Sprintf("node %s deleted successfully", nodeId)})
+	c.JSON(consts.StatusOK, map[string]string{"message": fmt.Sprintf("node %s deleted successfully", nodeKey)})
 }
 
 func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
-	nodeId := c.Param("nodeId")
+	nodeKey := c.Param("nodeKey")
 
 	// 定义请求结构体
 	type UpdateNodeRequest struct {
@@ -555,16 +552,16 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	nodeKey := h.keyPrefix + chainId + "/nodes/" + nodeId
+	etcdKey := h.keyPrefix + chainId + "/nodes/" + nodeKey
 
 	// Check if node exists
-	nodes, err := h.etcdClient.Get(ctx, nodeKey)
+	nodes, err := h.etcdClient.Get(ctx, etcdKey)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get node from etcd"})
 		return
 	}
 	if len(nodes.Kvs) == 0 {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("node %s not found", nodeId)})
+		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("node %s not found", nodeKey)})
 		return
 	}
 
@@ -595,14 +592,14 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	_, err = h.etcdClient.Put(ctx, nodeKey, string(nodeDataBytes))
+	_, err = h.etcdClient.Put(ctx, etcdKey, string(nodeDataBytes))
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to update node in etcd"})
 		return
 	}
 
 	c.JSON(consts.StatusOK, map[string]interface{}{
-		"nodeId":   nodeId,
+		"nodeKey":  nodeKey,
 		"ip":       nodeData.Address,
 		"port":     nodeData.Port,
 		"nodeType": nodeData.NodeType,
