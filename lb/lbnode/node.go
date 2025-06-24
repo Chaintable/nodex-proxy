@@ -2,9 +2,10 @@ package lbnode
 
 import (
 	"fmt"
+	"sync"
+
 	rconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/hertz-contrib/reverseproxy"
-	"sync"
 )
 
 type Node struct {
@@ -24,18 +25,24 @@ type Node struct {
 }
 type Option func(*Node)
 
+func WithSource(source string) Option {
+	return func(node *Node) {
+		if source == "" {
+			source = "official"
+		}
+		node.source = source
+	}
+}
+
 func WithReverseProxyMaxConnsPerHost(maxConnsPerHost int) func(o *rconfig.ClientOptions) {
 	return func(o *rconfig.ClientOptions) {
 		o.MaxConnsPerHost = maxConnsPerHost
 	}
 }
 
-func New(key, ip string, port, weight int, source string, opts ...Option) (*Node, error) {
+func New(key, ip string, port, weight int, opts ...Option) (*Node, error) {
 	if weight <= 0 {
 		weight = 1
-	}
-	if source == "" {
-		source = "official"
 	}
 	node := &Node{
 		key:           key,
@@ -43,7 +50,6 @@ func New(key, ip string, port, weight int, source string, opts ...Option) (*Node
 		port:          port,
 		weight:        weight,
 		currentWeight: weight,
-		source:        source,
 	}
 	for _, opt := range opts {
 		opt(node)

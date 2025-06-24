@@ -109,7 +109,7 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			chainId := tempNode.ChainId
 			role := tempNode.NodeType
 			changeType := tempNode.ChangeType
-			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultWeight, tempNode.Source)
+			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultWeight, lbnode.WithSource(tempNode.Source))
 			if err != nil {
 				log.Error("failed to create node", err)
 				continue
@@ -131,9 +131,9 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 
 			switch gateway.ChangeType {
 			case etcd.EVENT_PUT:
-				lb.GatewayStrategy.UpdateWeightForChain(chainId, gateway.Status)
+				lb.GatewayStrategy.UpdateGateway(chainId, *gateway)
 			case etcd.EVENT_DELETE:
-				lb.GatewayStrategy.DeleteWeightForChain(chainId)
+				lb.GatewayStrategy.DeleteGateway(chainId)
 			}
 		}
 	}

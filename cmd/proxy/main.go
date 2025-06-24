@@ -113,6 +113,13 @@ func main() {
 	h.DELETE("/:chainId/deleteNode/:nodeId", handler.DeleteNode)
 	h.PUT("/:chainId/updateNode/:nodeId", handler.UpdateNode)
 
+	// Add method route management endpoints
+	h.POST("/:chainId/addMethodRoute", handler.AddMethodRoute)
+	h.POST("/:chainId/removeMethodRoute", handler.RemoveMethodRoute)
+	h.DELETE("/:chainId/deleteMethodRoute/:method", handler.DeleteMethodRoute)
+	h.GET("/:chainId/getAllMethodRoutes", handler.GetMethodRoutes)
+	h.GET("/:chainId/getMethodRoute/:method", handler.GetMethodRoute)
+
 	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
 		chainId := c.Param("chainId")
 		loadBalancer.ServeHTTP(ctx, c, chainId)

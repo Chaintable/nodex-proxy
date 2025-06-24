@@ -40,6 +40,14 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 		return nil, utils.ErrNoAvailableNode
 	}
 
+	// filter nodes by method route
+	if r.GatewayStrategy != nil && !ctx.IsBatch {
+		nodes = r.GatewayStrategy.FilterNodesByMethod(ctx.ChainId, string(ctx.Method), nodes)
+		if len(nodes) == 0 {
+			return nil, utils.ErrNoAvailableNode
+		}
+	}
+
 	weights, _ := r.GatewayStrategy.GetWeightForChain(ctx.ChainId)
 
 	weightSum := 0
@@ -52,6 +60,10 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 		} else {
 			weightSum += weight
 		}
+	}
+
+	if weightSum == 0 {
+		return nil, utils.ErrNoAvailableNode
 	}
 
 	targetWeight := utils.RangeRandom(0, int64(weightSum))

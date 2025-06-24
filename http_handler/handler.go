@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
@@ -106,8 +107,8 @@ func (h *Handler) generateGatewayWeight(ctx context.Context, chainId string, nod
 	}
 
 	nodeIndex := -1
-	for i, nodeStatus := range gateway.Status {
-		if nodeStatus.NodeKey == nodeKey {
+	for i, weightInfo := range gateway.Weights {
+		if weightInfo.NodeKey == nodeKey {
 			nodeIndex = i
 			break
 		}
@@ -117,16 +118,16 @@ func (h *Handler) generateGatewayWeight(ctx context.Context, chainId string, nod
 	if weight == types.DefaultWeight {
 		if nodeIndex != -1 {
 			// if node exists, remove it from gateway
-			gateway.Status = append(gateway.Status[:nodeIndex], gateway.Status[nodeIndex+1:]...)
+			gateway.Weights = append(gateway.Weights[:nodeIndex], gateway.Weights[nodeIndex+1:]...)
 		}
 		// if node doesn't exist, do nothing
 	} else {
 		if nodeIndex != -1 {
 			// if node exists, update its weight
-			gateway.Status[nodeIndex].Weight = weight
+			gateway.Weights[nodeIndex].Weight = weight
 		} else {
 			// if node doesn't exist, add it to gateway
-			gateway.Status = append(gateway.Status, discovery.GatewayStatus{
+			gateway.Weights = append(gateway.Weights, discovery.WeightInfo{
 				NodeKey: nodeKey,
 				Weight:  weight,
 			})
@@ -606,5 +607,327 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 		"port":     nodeData.Port,
 		"nodeType": nodeData.NodeType,
 		"state":    nodeData.StateType,
+	})
+}
+
+// getGatewayConfig retrieves and parses gateway configuration from etcd
+func (h *Handler) getGatewayConfig(ctx context.Context, chainId string) (*discovery.Gateway, int64, error) {
+	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+	resp, err := h.etcdClient.Get(ctx, gatewayKey)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get gateway config: %v", err)
+	}
+
+	var gateway discovery.Gateway
+	var modRevision int64
+	if len(resp.Kvs) > 0 {
+		err = json.Unmarshal(resp.Kvs[0].Value, &gateway)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to parse gateway config: %v", err)
+		}
+		modRevision = resp.Kvs[0].ModRevision
+	}
+
+	return &gateway, modRevision, nil
+}
+
+// updateGatewayConfigWithTransaction updates gateway configuration in etcd using transaction to ensure atomicity
+func (h *Handler) updateGatewayConfigWithTransaction(ctx context.Context, chainId string, gateway *discovery.Gateway, modRevision int64) error {
+	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+	gatewayBytes, err := json.Marshal(gateway)
+	if err != nil {
+		return fmt.Errorf("failed to marshal gateway config: %v", err)
+	}
+
+	// Create a transaction
+	txn := h.etcdClient.Txn(ctx)
+
+	// Compare the value hasn't changed since we read it
+	txnResp, err := txn.
+		If(clientv3.Compare(clientv3.ModRevision(gatewayKey), "=", modRevision)).
+		Then(clientv3.OpPut(gatewayKey, string(gatewayBytes))).
+		Else(clientv3.OpGet(gatewayKey)).
+		Commit()
+
+	if err != nil {
+		return fmt.Errorf("failed to commit transaction: %v", err)
+	}
+
+	if !txnResp.Succeeded {
+		return fmt.Errorf("concurrent modification detected, please retry")
+	}
+
+	return nil
+}
+
+// convertMethodRouteToResponse converts a MethodRoute to response format
+func (h *Handler) convertMethodRouteToResponse(route discovery.MethodRoute) ([]string, []string) {
+	includeKeys := make([]string, 0, len(route.IncludeNodeKeys))
+	excludeKeys := make([]string, 0, len(route.ExcludeNodeKeys))
+
+	for key := range route.IncludeNodeKeys {
+		includeKeys = append(includeKeys, key)
+	}
+
+	for key := range route.ExcludeNodeKeys {
+		excludeKeys = append(excludeKeys, key)
+	}
+	sort.Strings(includeKeys)
+	sort.Strings(excludeKeys)
+
+	return includeKeys, excludeKeys
+}
+
+// AddMethodRoute handles adding a new method route
+func (h *Handler) AddMethodRoute(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+
+	var req AddMethodRouteRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid request format"})
+		return
+	}
+
+	err := h.checkNodeExist(chainId, req.IncludeNodeKeys, req.ExcludeNodeKeys)
+	if err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Validate required fields
+	if req.Method == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "method is required"})
+		return
+	}
+
+	// Get current Gateway config
+	gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if gateway.MethodRoutes == nil {
+		gateway.MethodRoutes = make(map[string]discovery.MethodRoute)
+	}
+
+	// Check if route already exists for this method and replace it
+	route, exists := gateway.MethodRoutes[req.Method]
+	if exists {
+		for _, nodeKey := range req.IncludeNodeKeys {
+			route.IncludeNodeKeys[nodeKey] = true
+		}
+		for _, nodeKey := range req.ExcludeNodeKeys {
+			route.ExcludeNodeKeys[nodeKey] = true
+		}
+	} else {
+		route := discovery.MethodRoute{
+			IncludeNodeKeys: make(map[string]bool),
+			ExcludeNodeKeys: make(map[string]bool),
+		}
+
+		for _, nodeKey := range req.IncludeNodeKeys {
+			route.IncludeNodeKeys[nodeKey] = true
+		}
+		for _, nodeKey := range req.ExcludeNodeKeys {
+			route.ExcludeNodeKeys[nodeKey] = true
+		}
+		gateway.MethodRoutes[req.Method] = route
+	}
+
+	// Update ETCD with transaction
+	err = h.updateGatewayConfigWithTransaction(ctx, chainId, gateway, modRevision)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	includeKeys, excludeKeys := h.convertMethodRouteToResponse(gateway.MethodRoutes[req.Method])
+
+	c.JSON(consts.StatusOK, AddMethodRouteResponse{
+		Method:          req.Method,
+		IncludeNodeKeys: includeKeys,
+		ExcludeNodeKeys: excludeKeys,
+	})
+}
+
+func (h *Handler) checkNodeExist(chainId string, includeNodeKeys []string, excludeNodeKeys []string) error {
+	// At least one of include_node_ids or exclude_node_ids should be provided
+	if len(includeNodeKeys) == 0 && len(excludeNodeKeys) == 0 {
+		return fmt.Errorf("at least one of include or exclude is required")
+	}
+
+	nodes, ok := h.nodeSelector.GetAllNodes(chainId)
+	if !ok {
+		return fmt.Errorf("no nodes found for chainID %s", chainId)
+	}
+
+	nodeMap := make(map[string]bool)
+	for _, node := range nodes {
+		nodeMap[node.Key()] = true
+	}
+
+	for _, nodeKey := range includeNodeKeys {
+		if !nodeMap[nodeKey] {
+			return fmt.Errorf("node %s not found", nodeKey)
+		}
+	}
+
+	for _, nodeKey := range excludeNodeKeys {
+		if !nodeMap[nodeKey] {
+			return fmt.Errorf("node %s not found", nodeKey)
+		}
+	}
+
+	return nil
+}
+
+// DeleteMethodRoute handles deleting a method route
+func (h *Handler) DeleteMethodRoute(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	method := c.Param("method")
+
+	// Get current Gateway config
+	gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	_, exists := gateway.MethodRoutes[method]
+	if !exists {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("method route(%s) not found", method)})
+		return
+	}
+
+	delete(gateway.MethodRoutes, method)
+
+	// Update ETCD with transaction
+	err = h.updateGatewayConfigWithTransaction(ctx, chainId, gateway, modRevision)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]string{"message": "method route deleted successfully"})
+}
+
+// GetMethodRoutes handles getting all method routes for a chain
+func (h *Handler) GetMethodRoutes(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+
+	// Get current Gateway config
+	gateway, _, err := h.getGatewayConfig(ctx, chainId)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"method_routes": gateway.MethodRoutes,
+	})
+}
+
+// GetMethodRoute handles getting a specific method route
+func (h *Handler) GetMethodRoute(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	method := c.Param("method")
+
+	// Get current Gateway config
+	gateway, _, err := h.getGatewayConfig(ctx, chainId)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Find specified route by method
+	route, exists := gateway.MethodRoutes[method]
+	if !exists {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("method route(%s) not found", method)})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"method_route": route,
+	})
+}
+
+// RemoveMethodRoute handles removing specific nodes from an existing method route
+func (h *Handler) RemoveMethodRoute(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+
+	var req RemoveMethodRouteRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid request format"})
+		return
+	}
+
+	err := h.checkNodeExist(chainId, req.IncludeNodeKeys, req.ExcludeNodeKeys)
+	if err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Validate required fields
+	if req.Method == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "method is required"})
+		return
+	}
+
+	// Get current Gateway config
+	gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if gateway.MethodRoutes == nil {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("method route(%s) not found", req.Method)})
+		return
+	}
+
+	// Check if route exists for this method
+	route, exists := gateway.MethodRoutes[req.Method]
+	if !exists {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("method route(%s) not found", req.Method)})
+		return
+	}
+
+	// Remove nodes from include_node_keys
+	for _, nodeKey := range req.IncludeNodeKeys {
+		delete(route.IncludeNodeKeys, nodeKey)
+	}
+	if len(route.IncludeNodeKeys) == 0 {
+		delete(gateway.MethodRoutes, req.Method)
+	}
+
+	// Remove nodes from exclude_node_keys
+	for _, nodeKey := range req.ExcludeNodeKeys {
+		delete(route.ExcludeNodeKeys, nodeKey)
+	}
+	if len(route.ExcludeNodeKeys) == 0 {
+		delete(gateway.MethodRoutes, req.Method)
+	}
+
+	// Update the route in gateway
+	if len(route.IncludeNodeKeys) == 0 && len(route.ExcludeNodeKeys) == 0 {
+		delete(gateway.MethodRoutes, req.Method)
+	} else {
+		gateway.MethodRoutes[req.Method] = route
+	}
+
+	// Update ETCD with transaction
+	err = h.updateGatewayConfigWithTransaction(ctx, chainId, gateway, modRevision)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	includeKeys, excludeKeys := h.convertMethodRouteToResponse(gateway.MethodRoutes[req.Method])
+
+	c.JSON(consts.StatusOK, RemoveMethodRouteResponse{
+		Method:          req.Method,
+		IncludeNodeKeys: includeKeys,
+		ExcludeNodeKeys: excludeKeys,
 	})
 }
