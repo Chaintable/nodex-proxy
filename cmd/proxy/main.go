@@ -110,8 +110,8 @@ func main() {
 	h.GET("/:chainId/getAllNodes", handler.GetAllNodes)
 	h.GET("/:chainId/debug_chooseOneNode", handler.ChooseOneNode)
 	h.POST("/:chainId/addNode", handler.AddNode)
-	h.DELETE("/:chainId/deleteNode/:nodeId", handler.DeleteNode)
-	h.PUT("/:chainId/updateNode/:nodeId", handler.UpdateNode)
+	h.DELETE("/:chainId/deleteNode/:nodeKey", handler.DeleteNode)
+	h.PUT("/:chainId/updateNode/:nodeKey", handler.UpdateNode)
 
 	// Add method route management endpoints
 	h.POST("/:chainId/addMethodRoute", handler.AddMethodRoute)
