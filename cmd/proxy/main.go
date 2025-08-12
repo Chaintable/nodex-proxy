@@ -120,6 +120,11 @@ func main() {
 	h.GET("/:chainId/getAllMethodRoutes", handler.GetMethodRoutes)
 	h.GET("/:chainId/getMethodRoute/:method", handler.GetMethodRoute)
 
+	// Add writer management endpoints
+	h.GET("/:chainId/writers", handler.GetWriters)
+	h.POST("/:chainId/writers/switchLeader", handler.SwitchLeader)
+	h.GET("/:chainId/writers/leader", handler.GetLeaderStatus)
+
 	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
 		chainId := c.Param("chainId")
 		loadBalancer.ServeHTTP(ctx, c, chainId)
