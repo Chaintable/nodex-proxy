@@ -9,9 +9,13 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-type PickNodesFunc func(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node) []*lbnode.Node
+type PickNodesFunc func(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, fourceArchive bool) []*lbnode.Node
 
-func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node) []*lbnode.Node {
+func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, fourceArchive bool) []*lbnode.Node {
+	if fourceArchive {
+		return archiveNodes
+	}
+
 	var backupNodes []*lbnode.Node
 	backupNodes = append(backupNodes, stateNodes...)
 	backupNodes = append(backupNodes, archiveNodes...)
@@ -22,6 +26,7 @@ func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archi
 	if len(archiveNodes) == 0 {
 		archiveNodes = stateNodes
 	}
+
 	// stateNodes strategy:
 	// when Equals and blockNumber is LatestBlockNumber or PendingBlockNumber, return stateNodes
 	// when Equals and blockNumber is less than 64 blocks behind the latest block, return stateNodes

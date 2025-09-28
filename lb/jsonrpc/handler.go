@@ -21,37 +21,29 @@
 package jsonrpc
 
 import (
-	"net"
-	"net/http"
 	"time"
 
-	"github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/types"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/trace"
-	"go.uber.org/zap"
 )
 
-// transport used as default reverse-proxy transport that handle
-// incoming requests or outgoing responses.
-type transport struct {
-	requestContext            *types.RequestContext
-	defaultHttpTransport      *http.Transport
-	rpcMethodHttpTransportMap map[jsonrpc.RPCMethod]*http.Transport
-
-	limiter Limiter
-
-	heightMap HeightMap
-
-	logger *zap.Logger
-	config *types.Config
-
-	preProcessor  types.PreProcessorFunc
-	postProcessor types.PostProcessorFunc
-	props         propagation.TextMapPropagator
-}
+//// transport used as default reverse-proxy transport that handle
+//// incoming requests or outgoing responses.
+//type transport struct {
+//	requestContext            *types.RequestContext
+//	defaultHttpTransport      *http.Transport
+//	rpcMethodHttpTransportMap map[jsonrpc.RPCMethod]*http.Transport
+//
+//	limiter Limiter
+//
+//	heightMap HeightMap
+//
+//	logger *zap.Logger
+//	config *types.Config
+//
+//	preProcessor  types.PreProcessorFunc
+//	postProcessor types.PostProcessorFunc
+//	props         propagation.TextMapPropagator
+//}
 
 func GetPreProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethodHandlerIHertz, limiter Limiter) types.PreProcessorProcessorsHertz {
 	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
@@ -76,66 +68,66 @@ func GetPostProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMetho
 	}
 }
 
-func NewTransport(
-	requestContext *types.RequestContext,
-	limiter Limiter,
-	heightMap HeightMap,
-	logger *zap.Logger,
-	config *types.Config,
-	rpcMethodTransportMap map[jsonrpc.RPCMethod]*http.Transport,
-	defaultHttpTransport *http.Transport,
-	preProcessors types.PreProcessorProcessors,
-	postProcessors types.PostProcessorProcessors,
-) *transport {
-	//initTracer(*config)
-	return &transport{
-		requestContext:            requestContext,
-		limiter:                   limiter,
-		defaultHttpTransport:      defaultHttpTransport,
-		rpcMethodHttpTransportMap: rpcMethodTransportMap,
-		logger:                    logger,
-		preProcessor:              preProcessors.Call,
-		postProcessor:             postProcessors.Call,
-		config:                    config,
-		props:                     otel.GetTextMapPropagator(),
-	}
-}
-
-// RoundTrip implements RoundTrip Method for interface of http.RoundTripper.
-func (t *transport) RoundTrip(request *http.Request) (response *http.Response, err error) {
-	ctx := request.Context()
-	ctx, roundTripSpan := Tracer.Start(
-		ctx,
-		"RoundTrip")
-	defer roundTripSpan.End()
-	processData := t.requestContext
-	request, response, processData = t.preProcessor(request, response, processData)
-	if response == nil {
-		processData.UpstreamRelated = true
-		_, upstreamSpan := Tracer.Start(
-			ctx,
-			"Upstream", trace.WithAttributes(attribute.String("rpc_method", string(processData.Method))))
-		var (
-			httpTransport *http.Transport
-			ok            bool
-		)
-		if httpTransport, ok = t.rpcMethodHttpTransportMap[processData.Method]; !ok {
-			httpTransport = t.defaultHttpTransport
-		}
-		t.props.Inject(ctx, propagation.HeaderCarrier(request.Header))
-		response, processData.Error = httpTransport.RoundTrip(request)
-		upstreamSpan.End()
-		if processData.Error != nil {
-			nerr, ok := processData.Error.(net.Error)
-			if ok && nerr.Timeout() {
-				response, processData.ResponseBody, _ = jsonrpc.GatewayTimeout(processData.Error)
-				goto POSTPROCESS
-			}
-			response, processData.ResponseBody, _ = jsonrpc.BadGateway(processData.Error)
-		}
-	}
-
-POSTPROCESS:
-	processData = t.postProcessor(request, response, processData)
-	return response, nil
-}
+//func NewTransport(
+//	requestContext *types.RequestContext,
+//	limiter Limiter,
+//	heightMap HeightMap,
+//	logger *zap.Logger,
+//	config *types.Config,
+//	rpcMethodTransportMap map[jsonrpc.RPCMethod]*http.Transport,
+//	defaultHttpTransport *http.Transport,
+//	preProcessors types.PreProcessorProcessors,
+//	postProcessors types.PostProcessorProcessors,
+//) *transport {
+//	//initTracer(*config)
+//	return &transport{
+//		requestContext:            requestContext,
+//		limiter:                   limiter,
+//		defaultHttpTransport:      defaultHttpTransport,
+//		rpcMethodHttpTransportMap: rpcMethodTransportMap,
+//		logger:                    logger,
+//		preProcessor:              preProcessors.Call,
+//		postProcessor:             postProcessors.Call,
+//		config:                    config,
+//		props:                     otel.GetTextMapPropagator(),
+//	}
+//}
+//
+//// RoundTrip implements RoundTrip Method for interface of http.RoundTripper.
+//func (t *transport) RoundTrip(request *http.Request) (response *http.Response, err error) {
+//	ctx := request.Context()
+//	ctx, roundTripSpan := Tracer.Start(
+//		ctx,
+//		"RoundTrip")
+//	defer roundTripSpan.End()
+//	processData := t.requestContext
+//	request, response, processData = t.preProcessor(request, response, processData)
+//	if response == nil {
+//		processData.UpstreamRelated = true
+//		_, upstreamSpan := Tracer.Start(
+//			ctx,
+//			"Upstream", trace.WithAttributes(attribute.String("rpc_method", string(processData.Method))))
+//		var (
+//			httpTransport *http.Transport
+//			ok            bool
+//		)
+//		if httpTransport, ok = t.rpcMethodHttpTransportMap[processData.Method]; !ok {
+//			httpTransport = t.defaultHttpTransport
+//		}
+//		t.props.Inject(ctx, propagation.HeaderCarrier(request.Header))
+//		response, processData.Error = httpTransport.RoundTrip(request)
+//		upstreamSpan.End()
+//		if processData.Error != nil {
+//			nerr, ok := processData.Error.(net.Error)
+//			if ok && nerr.Timeout() {
+//				response, processData.ResponseBody, _ = jsonrpc.GatewayTimeout(processData.Error)
+//				goto POSTPROCESS
+//			}
+//			response, processData.ResponseBody, _ = jsonrpc.BadGateway(processData.Error)
+//		}
+//	}
+//
+//POSTPROCESS:
+//	processData = t.postProcessor(request, response, processData)
+//	return response, nil
+//}

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/types"
@@ -35,7 +36,7 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 
-	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId])
+	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId], ctx.Archive)
 	if len(nodes) == 0 {
 		return nil, utils.ErrNoAvailableNode
 	}
@@ -79,11 +80,11 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 	return nil, utils.ErrNoAvailableNode
 }
 
-func (r *Random) UpsertNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
+func (r *Random) UpsertNode(_ context.Context, chainId string, role discovery.NodeType, node *lbnode.Node) error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	if role == 2 {
+	if role == discovery.NodeTypeArchive {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
 			r.archiveNodes[chainId] = []*lbnode.Node{node}
@@ -116,11 +117,11 @@ func (r *Random) UpsertNode(_ context.Context, chainId string, role int, node *l
 	return nil
 }
 
-func (r *Random) RemoveNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
+func (r *Random) RemoveNode(_ context.Context, chainId string, role discovery.NodeType, node *lbnode.Node) error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	if role == 2 {
+	if role == discovery.NodeTypeArchive {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
 			return nil
