@@ -1,5 +1,5 @@
 package types
 
 const (
-	StateBlockNotFound = 39006
+	StateBlockNotFound = -39006
 )

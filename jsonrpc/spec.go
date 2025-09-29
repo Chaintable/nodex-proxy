@@ -69,7 +69,9 @@ const (
 type RPCMethod string
 
 const (
-	GetLatestBlock RPCMethod = "getLatestBlock"
+	GetLatestBlock       RPCMethod = "getLatestBlock"
+	ContractMultiCall    RPCMethod = "contractMultiCall"
+	SimulateTransactions RPCMethod = "simulateTransactions"
 )
 
 // ErrorCode is a json rpc 2.0 error code.

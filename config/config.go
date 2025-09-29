@@ -13,6 +13,7 @@ type Config struct {
 	MetricListen  string        `yaml:"metric_listen"`
 	EtcdEndpoints []string      `yaml:"etcd_endpoints"`
 	ProxyConfig   *types.Config `yaml:"proxy_config"`
+	LogLevel      string        `yaml:"log_level"` // debug, info, warn, error
 }
 
 type ReplicaNotificationSetting struct {

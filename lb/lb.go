@@ -209,6 +209,8 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		return
 	}
 
+	log.Debug("Selected target node", log.Any("node", targetNode.Addr()), log.Any("type", targetNode.NodeType), log.Any("chain_id", requestContext.ChainId))
+
 	// If target node is archive, set archive flag
 	if targetNode.NodeType == discovery.NodeTypeArchive {
 		requestContext.Archive = true
@@ -240,7 +242,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			c.JSON(consts.StatusOK, object)
 			return
 		}
-
+		log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
 		lb.attemptRequest(ctx, c, targetNode)
 	}
 }
@@ -280,22 +282,22 @@ func (lb *LoadBalancer) shouldRetryWithArchive(c *app.RequestContext, requestCon
 		return false
 	}
 
-	var response map[string]interface{}
-	if err := sonic.Unmarshal(responseBody, &response); err != nil {
-		return false
+	log.Debug("Response received", log.Any("response", string(responseBody)))
+
+	type rpcResponse struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 
-	if errorObj, exists := response["error"]; exists {
-		if errorMap, ok := errorObj.(map[string]interface{}); ok {
-			if code, exists := errorMap["code"]; exists {
-				if codeFloat, ok := code.(float64); ok && int(codeFloat) == types.StateBlockNotFound {
-					return true
-				}
-				if codeInt, ok := code.(int); ok && codeInt == types.StateBlockNotFound {
-					return true
-				}
-			}
-		}
+	var resp rpcResponse
+	if err := sonic.Unmarshal(responseBody, &resp); err != nil {
+		log.Error("failed to unmarshal response, err ", err)
+		return false
+	}
+	if resp.Error != nil && resp.Error.Code == types.StateBlockNotFound {
+		return true
 	}
 	return false
 }
@@ -351,14 +353,17 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			log.Error("failed to unmarshal params", err)
 			break
 		}
-
+		log.Debug("ParseBlockContext", log.Any("params", arr), log.Any("method", value.Method))
 		if len(arr) <= 0 {
 			break
 		}
-		lastElem := arr[len(arr)-1]
+		blockCtx := arr[len(arr)-1]
+		if (value.Method == ejrpc.ContractMultiCall || value.Method == ejrpc.SimulateTransactions) && len(arr) > 1 {
+			blockCtx = arr[1]
+		}
 
 		var ctx types.BlockContext
-		if err := sonic.Unmarshal(lastElem, &ctx); err != nil {
+		if err := sonic.Unmarshal(blockCtx, &ctx); err != nil {
 			break
 		}
 

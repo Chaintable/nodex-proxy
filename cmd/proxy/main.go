@@ -44,9 +44,10 @@ func parseCmdlineAndLoadConfig() config.Config {
 
 func main() {
 	cmdlineAndLoadConfig := parseCmdlineAndLoadConfig()
+	log.InitLogger(cmdlineAndLoadConfig.LogLevel)
+
 	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
-	log.ProductionModeWithoutStackTrace()
-	// log.DevelopmentMode()
+	//log.DevelopmentMode()
 
 	var nodeRefresherMap = make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
