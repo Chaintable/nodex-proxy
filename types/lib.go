@@ -2,7 +2,6 @@ package types
 
 import (
 	"context"
-	"github.com/cloudwego/hertz/pkg/app"
 	"net/http"
 	"reflect"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/bytedance/sonic"
 	nJson "github.com/bytedance/sonic"
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/ethereum/go-ethereum/rpc"
 	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
@@ -72,6 +72,7 @@ type RequestContext struct {
 	BlockContext     *BlockContext            `json:"block_context"`
 	Cached           bool                     `json:"cached"`
 	ChainId          string                   `json:"chain_id"`
+	Archive          bool                     `json:"archive"`
 }
 
 type (

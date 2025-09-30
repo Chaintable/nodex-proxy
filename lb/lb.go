@@ -109,7 +109,7 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			chainId := tempNode.ChainId
 			role := tempNode.NodeType
 			changeType := tempNode.ChangeType
-			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultWeight, lbnode.WithSource(tempNode.Source))
+			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultWeight, role, lbnode.WithSource(tempNode.Source))
 			if err != nil {
 				log.Error("failed to create node", err)
 				continue
@@ -171,6 +171,29 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 
 	requestContext.ChainId = fmt.Sprint(chainIDNum)
 
+	ctx, roundTripSpan := jsonrpc.Tracer.Start(ctx, "RoundTrip")
+	defer roundTripSpan.End()
+
+	// Pre-processors and Post-processors
+	ctx, c, requestContext = lb.preProcessorsHertz.Call(ctx, c, requestContext)
+	defer func() {
+		_, _, _ = lb.postProcessorsHertz.Call(ctx, c, requestContext)
+	}()
+	// If response is already set by pre-processors, return directly
+	if len(c.Response.Body()) != 0 {
+		return
+	}
+
+	_, upstreamSpan := jsonrpc.Tracer.Start(
+		ctx,
+		"Upstream",
+		trace.WithAttributes(attribute.String("rpc_method", string(requestContext.Method))),
+	)
+	defer upstreamSpan.End()
+
+	// Mark as upstream related request
+	requestContext.UpstreamRelated = true
+
 	targetNode, err := lb.NodeSelector.GetNode(requestContext, "")
 	if err != nil {
 		log.Error("failed to get node, err ", err)
@@ -185,50 +208,98 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		c.JSON(consts.StatusOK, object)
 		return
 	}
-	ctx, roundTripSpan := jsonrpc.Tracer.Start(
-		ctx,
-		"RoundTrip")
-	defer roundTripSpan.End()
 
-	ctx, c, requestContext = lb.preProcessorsHertz.Call(ctx, c, requestContext)
-	if len(c.Response.Body()) == 0 { // need to query upstream
-		requestContext.UpstreamRelated = true
-		_, upstreamSpan := jsonrpc.Tracer.Start(
-			ctx,
-			"Upstream",
-			trace.WithAttributes(attribute.String("rpc_method", string(requestContext.Method))),
-		)
+	log.Debug("Selected target node", log.Any("node", targetNode.Addr()), log.Any("type", targetNode.NodeType), log.Any("chain_id", requestContext.ChainId))
 
-		props := otel.GetTextMapPropagator()
-
-		httpHeaders := http.Header{}
-		c.Request.Header.VisitAll(func(key, value []byte) {
-			// 为了确保后续使用不会受到影响，复制 key 和 value 的内容
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, key)
-			valueCopy := make([]byte, len(value))
-			copy(valueCopy, value)
-
-			httpHeaders.Set(string(keyCopy), string(valueCopy))
-		})
-
-		props.Inject(ctx, propagation.HeaderCarrier(httpHeaders))
-		targetNode.ReverseProxy.ServeHTTP(ctx, c)
-		upstreamSpan.End()
-
-		if c.Response.StatusCode() == consts.StatusGatewayTimeout {
-			_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
-			c.JSON(consts.StatusGatewayTimeout, object)
-			return
-		}
-		if c.Response.StatusCode() == consts.StatusBadGateway {
-			_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy bad gateway"))
-			c.JSON(consts.StatusBadGateway, object)
-			return
-		}
+	// If target node is archive, set archive flag
+	if targetNode.NodeType == discovery.NodeTypeArchive {
+		requestContext.Archive = true
 	}
 
-	_, _, _ = lb.postProcessorsHertz.Call(ctx, c, requestContext)
+	// First attempt with state node
+	lb.attemptRequest(ctx, c, targetNode)
+	// Check if response contains error code -39006
+	if lb.shouldRetryWithArchive(c, requestContext) {
+		log.Info("Received error code -39006(StateBlockNotFound), retrying with archive node")
+
+		// Reset response body for retry
+		c.Response.Reset()
+
+		// Retry with archive node
+		requestContext.Archive = true
+
+		targetNode, err := lb.NodeSelector.GetNode(requestContext, "")
+		if err != nil {
+			log.Error("failed to get node, err ", err)
+			_, object, _ := ejrpc.BadGateway(errors.New("no backends available"))
+			c.JSON(consts.StatusOK, object)
+			return
+		}
+
+		if targetNode.ReverseProxy == nil {
+			log.Error("failed to get node, err ", errors.New("no reverse proxy available"))
+			_, object, _ := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+			c.JSON(consts.StatusOK, object)
+			return
+		}
+		log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
+		lb.attemptRequest(ctx, c, targetNode)
+	}
+}
+
+func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, targetNode *lbnode.Node) {
+	props := otel.GetTextMapPropagator()
+	httpHeaders := http.Header{}
+	c.Request.Header.VisitAll(func(key, value []byte) {
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		valueCopy := make([]byte, len(value))
+		copy(valueCopy, value)
+		httpHeaders.Set(string(keyCopy), string(valueCopy))
+	})
+
+	props.Inject(ctx, propagation.HeaderCarrier(httpHeaders))
+	targetNode.ReverseProxy.ServeHTTP(ctx, c)
+
+	if c.Response.StatusCode() == consts.StatusGatewayTimeout {
+		_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
+		c.JSON(consts.StatusGatewayTimeout, object)
+	}
+	if c.Response.StatusCode() == consts.StatusBadGateway {
+		_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy bad gateway"))
+		c.JSON(consts.StatusBadGateway, object)
+	}
+}
+
+func (lb *LoadBalancer) shouldRetryWithArchive(c *app.RequestContext, requestContext *types.RequestContext) bool {
+	// If already using archive node, do not retry
+	if requestContext.Archive {
+		return false
+	}
+
+	responseBody := c.Response.Body()
+	if len(responseBody) == 0 {
+		return false
+	}
+
+	log.Debug("Response received", log.Any("response", string(responseBody)))
+
+	type rpcResponse struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	var resp rpcResponse
+	if err := sonic.Unmarshal(responseBody, &resp); err != nil {
+		log.Error("failed to unmarshal response, err ", err)
+		return false
+	}
+	if resp.Error != nil && resp.Error.Code == types.StateBlockNotFound {
+		return true
+	}
+	return false
 }
 
 func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *protocol.Request) func(*http.Request) {
@@ -282,14 +353,17 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			log.Error("failed to unmarshal params", err)
 			break
 		}
-
+		log.Debug("ParseBlockContext", log.Any("params", arr), log.Any("method", value.Method))
 		if len(arr) <= 0 {
 			break
 		}
-		lastElem := arr[len(arr)-1]
+		blockCtx := arr[len(arr)-1]
+		if (value.Method == ejrpc.ContractMultiCall || value.Method == ejrpc.SimulateTransactions) && len(arr) > 1 {
+			blockCtx = arr[1]
+		}
 
 		var ctx types.BlockContext
-		if err := sonic.Unmarshal(lastElem, &ctx); err != nil {
+		if err := sonic.Unmarshal(blockCtx, &ctx); err != nil {
 			break
 		}
 

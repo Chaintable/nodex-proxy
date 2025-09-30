@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/Chaintable/nodex-proxy/discovery"
 	rconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/hertz-contrib/reverseproxy"
 )
@@ -20,8 +21,11 @@ type Node struct {
 	currentHandling int64
 	stateType       int
 	source          string
-	lock            sync.RWMutex
-	ReverseProxy    *reverseproxy.ReverseProxy
+
+	NodeType discovery.NodeType
+
+	lock         sync.RWMutex
+	ReverseProxy *reverseproxy.ReverseProxy
 }
 type Option func(*Node)
 
@@ -40,7 +44,7 @@ func WithReverseProxyMaxConnsPerHost(maxConnsPerHost int) func(o *rconfig.Client
 	}
 }
 
-func New(key, ip string, port, weight int, opts ...Option) (*Node, error) {
+func New(key, ip string, port, weight int, nodeType discovery.NodeType, opts ...Option) (*Node, error) {
 	if weight <= 0 {
 		weight = 1
 	}
@@ -50,6 +54,7 @@ func New(key, ip string, port, weight int, opts ...Option) (*Node, error) {
 		port:          port,
 		weight:        weight,
 		currentWeight: weight,
+		NodeType:      nodeType,
 	}
 	for _, opt := range opts {
 		opt(node)

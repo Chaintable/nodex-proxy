@@ -21,14 +21,29 @@
 package log
 
 import (
+	"strings"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
 var logger *zap.Logger
 
-func init() {
-	ProductionModeWithoutStackTrace()
+func InitLogger(level string) {
+	logLevel := zap.InfoLevel
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "debug":
+		logLevel = zap.DebugLevel
+	case "info", "":
+		logLevel = zap.InfoLevel
+	case "warn", "warning":
+		logLevel = zap.WarnLevel
+	case "error":
+		logLevel = zap.ErrorLevel
+	default:
+		// keep current level
+	}
+	ProductionModeWithoutStackTrace(logLevel)
 }
 
 func DevelopmentMode() {
@@ -51,8 +66,9 @@ func ProductionMode() {
 	buildLoggerWithConfig(config)
 }
 
-func ProductionModeWithoutStackTrace() {
+func ProductionModeWithoutStackTrace(logLevel zapcore.Level) {
 	config := zap.NewProductionConfig()
+	config.Level = zap.NewAtomicLevelAt(logLevel)
 	config.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
 	config.DisableStacktrace = true
 

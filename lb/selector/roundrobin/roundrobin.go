@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
@@ -34,7 +35,7 @@ func (r *RoundRobin) GetNode(ctx *types.RequestContext, requestKey string) (*lbn
 
 	var best *lbnode.Node
 	total := 0
-	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId])
+	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId], ctx.Archive)
 
 	for _, node := range nodes {
 		node.IncrCurrentWeight(node.EffectWeight())
@@ -56,11 +57,11 @@ func (r *RoundRobin) GetNode(ctx *types.RequestContext, requestKey string) (*lbn
 	return node, nil
 }
 
-func (r *RoundRobin) UpsertNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
+func (r *RoundRobin) UpsertNode(_ context.Context, chainId string, role discovery.NodeType, node *lbnode.Node) error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	if role == 2 {
+	if role == discovery.NodeTypeArchive {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
 			r.archiveNodes[chainId] = []*lbnode.Node{node}
@@ -93,8 +94,8 @@ func (r *RoundRobin) UpsertNode(_ context.Context, chainId string, role int, nod
 	return nil
 }
 
-func (r *RoundRobin) RemoveNode(_ context.Context, chainId string, role int, node *lbnode.Node) error {
-	if role == 2 {
+func (r *RoundRobin) RemoveNode(_ context.Context, chainId string, role discovery.NodeType, node *lbnode.Node) error {
+	if role == discovery.NodeTypeArchive {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
 			return nil

@@ -373,7 +373,7 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 		StateType: req.State,
 		Address:   req.IP,
 		Port:      req.Port,
-		NodeType:  req.NodeType,
+		NodeType:  discovery.NodeType(req.NodeType),
 		Weight:    req.Weight,
 		Source:    "manual",
 	}
