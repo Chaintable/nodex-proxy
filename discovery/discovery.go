@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -97,7 +98,19 @@ type MethodRoute struct {
 	ExcludeNodeKeys map[string]bool `json:"exclude_node_keys"`
 }
 
+type MirrorTarget struct {
+	ChainId string `json:"-"`
+	AddrKey string `json:"-"`
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+	Deleted bool   `json:"-"`
+}
+
+func (m *MirrorTarget) URL() string {
+	return fmt.Sprintf("http://%s:%d", m.Address, m.Port)
+}
+
 type Discover interface {
-	Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, <-chan *Gateway, error)
+	Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, <-chan *Gateway, <-chan *MirrorTarget, error)
 	Close() error
 }

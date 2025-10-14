@@ -2,3 +2,13 @@
 config.yaml
 .vscode
 cmd/proxy/__debug_bin*
+analysis_request.py
+CLAUDE.md
+mirror_server.py
+replay_request.py
+replay_request2.py
+node-proxy
+request_mirror.md
+request_mirror_new.md
+rpc_init.md
+.claude

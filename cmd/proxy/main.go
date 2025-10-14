@@ -57,7 +57,7 @@ func main() {
 		log.Fatal("New refresher failed: %v\n", err)
 	}
 	defer nodeRefresher.Close()
-	nodeChannel, heightChan, gatewayChannel, err := nodeRefresher.Init(ctx)
+	nodeChannel, heightChan, gatewayChannel, mirrorChannel, err := nodeRefresher.Init(ctx)
 	if err != nil {
 		log.Fatal("Init node refresher failed: %v\n", err)
 	}
@@ -68,7 +68,7 @@ func main() {
 		ctx,
 		nodeRefresherMap, *cmdlineAndLoadConfig.ProxyConfig,
 		&jsonrpc.GeneralRPCMethodHertzHandler{Config: cmdlineAndLoadConfig.ProxyConfig, HeightMap: heightMap},
-		limiter, heightMap, nodeChannel, heightChan, gatewayChannel)
+		limiter, heightMap, nodeChannel, heightChan, gatewayChannel, mirrorChannel)
 	go loadBalancer.BackgroundRefreshNode()
 
 	go func() {
@@ -97,7 +97,7 @@ func main() {
 
 	pprof.Register(h)
 
-	handler, err := http_handler.NewHandler(ctx, loadBalancer.NodeSelector, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix)
+	handler, err := http_handler.NewHandler(ctx, loadBalancer.NodeSelector, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix, loadBalancer)
 	if err != nil {
 		log.Fatal("New handler failed: %v\n", err)
 	}
@@ -125,6 +125,13 @@ func main() {
 	h.GET("/:chainId/writers", handler.GetWriters)
 	h.POST("/:chainId/writers/switchLeader", handler.SwitchLeader)
 	h.GET("/:chainId/writers/leader", handler.GetLeaderStatus)
+
+	// Add mirror management endpoints
+	h.POST("/:chainId/addMirror", handler.AddMirror)
+	h.DELETE("/:chainId/deleteMirror", handler.DeleteMirror)
+	h.DELETE("/:chainId/deleteAllMirrors", handler.DeleteAllMirrors)
+	h.GET("/:chainId/getMirrors", handler.GetMirrors)
+	h.GET("/getAllMirrors", handler.GetAllMirrors)
 
 	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
 		chainId := c.Param("chainId")
