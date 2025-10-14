@@ -22,6 +22,7 @@ type Discover struct {
 	nodeChannel    chan *discovery.TargetNode
 	heightChan     chan *discovery.ChainHeight
 	gatewayChannel chan *discovery.Gateway
+	mirrorChannel  chan *discovery.MirrorTarget
 	keyPrefix      string
 	watchRevision  int64
 }
@@ -35,6 +36,7 @@ var (
 	lastBlockPattern = regexp.MustCompile(`^(?P<chain>.*?)/lastBlockNumber$`)
 	nodesPattern     = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
 	gateWayPattern   = regexp.MustCompile(`^(?P<chain>.*?)/gateway$`)
+	mirrorPattern    = regexp.MustCompile(`^(?P<chain>.*?)/mirror/(?P<addr>.*?)$`)
 )
 
 func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discover, error) {
@@ -69,22 +71,23 @@ func (r *Discover) Close() error {
 	return r.etcdClient.Close()
 }
 
-func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan *discovery.ChainHeight, <-chan *discovery.Gateway, error) {
+func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan *discovery.ChainHeight, <-chan *discovery.Gateway, <-chan *discovery.MirrorTarget, error) {
 	// Initial request to get the current value of the key
 
 	resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
 	log.Info("get key resp", log.Any("resp", resp), log.Any("key", r.keyPrefix))
 	if err != nil {
 		log.Error("failed to get initial value", err)
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	// todo: fix channel potential stuck issue
 	nodeChannel := make(chan *discovery.TargetNode, 1000)
 	heightChannel := make(chan *discovery.ChainHeight, 1000)
 	gatewayChannel := make(chan *discovery.Gateway, 1000)
+	mirrorChannel := make(chan *discovery.MirrorTarget, 1000)
 	r.nodeChannel = nodeChannel
 	r.heightChan = heightChannel
 	r.gatewayChannel = gatewayChannel
+	r.mirrorChannel = mirrorChannel
 
 	for _, kv := range resp.Kvs {
 		if match := nodesPattern.FindStringSubmatch(string(kv.Key)); match != nil {
@@ -125,12 +128,26 @@ func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan
 			gateway.ChainId = chainId
 			gateway.ChangeType = EVENT_PUT
 			gatewayChannel <- &gateway
+			continue
+		}
+		if match := mirrorPattern.FindStringSubmatch(string(kv.Key)); match != nil {
+			chainId := match[mirrorPattern.SubexpIndex("chain")]
+			addrKey := match[mirrorPattern.SubexpIndex("addr")]
+			var mirror discovery.MirrorTarget
+			err := json.Unmarshal(kv.Value, &mirror)
+			if err != nil {
+				log.Error("failed to unmarshal mirror target", err, log.Any("key", kv.Key), log.Any("chain_id", chainId))
+				continue
+			}
+			mirror.ChainId = chainId
+			mirror.AddrKey = addrKey
+			mirrorChannel <- &mirror
 		}
 	}
 	r.watchRevision = resp.Header.Revision
 	go r.watchConfig(ctx)
 
-	return nodeChannel, heightChannel, gatewayChannel, nil
+	return nodeChannel, heightChannel, gatewayChannel, mirrorChannel, nil
 }
 
 func (r *Discover) watchConfig(ctx context.Context) {
@@ -184,6 +201,20 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						r.gatewayChannel <- &gateway
 						continue
 					}
+					if match := mirrorPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := match[mirrorPattern.SubexpIndex("chain")]
+						addrKey := match[mirrorPattern.SubexpIndex("addr")]
+						var mirror discovery.MirrorTarget
+						err := json.Unmarshal(value, &mirror)
+						if err != nil {
+							log.Error("failed to unmarshal mirror target", err, log.Any("key", key), log.Any("chain_id", chainId))
+							continue
+						}
+						mirror.ChainId = chainId
+						mirror.AddrKey = addrKey
+						r.mirrorChannel <- &mirror
+						continue
+					}
 				} else {
 					key := event.Kv.Key
 					value := event.PrevKv.Value
@@ -213,6 +244,22 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						gateway.ChainId = chainId
 						gateway.ChangeType = EVENT_DELETE
 						r.gatewayChannel <- &gateway
+						continue
+					}
+					if match := mirrorPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := match[mirrorPattern.SubexpIndex("chain")]
+						addrKey := match[mirrorPattern.SubexpIndex("addr")]
+						var mirror discovery.MirrorTarget
+						if value != nil {
+							err := json.Unmarshal(value, &mirror)
+							if err != nil {
+								log.Error("failed to unmarshal mirror target", err, log.Any("key", key), log.Any("chain_id", chainId))
+							}
+						}
+						mirror.ChainId = chainId
+						mirror.AddrKey = addrKey
+						mirror.Deleted = true
+						r.mirrorChannel <- &mirror
 						continue
 					}
 				}

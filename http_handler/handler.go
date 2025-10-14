@@ -10,6 +10,7 @@ import (
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
+	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/lb/selector"
 	"github.com/Chaintable/nodex-proxy/lb/selector/random"
@@ -21,23 +22,31 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-type Handler struct {
-	nodeSelector selector.Strategy
-	etcdClient   *clientv3.Client
-	keyPrefix    string
-	nodeChannel  chan<- *discovery.TargetNode
+// MirrorHandler is the interface that handler needs from LoadBalancer
+type MirrorHandler interface {
+	GetMirrorMap() jsonrpc.MirrorMap
+	GetMirrorLimiter() jsonrpc.MirrorLimiter
 }
 
-func NewHandler(ctx context.Context, nodeSelector selector.Strategy, etcdEndpoints []string, keyPrefix string, nodeChannel chan<- *discovery.TargetNode) (*Handler, error) {
+type Handler struct {
+	nodeSelector  selector.Strategy
+	etcdClient    *clientv3.Client
+	keyPrefix     string
+	nodeChannel   chan<- *discovery.TargetNode
+	mirrorHandler MirrorHandler
+}
+
+func NewHandler(ctx context.Context, nodeSelector selector.Strategy, etcdEndpoints []string, keyPrefix string, nodeChannel chan<- *discovery.TargetNode, mirrorHandler MirrorHandler) (*Handler, error) {
 	etcdClient, err := etcd.NewEtcdClient(ctx, etcdEndpoints)
 	if err != nil {
 		return nil, err
 	}
 	return &Handler{
-		nodeSelector: nodeSelector,
-		etcdClient:   etcdClient,
-		keyPrefix:    keyPrefix,
-		nodeChannel:  nodeChannel,
+		nodeSelector:  nodeSelector,
+		etcdClient:    etcdClient,
+		keyPrefix:     keyPrefix,
+		nodeChannel:   nodeChannel,
+		mirrorHandler: mirrorHandler,
 	}, nil
 }
 
@@ -1040,4 +1049,194 @@ func (h *Handler) DeleteLocalNode(ctx context.Context, c *app.RequestContext) {
 	case <-time.After(time.Second):
 		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to process delete event"})
 	}
+}
+
+// Mirror management API methods
+
+// AddMirrorRequest request body for adding mirror target
+type AddMirrorRequest struct {
+	Address   string `json:"address"`
+	Port      int    `json:"port"`
+	RateLimit *int   `json:"rateLimit,omitempty"`
+}
+
+// MirrorTargetResponse response structure for mirror target
+type MirrorTargetResponse struct {
+	Address   string `json:"address"`
+	Port      int    `json:"port"`
+	URL       string `json:"url"`
+	RateLimit *int   `json:"rateLimit,omitempty"`
+}
+
+// AddMirror adds or updates a mirror target for a specific chain
+// POST /:chainId/addMirror
+func (h *Handler) AddMirror(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	if chainId == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		return
+	}
+
+	var req AddMirrorRequest
+	if err := c.Bind(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request body: %v", err)})
+		return
+	}
+
+	if req.Address == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "address is required"})
+		return
+	}
+
+	if req.Port <= 0 || req.Port > 65535 {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "port must be between 1 and 65535"})
+		return
+	}
+
+	// Assemble addrKey
+	addrKey := fmt.Sprintf("%s:%d", req.Address, req.Port)
+
+	// Create mirror target
+	target := &discovery.MirrorTarget{
+		ChainId:   chainId,
+		AddrKey:   addrKey,
+		Address:   req.Address,
+		Port:      req.Port,
+		RateLimit: req.RateLimit,
+	}
+
+	// Add to MirrorMap
+	h.mirrorHandler.GetMirrorMap().AddMirrorTarget(chainId, addrKey, target)
+
+	// Update rate limiter if configured
+	if req.RateLimit != nil && *req.RateLimit > 0 {
+		h.mirrorHandler.GetMirrorLimiter().UpdateLimit(chainId, target.URL(), *req.RateLimit)
+	}
+
+	c.JSON(consts.StatusCreated, map[string]interface{}{
+		"message": "mirror target added successfully",
+		"mirror": MirrorTargetResponse{
+			Address:   target.Address,
+			Port:      target.Port,
+			URL:       target.URL(),
+			RateLimit: target.RateLimit,
+		},
+	})
+}
+
+// DeleteMirrorRequest request structure for deleting specific mirror
+type DeleteMirrorRequest struct {
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+}
+
+// DeleteMirror deletes a specific mirror target by address and port
+// DELETE /:chainId/deleteMirror
+func (h *Handler) DeleteMirror(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	if chainId == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		return
+	}
+
+	var req DeleteMirrorRequest
+	if err := c.Bind(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request body: %v", err)})
+		return
+	}
+
+	if req.Address == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "address is required"})
+		return
+	}
+
+	if req.Port <= 0 || req.Port > 65535 {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "port must be between 1 and 65535"})
+		return
+	}
+
+	// Assemble addrKey
+	addrKey := fmt.Sprintf("%s:%d", req.Address, req.Port)
+	mirrorURL := fmt.Sprintf("http://%s:%d", req.Address, req.Port)
+
+	// Delete from MirrorMap
+	h.mirrorHandler.GetMirrorMap().DeleteMirrorTarget(chainId, addrKey)
+
+	// Remove from rate limiter
+	h.mirrorHandler.GetMirrorLimiter().RemoveLimit(chainId, mirrorURL)
+
+	c.JSON(consts.StatusOK, map[string]string{
+		"message": "mirror target deleted successfully",
+	})
+}
+
+// DeleteAllMirrors deletes all mirror targets for a specific chain
+// DELETE /:chainId/deleteAllMirrors
+func (h *Handler) DeleteAllMirrors(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	if chainId == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		return
+	}
+
+	// Delete all mirrors for the chain
+	h.mirrorHandler.GetMirrorMap().DeleteChainMirrors(chainId)
+
+	c.JSON(consts.StatusOK, map[string]string{
+		"message": "all mirror targets deleted successfully",
+	})
+}
+
+// GetMirrors gets all mirror targets for a specific chain
+// GET /:chainId/getMirrors
+func (h *Handler) GetMirrors(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	if chainId == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		return
+	}
+
+	targets := h.mirrorHandler.GetMirrorMap().GetMirrorTargets(chainId)
+
+	mirrors := make([]MirrorTargetResponse, 0, len(targets))
+	for _, target := range targets {
+		mirrors = append(mirrors, MirrorTargetResponse{
+			Address:   target.Address,
+			Port:      target.Port,
+			URL:       target.URL(),
+			RateLimit: target.RateLimit,
+		})
+	}
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"chain_id": chainId,
+		"mirrors":  mirrors,
+		"count":    len(mirrors),
+	})
+}
+
+// GetAllMirrors gets all mirror targets for all chains
+// GET /getAllMirrors
+func (h *Handler) GetAllMirrors(ctx context.Context, c *app.RequestContext) {
+	// Get all mirrors directly from MirrorMap
+	allMirrors := h.mirrorHandler.GetMirrorMap().GetAllMirrors()
+
+	result := make(map[string][]MirrorTargetResponse)
+
+	for chainId, targets := range allMirrors {
+		mirrors := make([]MirrorTargetResponse, 0, len(targets))
+		for _, target := range targets {
+			mirrors = append(mirrors, MirrorTargetResponse{
+				Address:   target.Address,
+				Port:      target.Port,
+				URL:       target.URL(),
+				RateLimit: target.RateLimit,
+			})
+		}
+		result[chainId] = mirrors
+	}
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"mirrors": result,
+	})
 }
