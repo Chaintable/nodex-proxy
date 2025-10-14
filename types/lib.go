@@ -108,7 +108,7 @@ func (p PreProcessorProcessorsHertz) Call(ctx context.Context, c *app.RequestCon
 		if processFunc != nil {
 			ctx, c, processData = processFunc(ctx, c, processData)
 		}
-		if len(c.Response.Body()) == 0 {
+		if len(c.Response.Body()) != 0 {
 			break
 		}
 	}

@@ -23,10 +23,8 @@ package types
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 
@@ -59,6 +57,8 @@ var defaultConfig = Config{
 	DefaultRPCTimeout:      5000,
 	ConnectionPoolSize:     2000,
 	RPCMethodTimeoutConfig: map[string]int{},
+	NodeReadinessTimeout:   300,
+	ReadinessCheckPath:     "/ready",
 	Processor: ProcessorConfig{
 		ObservabilityLog: ObservabilityLogProcessorConfig{
 			Enable: false,
@@ -187,6 +187,8 @@ type Config struct {
 	BlockReaderCacheTTL    int                 `yaml:"block_reader_cache_ttl"`
 	ChainId                string              `yaml:"chain_id"`
 	ConnectionPoolSize     int                 `yaml:"connection_pool_size"`
+	NodeReadinessTimeout   int                 `yaml:"node_readiness_timeout"`
+	ReadinessCheckPath     string              `yaml:"readiness_check_path"`
 	Processor              ProcessorConfig     `yaml:"processor"`
 	Observability          ObservabilityConfig `yaml:"observability"`
 	NodeSelectStrategy     string              `yaml:"node_select_strategy"`
@@ -354,57 +356,9 @@ func (d *debugInfo) DebugModeEnable() bool {
 	return d.mode.Load()
 }
 
-type dynamicRequestMirrorConfig struct {
-	Target string `yaml:"target"`
-}
-
-var DynamicRequestMirrorConfig = &dynamicRequestMirrorConfig{}
-
 const (
-	DynamicRequestMirrorConfigHTTPPath       = "/config/processor/request_mirror"
-	DynamicRequestMirrorConfigTargetHTTPPath = DynamicRequestMirrorConfigHTTPPath + "/target"
-	MirrorRequestHost                        = "mirror"
+	MirrorRequestHost = "mirror"
 )
-
-func (d *dynamicRequestMirrorConfig) RouterRegister(r *chi.Mux) {
-	r.Handle(DynamicRequestMirrorConfigHTTPPath, http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			default:
-				w.WriteHeader(http.StatusMethodNotAllowed)
-			case http.MethodGet:
-				w.WriteHeader(http.StatusOK)
-				b, err := yaml.Marshal(d)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				w.Write(b)
-			}
-		}))
-	r.Handle(DynamicRequestMirrorConfigTargetHTTPPath, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		switch request.Method {
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		case http.MethodPut:
-			target, err := io.ReadAll(request.Body)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			_, err = url.Parse(string(target))
-			if _, err := url.Parse(string(target)); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			d.Target = string(target)
-			w.WriteHeader(http.StatusCreated)
-		case http.MethodDelete:
-			d.Target = ""
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-}
 
 var jrpcxFileHome string
 

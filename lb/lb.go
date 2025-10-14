@@ -19,6 +19,7 @@ import (
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
+	"github.com/Chaintable/nodex-proxy/lb/readiness"
 	"github.com/Chaintable/nodex-proxy/lb/selector"
 	"github.com/Chaintable/nodex-proxy/lb/selector/random"
 	"github.com/Chaintable/nodex-proxy/lb/selector/roundrobin"
@@ -39,10 +40,13 @@ type LoadBalancer struct {
 	Limiter               jsonrpc.Limiter
 	HeightMap             jsonrpc.HeightMap
 	GatewayStrategy       jsonrpc.GatewayStrategy
+	MirrorMap             jsonrpc.MirrorMap
 	NodeSelector          selector.Strategy
+	readinessWaiter       *readiness.ReadinessWaiter
 	nodeChannel           <-chan *discovery.TargetNode
 	heightChannel         <-chan *discovery.ChainHeight
 	gatewayChannel        <-chan *discovery.Gateway
+	mirrorChannel         <-chan *discovery.MirrorTarget
 	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
 	preProcessorsHertz    types.PreProcessorProcessorsHertz
 	postProcessorsHertz   types.PostProcessorProcessorsHertz
@@ -66,8 +70,9 @@ const (
 func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config,
 	rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap,
 	nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight,
-	gatewayChannel <-chan *discovery.Gateway) *LoadBalancer {
+	gatewayChannel <-chan *discovery.Gateway, mirrorChannel <-chan *discovery.MirrorTarget) *LoadBalancer {
 	gatewayStrategy := jsonrpc.NewGatewayStrategy()
+	mirrorMap := jsonrpc.NewMirrorMap()
 	var nodeSelector selector.Strategy
 	switch config.NodeSelectStrategy {
 	case "round_robin":
@@ -89,12 +94,15 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		Limiter:               limiter,
 		HeightMap:             heightMap,
 		GatewayStrategy:       gatewayStrategy,
+		MirrorMap:             mirrorMap,
 		NodeSelector:          nodeSelector,
+		readinessWaiter:       readiness.NewReadinessWaiter(&config, nodeSelector),
 		nodeChannel:           nodeChannel,
 		heightChannel:         heightChannel,
 		gatewayChannel:        gatewayChannel,
+		mirrorChannel:         mirrorChannel,
 		rpcMethodTransportMap: rpcMethodTransportMap,
-		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter),
+		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter, mirrorMap),
 		postProcessorsHertz:   jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
 		defaultHttpTransport:  NewHttpTransportWithTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond, config.ConnectionPoolSize),
 	}
@@ -117,8 +125,13 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			targetNode.SetState(tempNode.StateType)
 			switch changeType {
 			case etcd.EVENT_PUT:
-				_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
+				if tempNode.ReadinessPort > 0 {
+					lb.readinessWaiter.WaitForReadiness(lb.ctx, tempNode, targetNode)
+				} else {
+					_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
+				}
 			case etcd.EVENT_DELETE:
+				lb.readinessWaiter.CancelWait(tempNode.ChainId, tempNode.NodeKey)
 				_ = lb.NodeSelector.RemoveNode(lb.ctx, chainId, role, targetNode)
 			}
 
@@ -134,6 +147,20 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 				lb.GatewayStrategy.UpdateGateway(chainId, *gateway)
 			case etcd.EVENT_DELETE:
 				lb.GatewayStrategy.DeleteGateway(chainId)
+			}
+
+		case mirror := <-lb.mirrorChannel:
+			if mirror.Deleted {
+				lb.MirrorMap.DeleteMirrorTarget(mirror.ChainId, mirror.AddrKey)
+				log.Info("mirror target deleted",
+					log.Any("chainId", mirror.ChainId),
+					log.Any("addrKey", mirror.AddrKey))
+			} else {
+				lb.MirrorMap.AddMirrorTarget(mirror.ChainId, mirror.AddrKey, mirror)
+				log.Info("mirror target added",
+					log.Any("chainId", mirror.ChainId),
+					log.Any("addrKey", mirror.AddrKey),
+					log.Any("url", mirror.URL()))
 			}
 		}
 	}
@@ -434,6 +461,11 @@ func originHostFromContext(ctx context.Context, defaultHost string) string {
 		return originHost
 	}
 	return defaultHost
+}
+
+// GetMirrorMap returns the MirrorMap instance for external access
+func (lb *LoadBalancer) GetMirrorMap() jsonrpc.MirrorMap {
+	return lb.MirrorMap
 }
 
 func NewHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) *http.Transport {

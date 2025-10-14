@@ -45,7 +45,7 @@ import (
 //	props         propagation.TextMapPropagator
 //}
 
-func GetPreProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethodHandlerIHertz, limiter Limiter) types.PreProcessorProcessorsHertz {
+func GetPreProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethodHandlerIHertz, limiter Limiter, mirrorMap MirrorMap) types.PreProcessorProcessorsHertz {
 	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
 	return []types.ProcessorFuncHertz{
 		logRequestHertz(),
@@ -54,7 +54,7 @@ func GetPreProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethod
 		updatePreprocessorMetricsHertz(),
 		rpcMethodLimiterHertz(limiter),
 		rpcMethodHandlerProcessorHertz(rpcMethodHandler.PreHandlerMap()),
-		requestMirrorHertz(defaultTimeout, config.Processor.RequestMirror),
+		requestMirrorHertz(defaultTimeout, config.Processor.RequestMirror, mirrorMap),
 	}
 }
 
