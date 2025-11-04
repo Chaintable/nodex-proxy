@@ -2,12 +2,14 @@ package random
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -36,20 +38,30 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 
-	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId], ctx.Archive)
+	chainId := ctx.ChainId
+	archiveNodes := r.archiveNodes[chainId]
+	stateNodes := r.stateNodes[chainId]
+
+	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[chainId], archiveNodes, stateNodes, ctx.Archive)
 	if len(nodes) == 0 {
-		return nil, utils.ErrNoAvailableNode
+		log.Warn(fmt.Sprintf("No nodes available after picking for chain %s: archive_nodes=%d, state_nodes=%d, archive_mode=%v, chain_height=%v",
+			chainId, len(archiveNodes), len(stateNodes), ctx.Archive, r.chainHeight[chainId]))
+		return nil, utils.NewNoAvailableNodeError(chainId, "no nodes available after picking")
 	}
 
 	// filter nodes by method route
 	if r.GatewayStrategy != nil && !ctx.IsBatch {
-		nodes = r.GatewayStrategy.FilterNodesByMethod(ctx.ChainId, string(ctx.Method), nodes)
+		method := string(ctx.Method)
+		originalCount := len(nodes)
+		nodes = r.GatewayStrategy.FilterNodesByMethod(chainId, method, nodes)
 		if len(nodes) == 0 {
-			return nil, utils.ErrNoAvailableNode
+			log.Warn(fmt.Sprintf("No nodes available after method filter for chain %s: method=%s, nodes_before=%d, nodes_after=0",
+				chainId, method, originalCount))
+			return nil, utils.NewNoAvailableNodeError(chainId, fmt.Sprintf("no nodes available after method filter for method %s", method))
 		}
 	}
 
-	weights, _ := r.GatewayStrategy.GetWeightForChain(ctx.ChainId)
+	weights, _ := r.GatewayStrategy.GetWeightForChain(chainId)
 
 	weightSum := 0
 	for _, node := range nodes {
@@ -64,7 +76,9 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 	}
 
 	if weightSum == 0 {
-		return nil, utils.ErrNoAvailableNode
+		log.Warn(fmt.Sprintf("Weight sum is zero for chain %s: nodes_count=%d, weights_count=%d",
+			chainId, len(nodes), len(weights)))
+		return nil, utils.NewNoAvailableNodeError(chainId, "weight sum is zero, all nodes have zero weight")
 	}
 
 	targetWeight := utils.RangeRandom(0, int64(weightSum))
@@ -77,7 +91,10 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 		}
 	}
 
-	return nil, utils.ErrNoAvailableNode
+	// This should never happen, but handle it gracefully
+	log.Warn(fmt.Sprintf("Failed to select node after weight calculation for chain %s: nodes_count=%d, weight_sum=%d, target_weight=%d",
+		chainId, len(nodes), weightSum, targetWeight))
+	return nil, utils.NewNoAvailableNodeError(chainId, "failed to select node after weight calculation")
 }
 
 func (r *Random) UpsertNode(_ context.Context, chainId string, role discovery.NodeType, node *lbnode.Node) error {
