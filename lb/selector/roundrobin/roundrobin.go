@@ -2,11 +2,13 @@ package roundrobin
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -37,6 +39,22 @@ func (r *RoundRobin) GetNode(ctx *types.RequestContext, requestKey string) (*lbn
 	total := 0
 	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId], ctx.Archive)
 
+	// Log detailed information when no nodes are available after node selection
+	if len(nodes) == 0 {
+		archiveNodesCount := len(r.archiveNodes[ctx.ChainId])
+		stateNodesCount := len(r.stateNodes[ctx.ChainId])
+		var chainHeightStr string
+		if r.chainHeight[ctx.ChainId] != nil {
+			chainHeightStr = r.chainHeight[ctx.ChainId].String()
+		} else {
+			chainHeightStr = "nil"
+		}
+
+		log.Warn(fmt.Sprintf("No available nodes after selection for chain %s: archive_nodes_count=%d, state_nodes_count=%d, archive_mode=%t, chain_height=%s",
+			ctx.ChainId, archiveNodesCount, stateNodesCount, ctx.Archive, chainHeightStr))
+		return nil, utils.NewNoAvailableNodeError(ctx.ChainId, "no nodes available after selection")
+	}
+
 	for _, node := range nodes {
 		node.IncrCurrentWeight(node.EffectWeight())
 		total += node.EffectWeight()
@@ -48,7 +66,9 @@ func (r *RoundRobin) GetNode(ctx *types.RequestContext, requestKey string) (*lbn
 	}
 
 	if best == nil {
-		return nil, utils.ErrNoAvailableNode
+		log.Warn(fmt.Sprintf("Failed to select best node after weight calculation for chain %s: nodes_count=%d, total_weight=%d",
+			ctx.ChainId, len(nodes), total))
+		return nil, utils.NewNoAvailableNodeError(ctx.ChainId, "failed to select best node after weight calculation")
 	}
 
 	best.IncrCurrentWeight(total * -1)
