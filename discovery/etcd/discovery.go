@@ -34,7 +34,7 @@ const (
 var (
 	lastBlockPattern = regexp.MustCompile(`^(?P<chain>.*?)/lastBlockNumber$`)
 	nodesPattern     = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
-	gateWayPattern = regexp.MustCompile(`^(?P<chain>.*?)/gateway$`)
+	gateWayPattern   = regexp.MustCompile(`^(?P<chain>.*?)/gateway$`)
 )
 
 func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discover, error) {
@@ -69,7 +69,7 @@ func (r *Discover) Close() error {
 	return r.etcdClient.Close()
 }
 
-func (r *Discover) Init(ctx context.Context) (<-chan *discovery.TargetNode, <-chan *discovery.ChainHeight, <-chan *discovery.Gateway, error) {
+func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan *discovery.ChainHeight, <-chan *discovery.Gateway, error) {
 	// Initial request to get the current value of the key
 
 	resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())

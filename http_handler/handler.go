@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
@@ -13,6 +14,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/lb/selector"
 	"github.com/Chaintable/nodex-proxy/lb/selector/random"
 	"github.com/Chaintable/nodex-proxy/lb/selector/roundrobin"
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -23,9 +25,10 @@ type Handler struct {
 	nodeSelector selector.Strategy
 	etcdClient   *clientv3.Client
 	keyPrefix    string
+	nodeChannel  chan<- *discovery.TargetNode
 }
 
-func NewHandler(ctx context.Context, nodeSelector selector.Strategy, etcdEndpoints []string, keyPrefix string) (*Handler, error) {
+func NewHandler(ctx context.Context, nodeSelector selector.Strategy, etcdEndpoints []string, keyPrefix string, nodeChannel chan<- *discovery.TargetNode) (*Handler, error) {
 	etcdClient, err := etcd.NewEtcdClient(ctx, etcdEndpoints)
 	if err != nil {
 		return nil, err
@@ -34,6 +37,7 @@ func NewHandler(ctx context.Context, nodeSelector selector.Strategy, etcdEndpoin
 		nodeSelector: nodeSelector,
 		etcdClient:   etcdClient,
 		keyPrefix:    keyPrefix,
+		nodeChannel:  nodeChannel,
 	}, nil
 }
 
@@ -927,4 +931,113 @@ func (h *Handler) RemoveMethodRoute(ctx context.Context, c *app.RequestContext) 
 		IncludeNodeKeys: includeKeys,
 		ExcludeNodeKeys: excludeKeys,
 	})
+}
+
+func (h *Handler) AddLocalNode(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+
+	type AddNodeRequest struct {
+		NodeType int    `json:"node_type"`
+		NodeKey  string `json:"node_key"`
+		IP       string `json:"ip"`
+		Port     int    `json:"port"`
+		State    int    `json:"state"`
+		Weight   int    `json:"weight"`
+	}
+
+	var req AddNodeRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid request format"})
+		return
+	}
+
+	if req.IP == "" || req.Port == 0 {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "(ip, port) are required"})
+		return
+	}
+
+	if req.NodeType != 1 && req.NodeType != 2 {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid node_type value"})
+		return
+	}
+
+	if req.State < 1 || req.State > 3 {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "state must be between 1 and 3"})
+		return
+	}
+
+	if req.Weight < 0 || req.Weight > types.DefaultWeight {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "weight must be between 0 and 100"})
+		return
+	}
+
+	if req.NodeKey == "" {
+		req.NodeKey = fmt.Sprintf("%s_%d", req.IP, req.Port)
+	}
+
+	localNode := &discovery.TargetNode{
+		ChainId:    chainId,
+		NodeKey:    req.NodeKey,
+		Address:    req.IP,
+		Port:       req.Port,
+		NodeType:   discovery.NodeType(req.NodeType),
+		StateType:  req.State,
+		Weight:     req.Weight,
+		Source:     "local",
+		ChangeType: 0,
+	}
+
+	select {
+	case h.nodeChannel <- localNode:
+		log.Info("AddLocalNode success",
+			log.Any("chain_id", chainId),
+			log.Any("node_key", req.NodeKey),
+			log.Any("ip", req.IP),
+			log.Any("port", req.Port),
+			log.Any("node_type", req.NodeType),
+			log.Any("state", req.State),
+			log.Any("weight", req.Weight))
+		c.JSON(consts.StatusOK, map[string]interface{}{
+			"node":   req.NodeKey,
+			"ip":     req.IP,
+			"port":   req.Port,
+			"state":  req.State,
+			"weight": req.Weight,
+			"source": "local",
+		})
+	case <-time.After(time.Second):
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to process node event"})
+	}
+}
+
+func (h *Handler) DeleteLocalNode(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	nodeKey := c.Param("nodeKey")
+
+	node, err := h.findNode(chainId, nodeKey)
+	if err != nil {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+		return
+	}
+
+	deleteEvent := &discovery.TargetNode{
+		ChainId:    chainId,
+		NodeKey:    nodeKey,
+		Address:    node.IP(),
+		Port:       node.Port(),
+		NodeType:   node.NodeType,
+		StateType:  node.State(),
+		Source:     "local",
+		ChangeType: 1,
+	}
+
+	select {
+	case h.nodeChannel <- deleteEvent:
+		log.Info("DeleteLocalNode success",
+			log.Any("chain_id", chainId),
+			log.Any("node_key", nodeKey))
+		c.JSON(consts.StatusOK, map[string]string{"message": fmt.Sprintf("node %s deleted successfully", nodeKey)})
+	case <-time.After(time.Second):
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to process delete event"})
+	}
 }

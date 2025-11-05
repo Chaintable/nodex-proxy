@@ -97,7 +97,7 @@ func main() {
 
 	pprof.Register(h)
 
-	handler, err := http_handler.NewHandler(ctx, loadBalancer.NodeSelector, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix)
+	handler, err := http_handler.NewHandler(ctx, loadBalancer.NodeSelector, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix, nodeChannel)
 	if err != nil {
 		log.Fatal("New handler failed: %v\n", err)
 	}
@@ -113,6 +113,8 @@ func main() {
 	h.POST("/:chainId/addNode", handler.AddNode)
 	h.DELETE("/:chainId/deleteNode/:nodeKey", handler.DeleteNode)
 	h.PUT("/:chainId/updateNode/:nodeKey", handler.UpdateNode)
+	h.POST("/:chainId/addLocalNode", handler.AddLocalNode)
+	h.DELETE("/:chainId/deleteLocalNode/:nodeKey", handler.DeleteLocalNode)
 
 	// Add method route management endpoints
 	h.POST("/:chainId/addMethodRoute", handler.AddMethodRoute)
