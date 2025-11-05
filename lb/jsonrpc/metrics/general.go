@@ -89,6 +89,15 @@ func (m CommonLabelMetrics) IncrInternalFailedRequest() {
 	internalFailedRequest.With(m.labelValues...).Add(1)
 }
 
+// IncrHTTPStatusCode increments the HTTP status code counter
+func (m CommonLabelMetrics) IncrHTTPStatusCode(statusCode int, method jsonrpc.RPCMethod) {
+	if method != "" {
+		httpStatusCode.With(m.labelValues...).With("method", string(method), "status_code", strconv.Itoa(statusCode)).Add(1)
+	} else {
+		httpStatusCode.With(m.labelValues...).With("method", "batch", "status_code", strconv.Itoa(statusCode)).Add(1)
+	}
+}
+
 var (
 	callsStarted = prometheus.NewCounterFrom(stdprome.CounterOpts{
 		Namespace: promNamespace,
@@ -160,4 +169,10 @@ var (
 		Name:      "internal_failed_request",
 		Help:      "Number of failed internal requests",
 	}, commonLabelNames)
+	httpStatusCode = prometheus.NewCounterFrom(stdprome.CounterOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystem,
+		Name:      "http_status_code",
+		Help:      "HTTP status code counter",
+	}, newLabelNames(commonLabelNames, "method", "status_code"))
 )
