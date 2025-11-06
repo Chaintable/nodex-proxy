@@ -266,7 +266,7 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 		c.JSON(consts.StatusGatewayTimeout, object)
 	}
 	if c.Response.StatusCode() == consts.StatusBadGateway {
-		_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy bad gateway"))
+		_, object, _ := ejrpc.BadGateway(errors.New("reverse proxy bad gateway"))
 		c.JSON(consts.StatusBadGateway, object)
 	}
 }
