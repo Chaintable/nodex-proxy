@@ -123,7 +123,7 @@ func rpcMethodHandlerProcessorHertz(handlerMap map[jsonrpc.RPCMethod]types.Proce
 	}
 }
 
-func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig) types.ProcessorFuncHertz {
+func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig, mirrorMap MirrorMap, mirrorLimiter MirrorLimiter) types.ProcessorFuncHertz {
 	if !config.Enable {
 		return nil
 	}
@@ -134,12 +134,11 @@ func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig)
 	doMirrorRequest := func(c *app.RequestContext, processData *types.RequestContext, target string) {
 		mirrorRequest, err := http.NewRequest(string(c.Method()), target, bytes.NewReader(processData.RawRequestBody))
 		if err != nil {
-			log.Error("mirror request error", err)
+			log.Error("mirror request creation error", err, log.Any("target", target))
 			return
 		}
 		mirrorRequest.Header = make(http.Header)
 		c.Request.Header.VisitAll(func(key, value []byte) {
-			// 为了确保后续使用不会受到影响，复制 key 和 value 的内容
 			keyCopy := make([]byte, len(key))
 			copy(keyCopy, key)
 			valueCopy := make([]byte, len(value))
@@ -148,18 +147,23 @@ func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig)
 			mirrorRequest.Header[string(keyCopy)] = []string{string(valueCopy)}
 		})
 		mirrorRequest.Host = types.MirrorRequestHost
+
 		resp, err := httpClient.Do(mirrorRequest)
 		if err != nil {
-			log.Error("mirror request error", err)
 			return
 		}
 		defer resp.Body.Close()
 	}
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		mirrorTarget := types.DynamicRequestMirrorConfig.Target
-		if mirrorTarget != "" {
-			go doMirrorRequest(c, processData, mirrorTarget)
+		mirrorURLs := mirrorMap.GetMirrorURLs(processData.ChainId)
+
+		for _, url := range mirrorURLs {
+			if !mirrorLimiter.Allow(processData.ChainId, url) {
+				continue
+			}
+			go doMirrorRequest(c, processData, url)
 		}
+
 		return ctx, c, processData
 	}
 }

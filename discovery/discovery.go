@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -17,7 +18,7 @@ const (
 type TargetNode struct {
 	ChainId    string   `json:"-"`
 	StateType  int      `json:"stateType"` // 1 latest, 2 delay, 3 offline
-	Address    string   `json:"address"`   //
+	Address    string   `json:"address"`
 	Port       int      `json:"port"`
 	NodeType   NodeType `json:"nodeType"` // 1 state, 2 archive
 	ChangeType int      `json:"-"`
@@ -97,7 +98,20 @@ type MethodRoute struct {
 	ExcludeNodeKeys map[string]bool `json:"exclude_node_keys"`
 }
 
+type MirrorTarget struct {
+	ChainId   string `json:"-"`
+	AddrKey   string `json:"-"`
+	Address   string `json:"address"`
+	Port      int    `json:"port"`
+	RateLimit *int   `json:"rateLimit,omitempty"`
+	Deleted   bool   `json:"-"`
+}
+
+func (m *MirrorTarget) URL() string {
+	return fmt.Sprintf("http://%s:%d", m.Address, m.Port)
+}
+
 type Discover interface {
-	Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, <-chan *Gateway, error)
+	Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, <-chan *Gateway, <-chan *MirrorTarget, error)
 	Close() error
 }
