@@ -3,6 +3,11 @@ package jsonrpc
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc/metrics"
 	"github.com/Chaintable/nodex-proxy/lib/log"
@@ -10,10 +15,6 @@ import (
 	nJson "github.com/bytedance/sonic"
 	"github.com/cloudwego/hertz/pkg/app"
 	"go.opentelemetry.io/otel/attribute"
-	"net/http"
-	"regexp"
-	"strings"
-	"time"
 )
 
 const (
@@ -316,6 +317,19 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		// basic request statistics
 		// TotalJRPCRequest = BatchCallsFinished + CallsFinished + CallsFailed
 		m.IncrTotalJRPCRequest()
+
+		// Record HTTP status code
+		statusCode := c.Response.StatusCode()
+		// If status code is 0 (not set), default to 200
+		if statusCode == 0 {
+			statusCode = 200
+		}
+		if processData.IsBatch {
+			m.IncrHTTPStatusCode(statusCode, "")
+		} else {
+			m.IncrHTTPStatusCode(statusCode, processData.Method)
+		}
+
 		if processData.IsBatch {
 			m.IncrBatchCallsFinished()
 			m.ObBatchCallsTime(responseDuration)
