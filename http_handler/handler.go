@@ -1068,9 +1068,9 @@ type MirrorTargetResponse struct {
 	RateLimit *int   `json:"rateLimit,omitempty"`
 }
 
-// AddMirror adds or updates a mirror target for a specific chain
-// POST /:chainId/addMirror
-func (h *Handler) AddMirror(ctx context.Context, c *app.RequestContext) {
+// AddLocalMirror adds or updates a mirror target in memory for a specific chain
+// POST /:chainId/addLocalMirror
+func (h *Handler) AddLocalMirror(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
@@ -1130,9 +1130,9 @@ type DeleteMirrorRequest struct {
 	Port    int    `json:"port"`
 }
 
-// DeleteMirror deletes a specific mirror target by address and port
-// DELETE /:chainId/deleteMirror
-func (h *Handler) DeleteMirror(ctx context.Context, c *app.RequestContext) {
+// DeleteLocalMirror deletes a specific mirror target from memory by address and port
+// DELETE /:chainId/deleteLocalMirror
+func (h *Handler) DeleteLocalMirror(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
@@ -1170,9 +1170,9 @@ func (h *Handler) DeleteMirror(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-// DeleteAllMirrors deletes all mirror targets for a specific chain
-// DELETE /:chainId/deleteAllMirrors
-func (h *Handler) DeleteAllMirrors(ctx context.Context, c *app.RequestContext) {
+// DeleteAllLocalMirrors deletes all mirror targets from memory for a specific chain
+// DELETE /:chainId/deleteAllLocalMirrors
+func (h *Handler) DeleteAllLocalMirrors(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
@@ -1238,5 +1238,153 @@ func (h *Handler) GetAllMirrors(ctx context.Context, c *app.RequestContext) {
 
 	c.JSON(consts.StatusOK, map[string]interface{}{
 		"mirrors": result,
+	})
+}
+
+// AddMirror adds a mirror target to etcd for persistence
+// POST /:chainId/addMirror
+func (h *Handler) AddMirror(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	if chainId == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		return
+	}
+
+	var req AddMirrorRequest
+	if err := c.Bind(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request body: %v", err)})
+		return
+	}
+
+	if req.Address == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "address is required"})
+		return
+	}
+
+	if req.Port <= 0 || req.Port > 65535 {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "port must be between 1 and 65535"})
+		return
+	}
+
+	addrKey := fmt.Sprintf("%s:%d", req.Address, req.Port)
+	etcdKey := fmt.Sprintf("%s%s/mirror/%s", h.keyPrefix, chainId, addrKey)
+
+	resp, err := h.etcdClient.Get(ctx, etcdKey)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to get mirror from etcd: %v", err)})
+		return
+	}
+	if len(resp.Kvs) > 0 {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("mirror %s already exists", addrKey)})
+		return
+	}
+
+	mirrorData := discovery.MirrorTarget{
+		Address:   req.Address,
+		Port:      req.Port,
+		RateLimit: req.RateLimit,
+	}
+
+	mirrorDataBytes, err := json.Marshal(mirrorData)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to marshal mirror data: %v", err)})
+		return
+	}
+
+	txn := h.etcdClient.Txn(ctx)
+	txnResp, err := txn.
+		If(clientv3.Compare(clientv3.Version(etcdKey), "=", 0)).
+		Then(clientv3.OpPut(etcdKey, string(mirrorDataBytes))).
+		Commit()
+
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to commit transaction: %v", err)})
+		return
+	}
+
+	if !txnResp.Succeeded {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "concurrent modification detected, please retry"})
+		return
+	}
+
+	c.JSON(consts.StatusCreated, map[string]interface{}{
+		"message": "mirror target added successfully",
+		"mirror": MirrorTargetResponse{
+			Address:   req.Address,
+			Port:      req.Port,
+			URL:       fmt.Sprintf("http://%s:%d", req.Address, req.Port),
+			RateLimit: req.RateLimit,
+		},
+	})
+}
+
+// DeleteMirror deletes a specific mirror target from etcd
+// DELETE /:chainId/deleteMirror
+func (h *Handler) DeleteMirror(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	if chainId == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		return
+	}
+
+	var req DeleteMirrorRequest
+	if err := c.Bind(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request body: %v", err)})
+		return
+	}
+
+	if req.Address == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "address is required"})
+		return
+	}
+
+	if req.Port <= 0 || req.Port > 65535 {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "port must be between 1 and 65535"})
+		return
+	}
+
+	addrKey := fmt.Sprintf("%s:%d", req.Address, req.Port)
+	etcdKey := fmt.Sprintf("%s%s/mirror/%s", h.keyPrefix, chainId, addrKey)
+
+	resp, err := h.etcdClient.Get(ctx, etcdKey)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get mirror from etcd"})
+		return
+	}
+	if len(resp.Kvs) == 0 {
+		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("mirror %s not found", addrKey)})
+		return
+	}
+
+	_, err = h.etcdClient.Delete(ctx, etcdKey)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to delete mirror from etcd: %v", err)})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]string{
+		"message": "mirror target deleted successfully",
+	})
+}
+
+// DeleteAllMirrors deletes all mirror targets from etcd for a specific chain
+// DELETE /:chainId/deleteAllMirrors
+func (h *Handler) DeleteAllMirrors(ctx context.Context, c *app.RequestContext) {
+	chainId := c.Param("chainId")
+	if chainId == "" {
+		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		return
+	}
+
+	etcdPrefix := fmt.Sprintf("%s%s/mirror/", h.keyPrefix, chainId)
+
+	_, err := h.etcdClient.Delete(ctx, etcdPrefix, clientv3.WithPrefix())
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to delete mirrors from etcd: %v", err)})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]string{
+		"message": "all mirror targets deleted successfully",
 	})
 }
