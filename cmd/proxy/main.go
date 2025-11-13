@@ -129,10 +129,17 @@ func main() {
 	h.POST("/:chainId/writers/switchLeader", handler.SwitchLeader)
 	h.GET("/:chainId/writers/leader", handler.GetLeaderStatus)
 
-	// Add mirror management endpoints
+	// Local mirror management endpoints (memory only)
+	h.POST("/:chainId/addLocalMirror", handler.AddLocalMirror)
+	h.DELETE("/:chainId/deleteLocalMirror", handler.DeleteLocalMirror)
+	h.DELETE("/:chainId/deleteAllLocalMirrors", handler.DeleteAllLocalMirrors)
+
+	// Persistent mirror management endpoints (etcd)
 	h.POST("/:chainId/addMirror", handler.AddMirror)
 	h.DELETE("/:chainId/deleteMirror", handler.DeleteMirror)
 	h.DELETE("/:chainId/deleteAllMirrors", handler.DeleteAllMirrors)
+
+	// Mirror query endpoints (query from memory)
 	h.GET("/:chainId/getMirrors", handler.GetMirrors)
 	h.GET("/getAllMirrors", handler.GetAllMirrors)
 
