@@ -50,6 +50,7 @@ type LoadBalancer struct {
 	preProcessorsHertz    types.PreProcessorProcessorsHertz
 	postProcessorsHertz   types.PostProcessorProcessorsHertz
 	defaultHttpTransport  *http.Transport
+	healthChecker         *NodeHealthChecker
 }
 
 var headerUserAgent = "User-Agent"
@@ -70,7 +71,8 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 	rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap,
 	mirrorLimiter jsonrpc.MirrorLimiter,
 	nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight,
-	gatewayChannel <-chan *discovery.Gateway, mirrorChannel <-chan *discovery.MirrorTarget) *LoadBalancer {
+	gatewayChannel <-chan *discovery.Gateway, mirrorChannel <-chan *discovery.MirrorTarget,
+) *LoadBalancer {
 	gatewayStrategy := jsonrpc.NewGatewayStrategy()
 	mirrorMap := jsonrpc.NewMirrorMap()
 	var nodeSelector selector.Strategy
@@ -87,6 +89,16 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		}
 		rpcMethodTransportMap[ejrpc.RPCMethod(m)] = NewHttpTransportWithTimeout(time.Duration(t)*time.Millisecond, config.ConnectionPoolSize)
 	}
+	// Create health checker with default timeout values
+	healthCheckTimeout := 5 * time.Second
+	maxWaitTime := 30 * time.Second
+	if config.NodeHealthCheckTimeout > 0 {
+		healthCheckTimeout = time.Duration(config.NodeHealthCheckTimeout) * time.Millisecond
+	}
+	if config.NodeHealthCheckMaxWait > 0 {
+		maxWaitTime = time.Duration(config.NodeHealthCheckMaxWait) * time.Millisecond
+	}
+
 	return &LoadBalancer{
 		ctx:                   ctx,
 		nodeRefresherMap:      nodeRefresherMap,
@@ -105,6 +117,7 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter, mirrorMap, mirrorLimiter),
 		postProcessorsHertz:   jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
 		defaultHttpTransport:  NewHttpTransportWithTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond, config.ConnectionPoolSize),
+		healthChecker:         NewNodeHealthChecker(healthCheckTimeout, maxWaitTime),
 	}
 }
 
@@ -117,16 +130,41 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			chainId := tempNode.ChainId
 			role := tempNode.NodeType
 			changeType := tempNode.ChangeType
-			targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultWeight, role, lbnode.WithSource(tempNode.Source))
-			if err != nil {
-				log.Error("failed to create node", err)
-				continue
-			}
-			targetNode.SetState(tempNode.StateType)
+
 			switch changeType {
 			case etcd.EVENT_PUT:
-				_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
+				// Perform health check in background goroutine
+				go func(node *discovery.TargetNode) {
+					log.Info("performing health check for new node",
+						log.Any("node_key", node.NodeKey),
+						log.Any("address", fmt.Sprintf("%s:%d", node.Address, node.Port)),
+						log.Any("chain_id", chainId))
+
+					targetNode, err := lb.healthChecker.CheckNodeHealth(lb.ctx, node)
+					if err != nil {
+						log.Error("node health check failed, node will not be added",
+							err,
+							log.Any("node_key", node.NodeKey),
+							log.Any("address", fmt.Sprintf("%s:%d", node.Address, node.Port)),
+							log.Any("chain_id", chainId))
+						return
+					}
+
+					log.Info("node health check passed, adding to pool",
+						log.Any("node_key", node.NodeKey),
+						log.Any("address", targetNode.Addr()),
+						log.Any("chain_id", chainId))
+
+					_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
+				}(tempNode)
+
 			case etcd.EVENT_DELETE:
+				targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultWeight, role, lbnode.WithSource(tempNode.Source))
+				if err != nil {
+					log.Error("failed to create node", err)
+					continue
+				}
+				targetNode.SetState(tempNode.StateType)
 				_ = lb.NodeSelector.RemoveNode(lb.ctx, chainId, role, targetNode)
 			}
 
@@ -163,7 +201,6 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			}
 		}
 	}
-
 }
 
 func parseNumber(s string) (int64, error) {
@@ -329,7 +366,6 @@ func (lb *LoadBalancer) shouldRetryWithArchive(c *app.RequestContext, requestCon
 }
 
 func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *protocol.Request) func(*http.Request) {
-
 	return func(outReq *http.Request) {
 		outReq.URL = cloneURL(outReq.URL)
 		outReq.URL.Scheme = "http"

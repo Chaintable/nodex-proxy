@@ -102,8 +102,10 @@ var defaultConfig = Config{
 			},
 		},
 	},
-	NodeSelectStrategy: "random",
-	EtcdPrefix:         "",
+	NodeSelectStrategy:     "random",
+	EtcdPrefix:             "",
+	NodeHealthCheckTimeout: 5000,  // 5 seconds
+	NodeHealthCheckMaxWait: 30000, // 30 seconds
 }
 
 type DebugLogProcessorConfig struct {
@@ -161,8 +163,7 @@ type ObservabilityTraceConfig struct {
 	OTLPEndpoint  string  `yaml:"otlp_endpoint"`
 	SamplingRatio float64 `yaml:"sampling_ratio"`
 }
-type ObservabilityMetricConfig struct {
-}
+type ObservabilityMetricConfig struct{}
 type ObservabilityConfig struct {
 	Trace  ObservabilityTraceConfig   `yaml:"trace"`
 	Metric ObservabilityMetricConfig  `yaml:"metric"`
@@ -189,6 +190,8 @@ type Config struct {
 	Observability          ObservabilityConfig `yaml:"observability"`
 	NodeSelectStrategy     string              `yaml:"node_select_strategy"`
 	EtcdPrefix             string              `yaml:"etcd_prefix"`
+	NodeHealthCheckTimeout int                 `yaml:"node_health_check_timeout"`  // in milliseconds
+	NodeHealthCheckMaxWait int                 `yaml:"node_health_check_max_wait"` // in milliseconds
 }
 
 type RaftJoinConfig struct {
@@ -422,7 +425,7 @@ var ManualProbeFlag = manualProbeFlagType{}
 
 const (
 	ManualProbeFlagFilePath jrpcxFilePath = "jrpcx-manual-probe-flag"
-	ManualProbeFlagHTTPPath               = "/jrpc/manual-probe-flag"
+	ManualProbeFlagHTTPPath string        = "/jrpc/manual-probe-flag"
 )
 
 func (_ manualProbeFlagType) RouterRegister(r *chi.Mux) {
