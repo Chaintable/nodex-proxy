@@ -61,7 +61,10 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 		}
 	}
 
-	weights, _ := r.GatewayStrategy.GetWeightForChain(chainId)
+	weights := make(map[string]int)
+	if r.GatewayStrategy != nil {
+		weights, _ = r.GatewayStrategy.GetWeightForChain(chainId)
+	}
 
 	weightSum := 0
 	for _, node := range nodes {

@@ -5,9 +5,15 @@ import (
 	"testing"
 
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	nJson "github.com/bytedance/sonic"
 	"github.com/stretchr/testify/require"
 )
+
+func init() {
+	// Initialize logger for tests
+	log.InitLogger("error")
+}
 
 var (
 	txStr1 = `
