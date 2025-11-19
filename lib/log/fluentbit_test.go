@@ -8,16 +8,19 @@ import (
 	"time"
 )
 
+func init() {
+	// Initialize logger for tests
+	InitLogger("error")
+}
+
 const (
 	testTCPHost = "127.0.0.1:5170"
 )
 
-var (
-	testObservabilityLogConfig = ObservabilityLogConfig{
-		Enable:   true,
-		Endpoint: fmt.Sprintf("fluent-bit-tcp://%s?buffer_size=1", testTCPHost),
-	}
-)
+var testObservabilityLogConfig = ObservabilityLogConfig{
+	Enable:   true,
+	Endpoint: fmt.Sprintf("fluent-bit-tcp://%s?buffer_size=1", testTCPHost),
+}
 
 func newTCPServer(t *testing.T) (net.Listener, func() int) {
 	listen, err := net.Listen("tcp", testTCPHost)

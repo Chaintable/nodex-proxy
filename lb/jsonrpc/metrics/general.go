@@ -175,4 +175,27 @@ var (
 		Name:      "http_status_code",
 		Help:      "HTTP status code counter",
 	}, newLabelNames(commonLabelNames, "method", "status_code"))
+	nodeHealthCheckTotal = prometheus.NewCounterFrom(stdprome.CounterOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystem,
+		Name:      "health_check_total",
+		Help:      "Total number of node health checks performed",
+	}, []string{"chain_id", "node_key", "status"})
+	nodeHealthCheckDuration = prometheus.NewHistogramFrom(stdprome.HistogramOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystem,
+		Name:      "health_check_duration_ms",
+		Help:      "Duration of node health checks in milliseconds",
+		Buckets:   []float64{10, 50, 100, 500, 1000, 3000, 5000, 10000, 30000},
+	}, []string{"chain_id", "node_key", "status"})
 )
+
+// IncrNodeHealthCheckTotal increments the node health check counter
+func IncrNodeHealthCheckTotal(chainID, nodeKey, status string) {
+	nodeHealthCheckTotal.With("chain_id", chainID, "node_key", nodeKey, "status", status).Add(1)
+}
+
+// ObserveNodeHealthCheckDuration observes the duration of a node health check
+func ObserveNodeHealthCheckDuration(chainID, nodeKey, status string, duration time.Duration) {
+	nodeHealthCheckDuration.With("chain_id", chainID, "node_key", nodeKey, "status", status).Observe(float64(duration.Milliseconds()))
+}

@@ -67,6 +67,7 @@ func New(key, ip string, port, weight int, nodeType discovery.NodeType, opts ...
 	node.ReverseProxy = proxy
 	return node, nil
 }
+
 func (node *Node) Key() string {
 	return node.key
 }
@@ -97,6 +98,7 @@ func (node *Node) SetWeight(weight int) {
 
 	node.weight = weight
 }
+
 func (node *Node) SetState(state int) {
 	node.lock.Lock()
 	defer node.lock.Unlock()
@@ -168,7 +170,6 @@ func (node *Node) State() int {
 }
 
 func (node *Node) Available() bool {
-
 	node.lock.RLock()
 	defer node.lock.RUnlock()
 
@@ -191,6 +192,7 @@ func (node *Node) Clone() *Node {
 		lock:            sync.RWMutex{},
 		currentHandling: node.currentHandling,
 		stateType:       node.stateType,
+		NodeType:        node.NodeType,
 		ReverseProxy:    node.ReverseProxy,
 	}
 	return &n

@@ -3,6 +3,7 @@ package roundrobin
 import (
 	"testing"
 
+	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
@@ -10,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TempPickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node) []*lbnode.Node {
+func TempPickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, forceArchive bool) []*lbnode.Node {
 	return append(stateNodes, archiveNodes...)
 }
 
@@ -28,26 +29,29 @@ func TestRoundRobin_GetNode(t *testing.T) {
 	}{
 		{
 			name: "success_same_weight",
-			nodes: []*lbnode.Node{
-				lbnode.New("test_1", "192.168.1.2", 8080, 1),
-				lbnode.New("test_2", "192.168.1.3", 8080, 1),
-				lbnode.New("test_3", "192.168.1.4", 8080, 1),
-			},
+			nodes: func() []*lbnode.Node {
+				node1, _ := lbnode.New("test_1", "192.168.1.2", 8080, 1, discovery.NodeTypeArchive)
+				node2, _ := lbnode.New("test_2", "192.168.1.3", 8080, 1, discovery.NodeTypeArchive)
+				node3, _ := lbnode.New("test_3", "192.168.1.4", 8080, 1, discovery.NodeTypeArchive)
+				return []*lbnode.Node{node1, node2, node3}
+			}(),
 			args: args{
 				times: 10,
 			},
 			want: []string{
 				"test_1", "test_2", "test_3", "test_1", "test_2",
-				"test_3", "test_1", "test_2", "test_3", "test_1"},
+				"test_3", "test_1", "test_2", "test_3", "test_1",
+			},
 			wantErr: false,
 		},
 		{
 			name: "success_diff_weight",
-			nodes: []*lbnode.Node{
-				lbnode.New("test_1", "192.168.1.2", 8080, 1),
-				lbnode.New("test_2", "192.168.1.3", 8080, 2),
-				lbnode.New("test_3", "192.168.1.4", 8080, 3),
-			},
+			nodes: func() []*lbnode.Node {
+				node1, _ := lbnode.New("test_1", "192.168.1.2", 8080, 1, discovery.NodeTypeArchive)
+				node2, _ := lbnode.New("test_2", "192.168.1.3", 8080, 2, discovery.NodeTypeArchive)
+				node3, _ := lbnode.New("test_3", "192.168.1.4", 8080, 3, discovery.NodeTypeArchive)
+				return []*lbnode.Node{node1, node2, node3}
+			}(),
 			args: args{
 				times: 12,
 			},
@@ -81,6 +85,7 @@ func TestRoundRobin_GetNode(t *testing.T) {
 		})
 	}
 }
+
 func testNodes(t *testing.T, nodes []*lbnode.Node, expect []string) {
 	var keys []string
 	for _, v := range nodes {

@@ -102,8 +102,10 @@ var defaultConfig = Config{
 			},
 		},
 	},
-	NodeSelectStrategy: "random",
-	EtcdPrefix:         "",
+	NodeSelectStrategy:     "random",
+	EtcdPrefix:             "",
+	NodeHealthCheckTimeout: 5,   // in seconds
+	NodeHealthCheckMaxWait: 300, // in seconds
 }
 
 type DebugLogProcessorConfig struct {
@@ -161,15 +163,16 @@ type ObservabilityTraceConfig struct {
 	OTLPEndpoint  string  `yaml:"otlp_endpoint"`
 	SamplingRatio float64 `yaml:"sampling_ratio"`
 }
-type ObservabilityMetricConfig struct {
-}
-type ObservabilityConfig struct {
-	Trace  ObservabilityTraceConfig   `yaml:"trace"`
-	Metric ObservabilityMetricConfig  `yaml:"metric"`
-	Log    log.ObservabilityLogConfig `yaml:"log"`
-	// StaticResource can contain for example information about the application that emits the record or about the infrastructure where the application runs.
-	StaticResource map[string]string `yaml:"static_resource"`
-}
+type (
+	ObservabilityMetricConfig struct{}
+	ObservabilityConfig       struct {
+		Trace  ObservabilityTraceConfig   `yaml:"trace"`
+		Metric ObservabilityMetricConfig  `yaml:"metric"`
+		Log    log.ObservabilityLogConfig `yaml:"log"`
+		// StaticResource can contain for example information about the application that emits the record or about the infrastructure where the application runs.
+		StaticResource map[string]string `yaml:"static_resource"`
+	}
+)
 
 // Config ...
 type Config struct {
@@ -189,6 +192,8 @@ type Config struct {
 	Observability          ObservabilityConfig `yaml:"observability"`
 	NodeSelectStrategy     string              `yaml:"node_select_strategy"`
 	EtcdPrefix             string              `yaml:"etcd_prefix"`
+	NodeHealthCheckTimeout int                 `yaml:"node_health_check_timeout"`  // in seconds
+	NodeHealthCheckMaxWait int                 `yaml:"node_health_check_max_wait"` // in seconds
 }
 
 type RaftJoinConfig struct {
@@ -367,7 +372,7 @@ func init() {
 	_, err := os.Stat(jrpcxFileHome)
 	if err != nil {
 		if os.IsNotExist(err) {
-			err := os.Mkdir(jrpcxFileHome, 0777)
+			err := os.Mkdir(jrpcxFileHome, 0o777)
 			if err != nil && !errors.Is(err, os.ErrExist) {
 				panic(err)
 			}
@@ -422,7 +427,7 @@ var ManualProbeFlag = manualProbeFlagType{}
 
 const (
 	ManualProbeFlagFilePath jrpcxFilePath = "jrpcx-manual-probe-flag"
-	ManualProbeFlagHTTPPath               = "/jrpc/manual-probe-flag"
+	ManualProbeFlagHTTPPath string        = "/jrpc/manual-probe-flag"
 )
 
 func (_ manualProbeFlagType) RouterRegister(r *chi.Mux) {
