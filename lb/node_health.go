@@ -19,6 +19,7 @@ import (
 // NodeHealthChecker is responsible for checking node health before adding to the pool
 type NodeHealthChecker struct {
 	healthCheckTimeout time.Duration
+	maxWaitTime        time.Duration
 	httpClient         *http.Client
 }
 
@@ -26,6 +27,7 @@ type NodeHealthChecker struct {
 func NewNodeHealthChecker(healthCheckTimeout, maxWaitTime time.Duration) *NodeHealthChecker {
 	return &NodeHealthChecker{
 		healthCheckTimeout: healthCheckTimeout,
+		maxWaitTime:        maxWaitTime,
 		httpClient: &http.Client{
 			Timeout: healthCheckTimeout,
 		},
@@ -56,28 +58,62 @@ func (hc *NodeHealthChecker) CheckNodeHealth(ctx context.Context, tempNode *disc
 	// Set initial state
 	targetNode.SetState(tempNode.StateType)
 
-	// Perform health check
-	success := hc.processHealthCheck(targetNode)
-	duration := time.Since(startTime)
+	// Perform health check with retry logic
+	startCheckTime := time.Now()
+	retryInterval := 5 * time.Second
+	attemptCount := 0
 
-	if success {
-		log.Info("node health check passed",
+	for {
+		attemptCount++
+		success := hc.processHealthCheck(targetNode)
+
+		if success {
+			duration := time.Since(startTime)
+			log.Info("node health check passed",
+				log.Any("node_key", tempNode.NodeKey),
+				log.Any("address", targetNode.Addr()),
+				log.Any("chain_id", tempNode.ChainId),
+				log.Any("duration_ms", duration.Milliseconds()),
+				log.Any("attempts", attemptCount))
+			hc.recordHealthCheckMetric(tempNode.ChainId, tempNode.NodeKey, "success", duration)
+			return targetNode, nil
+		}
+
+		// Check if we've exceeded maxWaitTime
+		elapsed := time.Since(startCheckTime)
+		if elapsed >= hc.maxWaitTime {
+			duration := time.Since(startTime)
+			log.Error("node health check failed after max wait time",
+				fmt.Errorf("health check failed after %d attempts", attemptCount),
+				log.Any("node_key", tempNode.NodeKey),
+				log.Any("address", targetNode.Addr()),
+				log.Any("chain_id", tempNode.ChainId),
+				log.Any("duration_ms", duration.Milliseconds()),
+				log.Any("attempts", attemptCount),
+				log.Any("max_wait_time_ms", hc.maxWaitTime.Milliseconds()))
+			hc.recordHealthCheckMetric(tempNode.ChainId, tempNode.NodeKey, "timeout", duration)
+			return nil, fmt.Errorf("health check failed after %d attempts and %v", attemptCount, elapsed)
+		}
+
+		// Log retry attempt
+		log.Warn("health check failed, retrying",
 			log.Any("node_key", tempNode.NodeKey),
 			log.Any("address", targetNode.Addr()),
 			log.Any("chain_id", tempNode.ChainId),
-			log.Any("duration_ms", duration.Milliseconds()))
-		hc.recordHealthCheckMetric(tempNode.ChainId, tempNode.NodeKey, "success", duration)
-		return targetNode, nil
-	}
+			log.Any("attempt", attemptCount),
+			log.Any("elapsed_ms", elapsed.Milliseconds()),
+			log.Any("max_wait_time_ms", hc.maxWaitTime.Milliseconds()))
 
-	log.Error("node health check failed",
-		fmt.Errorf("health check failed"),
-		log.Any("node_key", tempNode.NodeKey),
-		log.Any("address", targetNode.Addr()),
-		log.Any("chain_id", tempNode.ChainId),
-		log.Any("duration_ms", duration.Milliseconds()))
-	hc.recordHealthCheckMetric(tempNode.ChainId, tempNode.NodeKey, "failed", duration)
-	return nil, fmt.Errorf("health check failed")
+		metrics.IncrNodeHealthCheckTotal(tempNode.ChainId, tempNode.NodeKey, "retry")
+		// Check if we have enough time for another attempt
+		if elapsed+retryInterval >= hc.maxWaitTime {
+			// Not enough time for full retry interval, just try one more time immediately
+			continue
+		}
+
+		// Wait before retry
+		time.Sleep(retryInterval)
+	}
 }
 
 // processHealthCheck performs the actual health check by querying block height

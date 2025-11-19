@@ -104,8 +104,8 @@ var defaultConfig = Config{
 	},
 	NodeSelectStrategy:     "random",
 	EtcdPrefix:             "",
-	NodeHealthCheckTimeout: 5000,  // 5 seconds
-	NodeHealthCheckMaxWait: 30000, // 30 seconds
+	NodeHealthCheckTimeout: 5_000,    // 5 seconds
+	NodeHealthCheckMaxWait: 300_0000, // 300 seconds
 }
 
 type DebugLogProcessorConfig struct {
@@ -163,14 +163,16 @@ type ObservabilityTraceConfig struct {
 	OTLPEndpoint  string  `yaml:"otlp_endpoint"`
 	SamplingRatio float64 `yaml:"sampling_ratio"`
 }
-type ObservabilityMetricConfig struct{}
-type ObservabilityConfig struct {
-	Trace  ObservabilityTraceConfig   `yaml:"trace"`
-	Metric ObservabilityMetricConfig  `yaml:"metric"`
-	Log    log.ObservabilityLogConfig `yaml:"log"`
-	// StaticResource can contain for example information about the application that emits the record or about the infrastructure where the application runs.
-	StaticResource map[string]string `yaml:"static_resource"`
-}
+type (
+	ObservabilityMetricConfig struct{}
+	ObservabilityConfig       struct {
+		Trace  ObservabilityTraceConfig   `yaml:"trace"`
+		Metric ObservabilityMetricConfig  `yaml:"metric"`
+		Log    log.ObservabilityLogConfig `yaml:"log"`
+		// StaticResource can contain for example information about the application that emits the record or about the infrastructure where the application runs.
+		StaticResource map[string]string `yaml:"static_resource"`
+	}
+)
 
 // Config ...
 type Config struct {
@@ -370,7 +372,7 @@ func init() {
 	_, err := os.Stat(jrpcxFileHome)
 	if err != nil {
 		if os.IsNotExist(err) {
-			err := os.Mkdir(jrpcxFileHome, 0777)
+			err := os.Mkdir(jrpcxFileHome, 0o777)
 			if err != nil && !errors.Is(err, os.ErrExist) {
 				panic(err)
 			}
