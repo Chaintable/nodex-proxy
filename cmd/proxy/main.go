@@ -57,7 +57,7 @@ func main() {
 		log.Fatal("New refresher failed: %v\n", err)
 	}
 	defer nodeRefresher.Close()
-	nodeChannel, heightChan, gatewayChannel, mirrorChannel, downstreamChannel, err := nodeRefresher.Init(ctx)
+	nodeChannel, heightChan, gatewayChannel, mirrorChannel, versionChannel, err := nodeRefresher.Init(ctx)
 	if err != nil {
 		log.Fatal("Init node refresher failed: %v\n", err)
 	}
@@ -69,7 +69,7 @@ func main() {
 		ctx,
 		nodeRefresherMap, *cmdlineAndLoadConfig.ProxyConfig,
 		&jsonrpc.GeneralRPCMethodHertzHandler{Config: cmdlineAndLoadConfig.ProxyConfig, HeightMap: heightMap},
-		limiter, heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel, downstreamChannel)
+		limiter, heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel, versionChannel)
 	go loadBalancer.BackgroundRefreshNode()
 
 	go func() {

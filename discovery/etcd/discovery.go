@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"regexp"
+	"strings"
 	"time"
 
 	json "github.com/bytedance/sonic"
@@ -18,14 +19,13 @@ type Discover struct {
 
 	quit chan struct{}
 
-	backends          []string
-	nodeChannel       chan *discovery.TargetNode
-	heightChan        chan *discovery.ChainHeight
-	gatewayChannel    chan *discovery.Gateway
-	mirrorChannel     chan *discovery.MirrorTarget
-	downstreamChannel chan *discovery.ChainDownstream
-	keyPrefix         string
-	watchRevision     int64
+	nodeChannel    chan *discovery.TargetNode
+	heightChan     chan *discovery.ChainHeight
+	gatewayChannel chan *discovery.Gateway
+	mirrorChannel  chan *discovery.MirrorTarget
+	versionChannel chan *discovery.ChainVersion
+	keyPrefix      string
+	watchRevision  int64
 }
 
 const (
@@ -34,11 +34,11 @@ const (
 )
 
 var (
-	lastBlockPattern   = regexp.MustCompile(`^(?P<chain>.*?)/lastBlockNumber$`)
-	nodesPattern       = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
-	gateWayPattern     = regexp.MustCompile(`^(?P<chain>.*?)/gateway$`)
-	mirrorPattern      = regexp.MustCompile(`^(?P<chain>.*?)/mirror/(?P<addr>.*?)$`)
-	downstreamsPattern = regexp.MustCompile(`^(?P<chain>.*?)/downstreams/(?P<downstream>.*?)$`)
+	lastBlockPattern = regexp.MustCompile(`^(?P<chain>.*?)/lastBlockNumber$`)
+	nodesPattern     = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
+	gateWayPattern   = regexp.MustCompile(`^(?P<chain>.*?)/gateway$`)
+	mirrorPattern    = regexp.MustCompile(`^(?P<chain>.*?)/mirror/(?P<addr>.*?)$`)
+	versionPattern   = regexp.MustCompile(`^(?P<chain>.*?)/version$`)
 )
 
 func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discover, error) {
@@ -47,7 +47,7 @@ func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discov
 	if err != nil {
 		log.Fatal("connecting etcd failed", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancel(context.Background())
 
 	refresher := &Discover{
 		etcdClient:  etcdCli,
@@ -73,7 +73,7 @@ func (r *Discover) Close() error {
 	return r.etcdClient.Close()
 }
 
-func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan *discovery.ChainHeight, <-chan *discovery.Gateway, <-chan *discovery.MirrorTarget, <-chan *discovery.ChainDownstream, error) {
+func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan *discovery.ChainHeight, <-chan *discovery.Gateway, <-chan *discovery.MirrorTarget, <-chan *discovery.ChainVersion, error) {
 	// Initial request to get the current value of the key
 
 	resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
@@ -86,16 +86,16 @@ func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan
 	heightChannel := make(chan *discovery.ChainHeight, 1000)
 	gatewayChannel := make(chan *discovery.Gateway, 1000)
 	mirrorChannel := make(chan *discovery.MirrorTarget, 1000)
-	downstreamChannel := make(chan *discovery.ChainDownstream, 1000)
+	versionChannel := make(chan *discovery.ChainVersion, 1000)
 	r.nodeChannel = nodeChannel
 	r.heightChan = heightChannel
 	r.gatewayChannel = gatewayChannel
 	r.mirrorChannel = mirrorChannel
-	r.downstreamChannel = downstreamChannel
+	r.versionChannel = versionChannel
 
 	for _, kv := range resp.Kvs {
 		if match := nodesPattern.FindStringSubmatch(string(kv.Key)); match != nil {
-			chainId := match[nodesPattern.SubexpIndex("chain")]
+			chainId := normalizeMultiVersionChainID(match[nodesPattern.SubexpIndex("chain")])
 			nodeKey := match[nodesPattern.SubexpIndex("node")]
 			var node discovery.TargetNode
 			err := json.Unmarshal(kv.Value, &node)
@@ -110,7 +110,7 @@ func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan
 			continue
 		}
 		if match := lastBlockPattern.FindStringSubmatch(string(kv.Key)); match != nil {
-			chainId := match[lastBlockPattern.SubexpIndex("chain")]
+			chainId := normalizeMultiVersionChainID(match[lastBlockPattern.SubexpIndex("chain")])
 			var height discovery.ChainHeight
 			err := json.Unmarshal(kv.Value, &height)
 			if err != nil {
@@ -122,7 +122,7 @@ func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan
 			continue
 		}
 		if match := gateWayPattern.FindStringSubmatch(string(kv.Key)); match != nil {
-			chainId := match[gateWayPattern.SubexpIndex("chain")]
+			chainId := normalizeMultiVersionChainID(match[gateWayPattern.SubexpIndex("chain")])
 			var gateway discovery.Gateway
 			err := json.Unmarshal(kv.Value, &gateway)
 			if err != nil {
@@ -135,7 +135,7 @@ func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan
 			continue
 		}
 		if match := mirrorPattern.FindStringSubmatch(string(kv.Key)); match != nil {
-			chainId := match[mirrorPattern.SubexpIndex("chain")]
+			chainId := normalizeMultiVersionChainID(match[mirrorPattern.SubexpIndex("chain")])
 			addrKey := match[mirrorPattern.SubexpIndex("addr")]
 			var mirror discovery.MirrorTarget
 			err := json.Unmarshal(kv.Value, &mirror)
@@ -148,20 +148,21 @@ func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan
 			mirrorChannel <- &mirror
 			continue
 		}
-		if match := downstreamsPattern.FindStringSubmatch(string(kv.Key)); match != nil {
-			chainId := match[downstreamsPattern.SubexpIndex("chain")]
-			downstreamId := match[downstreamsPattern.SubexpIndex("downstream")]
-			var downstream discovery.ChainDownstream
-			downstream.ChainId = chainId
-			downstream.DownstreamChainId = downstreamId
-			downstream.ChangeType = EVENT_PUT
-			downstreamChannel <- &downstream
+		if match := versionPattern.FindStringSubmatch(string(kv.Key)); match != nil {
+			chainId := normalizeMultiVersionChainID(match[versionPattern.SubexpIndex("chain")])
+			versionValue := parseVersionValue(kv.Value)
+			versionChannel <- &discovery.ChainVersion{
+				ChainId:    chainId,
+				Version:    versionValue,
+				ChangeType: EVENT_PUT,
+			}
+			continue
 		}
 	}
 	r.watchRevision = resp.Header.Revision
 	go r.watchConfig(ctx)
 
-	return nodeChannel, heightChannel, gatewayChannel, mirrorChannel, downstreamChannel, nil
+	return nodeChannel, heightChannel, gatewayChannel, mirrorChannel, versionChannel, nil
 }
 
 func (r *Discover) watchConfig(ctx context.Context) {
@@ -176,7 +177,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 					key := event.Kv.Key
 					value := event.Kv.Value
 					if match := nodesPattern.FindStringSubmatch(string(key)); match != nil {
-						chainId := match[nodesPattern.SubexpIndex("chain")]
+						chainId := normalizeMultiVersionChainID(match[nodesPattern.SubexpIndex("chain")])
 						nodeKey := match[nodesPattern.SubexpIndex("node")]
 						var node discovery.TargetNode
 						err := json.Unmarshal(value, &node)
@@ -191,7 +192,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						continue
 					}
 					if match := lastBlockPattern.FindStringSubmatch(string(key)); match != nil {
-						chainId := match[lastBlockPattern.SubexpIndex("chain")]
+						chainId := normalizeMultiVersionChainID(match[lastBlockPattern.SubexpIndex("chain")])
 						var height discovery.ChainHeight
 						err := json.Unmarshal(value, &height)
 						if err != nil {
@@ -203,7 +204,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						continue
 					}
 					if match := gateWayPattern.FindStringSubmatch(string(key)); match != nil {
-						chainId := match[gateWayPattern.SubexpIndex("chain")]
+						chainId := normalizeMultiVersionChainID(match[gateWayPattern.SubexpIndex("chain")])
 						var gateway discovery.Gateway
 						err := json.Unmarshal(value, &gateway)
 						if err != nil {
@@ -216,7 +217,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						continue
 					}
 					if match := mirrorPattern.FindStringSubmatch(string(key)); match != nil {
-						chainId := match[mirrorPattern.SubexpIndex("chain")]
+						chainId := normalizeMultiVersionChainID(match[mirrorPattern.SubexpIndex("chain")])
 						addrKey := match[mirrorPattern.SubexpIndex("addr")]
 						var mirror discovery.MirrorTarget
 						err := json.Unmarshal(value, &mirror)
@@ -229,21 +230,21 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						r.mirrorChannel <- &mirror
 						continue
 					}
-					if match := downstreamsPattern.FindStringSubmatch(string(key)); match != nil {
-						chainId := match[downstreamsPattern.SubexpIndex("chain")]
-						downstreamId := match[downstreamsPattern.SubexpIndex("downstream")]
-						var downstream discovery.ChainDownstream
-						downstream.ChainId = chainId
-						downstream.DownstreamChainId = downstreamId
-						downstream.ChangeType = EVENT_PUT
-						r.downstreamChannel <- &downstream
+					if match := versionPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := normalizeMultiVersionChainID(match[versionPattern.SubexpIndex("chain")])
+						versionValue := parseVersionValue(value)
+						r.versionChannel <- &discovery.ChainVersion{
+							ChainId:    chainId,
+							Version:    versionValue,
+							ChangeType: EVENT_PUT,
+						}
 						continue
 					}
 				} else {
 					key := event.Kv.Key
 					value := event.PrevKv.Value
 					if match := nodesPattern.FindStringSubmatch(string(key)); match != nil {
-						chainId := match[nodesPattern.SubexpIndex("chain")]
+						chainId := normalizeMultiVersionChainID(match[nodesPattern.SubexpIndex("chain")])
 						nodeKey := match[nodesPattern.SubexpIndex("node")]
 						var node discovery.TargetNode
 						err := json.Unmarshal(value, &node)
@@ -258,7 +259,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						continue
 					}
 					if match := gateWayPattern.FindStringSubmatch(string(key)); match != nil {
-						chainId := match[gateWayPattern.SubexpIndex("chain")]
+						chainId := normalizeMultiVersionChainID(match[gateWayPattern.SubexpIndex("chain")])
 						var gateway discovery.Gateway
 						err := json.Unmarshal(value, &gateway)
 						if err != nil {
@@ -271,7 +272,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						continue
 					}
 					if match := mirrorPattern.FindStringSubmatch(string(key)); match != nil {
-						chainId := match[mirrorPattern.SubexpIndex("chain")]
+						chainId := normalizeMultiVersionChainID(match[mirrorPattern.SubexpIndex("chain")])
 						addrKey := match[mirrorPattern.SubexpIndex("addr")]
 						var mirror discovery.MirrorTarget
 						if value != nil {
@@ -286,18 +287,51 @@ func (r *Discover) watchConfig(ctx context.Context) {
 						r.mirrorChannel <- &mirror
 						continue
 					}
-					if match := downstreamsPattern.FindStringSubmatch(string(key)); match != nil {
-						chainId := match[downstreamsPattern.SubexpIndex("chain")]
-						downstreamId := match[downstreamsPattern.SubexpIndex("downstream")]
-						var downstream discovery.ChainDownstream
-						downstream.ChainId = chainId
-						downstream.DownstreamChainId = downstreamId
-						downstream.ChangeType = EVENT_DELETE
-						r.downstreamChannel <- &downstream
+					if match := versionPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := normalizeMultiVersionChainID(match[versionPattern.SubexpIndex("chain")])
+						versionValue := parseVersionValue(value)
+						r.versionChannel <- &discovery.ChainVersion{
+							ChainId:    chainId,
+							Version:    versionValue,
+							ChangeType: EVENT_DELETE,
+						}
 						continue
 					}
 				}
 			}
 		}
 	}
+}
+
+func normalizeMultiVersionChainID(raw string) string {
+	raw = strings.Trim(raw, "/")
+	if raw == "" {
+		return raw
+	}
+	return strings.ReplaceAll(raw, "/", "-")
+}
+
+func parseVersionValue(value []byte) string {
+	if len(value) == 0 {
+		return ""
+	}
+	trimmed := strings.TrimSpace(string(value))
+	if trimmed == "" {
+		return ""
+	}
+	var obj struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(value, &obj); err == nil {
+		if strings.TrimSpace(obj.Version) != "" {
+			return strings.TrimSpace(obj.Version)
+		}
+	}
+	var plain string
+	if err := json.Unmarshal(value, &plain); err == nil {
+		if strings.TrimSpace(plain) != "" {
+			return strings.TrimSpace(plain)
+		}
+	}
+	return strings.Trim(trimmed, "\"")
 }
