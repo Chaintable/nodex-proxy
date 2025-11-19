@@ -105,11 +105,6 @@ func (hc *NodeHealthChecker) CheckNodeHealth(ctx context.Context, tempNode *disc
 			log.Any("max_wait_time_ms", hc.maxWaitTime.Milliseconds()))
 
 		metrics.IncrNodeHealthCheckTotal(tempNode.ChainId, tempNode.NodeKey, "retry")
-		// Check if we have enough time for another attempt
-		if elapsed+retryInterval >= hc.maxWaitTime {
-			// Not enough time for full retry interval, just try one more time immediately
-			continue
-		}
 
 		// Wait before retry
 		time.Sleep(retryInterval)
