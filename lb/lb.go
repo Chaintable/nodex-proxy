@@ -159,6 +159,10 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 				}(tempNode)
 
 			case etcd.EVENT_DELETE:
+				log.Debug("removing node from pool",
+					log.Any("node_key", tempNode.NodeKey),
+					log.Any("address", fmt.Sprintf("%s:%d", tempNode.Address, tempNode.Port)),
+					log.Any("chain_id", chainId))
 				targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultWeight, role, lbnode.WithSource(tempNode.Source))
 				if err != nil {
 					log.Error("failed to create node", err)
