@@ -272,6 +272,13 @@ func parseJRPCResponseBodyHertz() types.ProcessorFuncHertz {
 
 func logResponseHertz() types.ProcessorFuncHertz {
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+		log.Debug("logResponseHertz called",
+			log.Any("method", processData.Method),
+			log.Any("chain_id", processData.ChainId),
+			log.Any("duration_ms", time.Since(processData.Start).Milliseconds()),
+			log.Any("status", c.Response.StatusCode()),
+			log.Any("has_error", processData.ResponseBody != nil && processData.ResponseBody.Error != nil),
+		)
 		if types.DebugInfo.DebugModeEnable() {
 			attributes := append(processData.LogAttributes(), log.MillisDurationAttribute("duration", time.Since(processData.Start)))
 			log.Observe("RPC Call Complete", ctx, attributes...)

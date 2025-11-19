@@ -272,7 +272,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		return
 	}
 
-	log.Info("Selected target node", log.Any("node", targetNode.Addr()), log.Any("type", targetNode.NodeType), log.Any("chain_id", requestContext.ChainId))
+	log.Debug("Selected target node", log.Any("node", targetNode.Addr()), log.Any("type", targetNode.NodeType), log.Any("chain_id", requestContext.ChainId))
 
 	// If target node is archive, set archive flag
 	if targetNode.NodeType == discovery.NodeTypeArchive {
@@ -305,7 +305,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			c.JSON(consts.StatusOK, object)
 			return
 		}
-		log.Info("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
+		log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
 		lb.attemptRequest(ctx, c, targetNode)
 	}
 }
