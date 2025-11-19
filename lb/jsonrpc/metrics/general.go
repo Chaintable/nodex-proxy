@@ -177,13 +177,13 @@ var (
 	}, newLabelNames(commonLabelNames, "method", "status_code"))
 	nodeHealthCheckTotal = prometheus.NewCounterFrom(stdprome.CounterOpts{
 		Namespace: promNamespace,
-		Subsystem: "node",
+		Subsystem: promSubsystem,
 		Name:      "health_check_total",
 		Help:      "Total number of node health checks performed",
 	}, []string{"chain_id", "node_key", "status"})
 	nodeHealthCheckDuration = prometheus.NewHistogramFrom(stdprome.HistogramOpts{
 		Namespace: promNamespace,
-		Subsystem: "node",
+		Subsystem: promSubsystem,
 		Name:      "health_check_duration_ms",
 		Help:      "Duration of node health checks in milliseconds",
 		Buckets:   []float64{10, 50, 100, 500, 1000, 3000, 5000, 10000, 30000},
