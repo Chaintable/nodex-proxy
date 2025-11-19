@@ -47,9 +47,9 @@ func main() {
 	log.InitLogger(cmdlineAndLoadConfig.LogLevel)
 
 	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
-	//log.DevelopmentMode()
+	// log.DevelopmentMode()
 
-	var nodeRefresherMap = make(map[string]*etcd.Discover)
+	nodeRefresherMap := make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	nodeRefresher, err := etcd.New(ctx, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix)
@@ -57,7 +57,7 @@ func main() {
 		log.Fatal("New refresher failed: %v\n", err)
 	}
 	defer nodeRefresher.Close()
-	nodeChannel, heightChan, gatewayChannel, mirrorChannel, err := nodeRefresher.Init(ctx)
+	nodeChannel, heightChan, gatewayChannel, mirrorChannel, downstreamChannel, err := nodeRefresher.Init(ctx)
 	if err != nil {
 		log.Fatal("Init node refresher failed: %v\n", err)
 	}
@@ -69,7 +69,7 @@ func main() {
 		ctx,
 		nodeRefresherMap, *cmdlineAndLoadConfig.ProxyConfig,
 		&jsonrpc.GeneralRPCMethodHertzHandler{Config: cmdlineAndLoadConfig.ProxyConfig, HeightMap: heightMap},
-		limiter, heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel)
+		limiter, heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel, downstreamChannel)
 	go loadBalancer.BackgroundRefreshNode()
 
 	go func() {

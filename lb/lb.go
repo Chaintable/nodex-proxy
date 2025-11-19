@@ -29,6 +29,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -46,11 +47,13 @@ type LoadBalancer struct {
 	heightChannel         <-chan *discovery.ChainHeight
 	gatewayChannel        <-chan *discovery.Gateway
 	mirrorChannel         <-chan *discovery.MirrorTarget
+	downstreamChannel     <-chan *discovery.ChainDownstream
 	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
 	preProcessorsHertz    types.PreProcessorProcessorsHertz
 	postProcessorsHertz   types.PostProcessorProcessorsHertz
 	defaultHttpTransport  *http.Transport
 	healthChecker         *NodeHealthChecker
+	downstreamManager     *DownstreamManager
 }
 
 var headerUserAgent = "User-Agent"
@@ -72,6 +75,7 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 	mirrorLimiter jsonrpc.MirrorLimiter,
 	nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight,
 	gatewayChannel <-chan *discovery.Gateway, mirrorChannel <-chan *discovery.MirrorTarget,
+	downstreamChannel <-chan *discovery.ChainDownstream,
 ) *LoadBalancer {
 	gatewayStrategy := jsonrpc.NewGatewayStrategy()
 	mirrorMap := jsonrpc.NewMirrorMap()
@@ -113,11 +117,13 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		heightChannel:         heightChannel,
 		gatewayChannel:        gatewayChannel,
 		mirrorChannel:         mirrorChannel,
+		downstreamChannel:     downstreamChannel,
 		rpcMethodTransportMap: rpcMethodTransportMap,
 		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter, mirrorMap, mirrorLimiter),
 		postProcessorsHertz:   jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
 		defaultHttpTransport:  NewHttpTransportWithTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond, config.ConnectionPoolSize),
 		healthChecker:         NewNodeHealthChecker(healthCheckTimeout, maxWaitTime),
+		downstreamManager:     NewDownstreamManager(),
 	}
 }
 
@@ -134,7 +140,7 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			switch changeType {
 			case etcd.EVENT_PUT:
 				// Perform health check in background goroutine
-				go func(node *discovery.TargetNode) {
+				go func(chainId string, role discovery.NodeType, node *discovery.TargetNode) {
 					log.Info("performing health check for new node",
 						log.Any("node_key", node.NodeKey),
 						log.Any("address", fmt.Sprintf("%s:%d", node.Address, node.Port)),
@@ -156,7 +162,8 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 						log.Any("chain_id", chainId))
 
 					_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
-				}(tempNode)
+					lb.propagateNodeToParents(chainId, role, targetNode.Clone())
+				}(chainId, role, tempNode)
 
 			case etcd.EVENT_DELETE:
 				log.Debug("removing node from pool",
@@ -170,11 +177,13 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 				}
 				targetNode.SetState(tempNode.StateType)
 				_ = lb.NodeSelector.RemoveNode(lb.ctx, chainId, role, targetNode)
+				lb.removeNodeFromParents(chainId, role, targetNode.Clone())
 			}
 
 		case chainHeight := <-lb.heightChannel:
 			lb.HeightMap.SetHeight(chainHeight.ChainId, chainHeight.LatestBlockNumber)
 			_ = lb.NodeSelector.UpdateChainHeight(lb.ctx, chainHeight.ChainId, chainHeight.LatestBlockNumber)
+			lb.propagateHeightToParents(chainHeight.ChainId, chainHeight.LatestBlockNumber)
 
 		case gateway := <-lb.gatewayChannel:
 			chainId := gateway.ChainId
@@ -203,6 +212,140 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 					log.Any("addrKey", mirror.AddrKey),
 					log.Any("url", mirror.URL()))
 			}
+
+		case downstream := <-lb.downstreamChannel:
+			lb.handleDownstreamUpdate(downstream)
+		}
+	}
+}
+
+func (lb *LoadBalancer) propagateNodeToParents(chainId string, role discovery.NodeType, node *lbnode.Node) {
+	if node == nil {
+		return
+	}
+	parents := lb.downstreamManager.Parents(chainId)
+	for _, parent := range parents {
+		if err := lb.NodeSelector.UpsertNode(lb.ctx, parent, role, node.Clone()); err != nil {
+			log.Error("failed to upsert node into parent chain",
+				err,
+				log.Any("parent_chain", parent),
+				log.Any("child_chain", chainId),
+				log.Any("node_key", node.Key()))
+		}
+	}
+}
+
+func (lb *LoadBalancer) removeNodeFromParents(chainId string, role discovery.NodeType, node *lbnode.Node) {
+	if node == nil {
+		return
+	}
+	parents := lb.downstreamManager.Parents(chainId)
+	for _, parent := range parents {
+		if err := lb.NodeSelector.RemoveNode(lb.ctx, parent, role, node.Clone()); err != nil {
+			log.Error("failed to remove node from parent chain",
+				err,
+				log.Any("parent_chain", parent),
+				log.Any("child_chain", chainId),
+				log.Any("node_key", node.Key()))
+		}
+	}
+}
+
+func (lb *LoadBalancer) propagateHeightToParents(chainId string, height *hexutil.Big) {
+	if height == nil {
+		return
+	}
+	parents := lb.downstreamManager.Parents(chainId)
+	for _, parent := range parents {
+		lb.HeightMap.SetHeight(parent, height)
+		if err := lb.NodeSelector.UpdateChainHeight(lb.ctx, parent, height); err != nil {
+			log.Error("failed to update chain height for parent",
+				err,
+				log.Any("parent_chain", parent),
+				log.Any("child_chain", chainId))
+		}
+	}
+}
+
+func (lb *LoadBalancer) syncDownstreamNodesToParent(parent, child string) {
+	archiveNodes, _ := lb.NodeSelector.GetArchiveNodes(child)
+	for _, node := range archiveNodes {
+		if err := lb.NodeSelector.UpsertNode(lb.ctx, parent, discovery.NodeTypeArchive, node.Clone()); err != nil {
+			log.Error("failed to sync archive node to parent",
+				err,
+				log.Any("parent_chain", parent),
+				log.Any("child_chain", child),
+				log.Any("node_key", node.Key()))
+		}
+	}
+	stateNodes, _ := lb.NodeSelector.GetStateNodes(child)
+	for _, node := range stateNodes {
+		if err := lb.NodeSelector.UpsertNode(lb.ctx, parent, discovery.NodeTypeState, node.Clone()); err != nil {
+			log.Error("failed to sync state node to parent",
+				err,
+				log.Any("parent_chain", parent),
+				log.Any("child_chain", child),
+				log.Any("node_key", node.Key()))
+		}
+	}
+}
+
+func (lb *LoadBalancer) removeDownstreamNodesFromParent(parent, child string) {
+	archiveNodes, _ := lb.NodeSelector.GetArchiveNodes(child)
+	for _, node := range archiveNodes {
+		if err := lb.NodeSelector.RemoveNode(lb.ctx, parent, discovery.NodeTypeArchive, node.Clone()); err != nil {
+			log.Error("failed to remove archive node from parent",
+				err,
+				log.Any("parent_chain", parent),
+				log.Any("child_chain", child),
+				log.Any("node_key", node.Key()))
+		}
+	}
+	stateNodes, _ := lb.NodeSelector.GetStateNodes(child)
+	for _, node := range stateNodes {
+		if err := lb.NodeSelector.RemoveNode(lb.ctx, parent, discovery.NodeTypeState, node.Clone()); err != nil {
+			log.Error("failed to remove state node from parent",
+				err,
+				log.Any("parent_chain", parent),
+				log.Any("child_chain", child),
+				log.Any("node_key", node.Key()))
+		}
+	}
+}
+
+func (lb *LoadBalancer) syncDownstreamHeightToParent(parent, child string) {
+	height := lb.HeightMap.GetHeight(child)
+	if height == nil {
+		return
+	}
+	lb.HeightMap.SetHeight(parent, height)
+	if err := lb.NodeSelector.UpdateChainHeight(lb.ctx, parent, height); err != nil {
+		log.Error("failed to sync height to parent",
+			err,
+			log.Any("parent_chain", parent),
+			log.Any("child_chain", child))
+	}
+}
+
+func (lb *LoadBalancer) handleDownstreamUpdate(downstream *discovery.ChainDownstream) {
+	if downstream == nil {
+		return
+	}
+	switch downstream.ChangeType {
+	case etcd.EVENT_PUT:
+		if lb.downstreamManager.Add(downstream.ChainId, downstream.DownstreamChainId) {
+			log.Info("downstream mapping added",
+				log.Any("parent_chain", downstream.ChainId),
+				log.Any("child_chain", downstream.DownstreamChainId))
+			lb.syncDownstreamNodesToParent(downstream.ChainId, downstream.DownstreamChainId)
+			lb.syncDownstreamHeightToParent(downstream.ChainId, downstream.DownstreamChainId)
+		}
+	case etcd.EVENT_DELETE:
+		if lb.downstreamManager.Remove(downstream.ChainId, downstream.DownstreamChainId) {
+			log.Info("downstream mapping removed",
+				log.Any("parent_chain", downstream.ChainId),
+				log.Any("child_chain", downstream.DownstreamChainId))
+			lb.removeDownstreamNodesFromParent(downstream.ChainId, downstream.DownstreamChainId)
 		}
 	}
 }
@@ -220,6 +363,19 @@ func parseNumber(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
 }
 
+func normalizeChainID(chainID string) string {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return ""
+	}
+
+	if chainIDNum, err := parseNumber(chainID); err == nil {
+		return fmt.Sprint(chainIDNum)
+	}
+
+	return chainID
+}
+
 // func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
 func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, chainID string) {
 	requestContext := lb.generateRequestContext(ctx, &c.Request)
@@ -229,14 +385,14 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		return
 	}
 
-	chainIDNum, err := parseNumber(chainID)
-	if err != nil {
+	normalizedChainID := normalizeChainID(chainID)
+	if normalizedChainID == "" {
 		_, object, _ := ejrpc.BadRequest(errors.New("invalid chain id"))
 		c.JSON(consts.StatusOK, object)
 		return
 	}
 
-	requestContext.ChainId = fmt.Sprint(chainIDNum)
+	requestContext.ChainId = normalizedChainID
 
 	ctx, roundTripSpan := jsonrpc.Tracer.Start(ctx, "RoundTrip")
 	defer roundTripSpan.End()
