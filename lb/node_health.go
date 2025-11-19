@@ -73,7 +73,7 @@ func (hc *NodeHealthChecker) CheckNodeHealth(ctx context.Context, tempNode *disc
 				log.Any("node_key", tempNode.NodeKey),
 				log.Any("address", targetNode.Addr()),
 				log.Any("chain_id", tempNode.ChainId),
-				log.Any("duration_ms", duration.Milliseconds()),
+				log.Any("duration_sec", duration.Seconds()),
 				log.Any("attempts", attemptCount))
 			hc.recordHealthCheckMetric(tempNode.ChainId, tempNode.NodeKey, "success", duration)
 			return targetNode, nil
@@ -88,9 +88,9 @@ func (hc *NodeHealthChecker) CheckNodeHealth(ctx context.Context, tempNode *disc
 				log.Any("node_key", tempNode.NodeKey),
 				log.Any("address", targetNode.Addr()),
 				log.Any("chain_id", tempNode.ChainId),
-				log.Any("duration_ms", duration.Milliseconds()),
+				log.Any("duration_sec", duration.Seconds()),
 				log.Any("attempts", attemptCount),
-				log.Any("max_wait_time_ms", hc.maxWaitTime.Milliseconds()))
+				log.Any("max_wait_time_sec", hc.maxWaitTime.Seconds()))
 			hc.recordHealthCheckMetric(tempNode.ChainId, tempNode.NodeKey, "timeout", duration)
 			return nil, fmt.Errorf("health check failed after %d attempts and %v", attemptCount, elapsed)
 		}
@@ -101,8 +101,8 @@ func (hc *NodeHealthChecker) CheckNodeHealth(ctx context.Context, tempNode *disc
 			log.Any("address", targetNode.Addr()),
 			log.Any("chain_id", tempNode.ChainId),
 			log.Any("attempt", attemptCount),
-			log.Any("elapsed_ms", elapsed.Milliseconds()),
-			log.Any("max_wait_time_ms", hc.maxWaitTime.Milliseconds()))
+			log.Any("elapsed_sec", elapsed.Seconds()),
+			log.Any("max_wait_time_sec", hc.maxWaitTime.Seconds()))
 
 		metrics.IncrNodeHealthCheckTotal(tempNode.ChainId, tempNode.NodeKey, "retry")
 
@@ -223,7 +223,7 @@ func (hc *NodeHealthChecker) recordHealthCheckMetric(chainId, nodeKey, status st
 		attribute.String("chain_id", chainId),
 		attribute.String("node_key", nodeKey),
 		attribute.String("status", status),
-		attribute.Int64("duration_ms", duration.Milliseconds()),
+		attribute.Float64("duration_sec", duration.Seconds()),
 	}
 
 	log.Observe("node_health_check", context.Background(), attributes...)

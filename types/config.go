@@ -104,8 +104,8 @@ var defaultConfig = Config{
 	},
 	NodeSelectStrategy:     "random",
 	EtcdPrefix:             "",
-	NodeHealthCheckTimeout: 5_000,    // 5 seconds
-	NodeHealthCheckMaxWait: 300_0000, // 300 seconds
+	NodeHealthCheckTimeout: 5,   // in seconds
+	NodeHealthCheckMaxWait: 300, // in seconds
 }
 
 type DebugLogProcessorConfig struct {
@@ -192,8 +192,8 @@ type Config struct {
 	Observability          ObservabilityConfig `yaml:"observability"`
 	NodeSelectStrategy     string              `yaml:"node_select_strategy"`
 	EtcdPrefix             string              `yaml:"etcd_prefix"`
-	NodeHealthCheckTimeout int                 `yaml:"node_health_check_timeout"`  // in milliseconds
-	NodeHealthCheckMaxWait int                 `yaml:"node_health_check_max_wait"` // in milliseconds
+	NodeHealthCheckTimeout int                 `yaml:"node_health_check_timeout"`  // in seconds
+	NodeHealthCheckMaxWait int                 `yaml:"node_health_check_max_wait"` // in seconds
 }
 
 type RaftJoinConfig struct {

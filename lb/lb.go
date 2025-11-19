@@ -92,11 +92,11 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 	// Create health checker with default timeout values
 	healthCheckTimeout := 5 * time.Second
 	if config.NodeHealthCheckTimeout > 0 {
-		healthCheckTimeout = time.Duration(config.NodeHealthCheckTimeout) * time.Millisecond
+		healthCheckTimeout = time.Duration(config.NodeHealthCheckTimeout) * time.Second
 	}
 	maxWaitTime := 5 * time.Minute
 	if config.NodeHealthCheckMaxWait > 0 {
-		maxWaitTime = time.Duration(config.NodeHealthCheckMaxWait) * time.Millisecond
+		maxWaitTime = time.Duration(config.NodeHealthCheckMaxWait) * time.Second
 	}
 
 	return &LoadBalancer{
