@@ -19,8 +19,8 @@ func TestNormalizeMultiVersionChainID(t *testing.T) {
 		},
 		{
 			name:     "chain id with version",
-			input:    "1/multivesion1",
-			expected: "1-multivesion1",
+			input:    "1/a1b2c3d4",
+			expected: "1-a1b2c3d4",
 		},
 		{
 			name:     "chain id with multiple slashes",
@@ -29,18 +29,18 @@ func TestNormalizeMultiVersionChainID(t *testing.T) {
 		},
 		{
 			name:     "chain id with leading slash",
-			input:    "/1/multivesion1",
-			expected: "1-multivesion1",
+			input:    "/1/a1b2c3d4",
+			expected: "1-a1b2c3d4",
 		},
 		{
 			name:     "chain id with trailing slash",
-			input:    "1/multivesion1/",
-			expected: "1-multivesion1",
+			input:    "1/a1b2c3d4/",
+			expected: "1-a1b2c3d4",
 		},
 		{
 			name:     "chain id with leading and trailing slashes",
-			input:    "/1/multivesion1/",
-			expected: "1-multivesion1",
+			input:    "/1/a1b2c3d4/",
+			expected: "1-a1b2c3d4",
 		},
 		{
 			name:     "empty string",
@@ -95,8 +95,8 @@ func TestParseVersionValue(t *testing.T) {
 		},
 		{
 			name:     "plain text with quotes",
-			input:    []byte(`"multivesion1"`),
-			expected: "multivesion1",
+			input:    []byte(`"a1b2c3d4"`),
+			expected: "a1b2c3d4",
 		},
 		{
 			name:     "empty byte slice",
@@ -152,7 +152,7 @@ func TestPatternMatching(t *testing.T) {
 			expectedNode  string
 		}{
 			{"1/nodes/127.0.0.1_8545", true, "1", "127.0.0.1_8545"},
-			{"1/multivesion1/nodes/127.0.0.1_8545", true, "1/multivesion1", "127.0.0.1_8545"},
+			{"1/a1b2c3d4/nodes/127.0.0.1_8545", true, "1/a1b2c3d4", "127.0.0.1_8545"},
 			{"56/nodes/172.21.59.215_8771", true, "56", "172.21.59.215_8771"},
 			{"1/lastBlockNumber", false, "", ""},
 			{"1/gateway", false, "", ""},
@@ -177,7 +177,7 @@ func TestPatternMatching(t *testing.T) {
 			expectedChain string
 		}{
 			{"1/lastBlockNumber", true, "1"},
-			{"1/multivesion1/lastBlockNumber", true, "1/multivesion1"},
+			{"1/a1b2c3d4/lastBlockNumber", true, "1/a1b2c3d4"},
 			{"56/lastBlockNumber", true, "56"},
 			{"1/nodes/127.0.0.1_8545", false, ""},
 		}
@@ -200,7 +200,7 @@ func TestPatternMatching(t *testing.T) {
 			expectedChain string
 		}{
 			{"1/version", true, "1"},
-			{"1/multivesion1/version", true, "1/multivesion1"},
+			{"1/a1b2c3d4/version", true, "1/a1b2c3d4"},
 			{"56/version", true, "56"},
 			{"1/nodes/127.0.0.1_8545", false, ""},
 			{"1/lastBlockNumber", false, ""},
@@ -224,7 +224,7 @@ func TestPatternMatching(t *testing.T) {
 			expectedChain string
 		}{
 			{"1/gateway", true, "1"},
-			{"1/multivesion1/gateway", true, "1/multivesion1"},
+			{"1/a1b2c3d4/gateway", true, "1/a1b2c3d4"},
 			{"56/gateway", true, "56"},
 			{"1/nodes/127.0.0.1_8545", false, ""},
 		}
@@ -248,7 +248,7 @@ func TestPatternMatching(t *testing.T) {
 			expectedAddr  string
 		}{
 			{"1/mirror/0x123", true, "1", "0x123"},
-			{"1/multivesion1/mirror/0xabc", true, "1/multivesion1", "0xabc"},
+			{"1/a1b2c3d4/mirror/0xabc", true, "1/a1b2c3d4", "0xabc"},
 			{"1/nodes/127.0.0.1_8545", false, "", ""},
 		}
 
@@ -281,15 +281,15 @@ func TestNormalizeMultiVersionChainID_Integration(t *testing.T) {
 		},
 		{
 			name:          "versioned chain node",
-			key:           "1/multivesion1/nodes/127.0.0.1_8545",
-			expectedChain: "1/multivesion1",
-			normalizedID:  "1-multivesion1",
+			key:           "1/a1b2c3d4/nodes/127.0.0.1_8545",
+			expectedChain: "1/a1b2c3d4",
+			normalizedID:  "1-a1b2c3d4",
 		},
 		{
 			name:          "versioned chain height",
-			key:           "1/multivesion2/lastBlockNumber",
-			expectedChain: "1/multivesion2",
-			normalizedID:  "1-multivesion2",
+			key:           "1/e5f6g7h8/lastBlockNumber",
+			expectedChain: "1/e5f6g7h8",
+			normalizedID:  "1-e5f6g7h8",
 		},
 		{
 			name:          "versioned chain version key",
