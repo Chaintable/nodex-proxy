@@ -46,11 +46,13 @@ type LoadBalancer struct {
 	heightChannel         <-chan *discovery.ChainHeight
 	gatewayChannel        <-chan *discovery.Gateway
 	mirrorChannel         <-chan *discovery.MirrorTarget
+	versionChannel        <-chan *discovery.ChainVersion
 	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
 	preProcessorsHertz    types.PreProcessorProcessorsHertz
 	postProcessorsHertz   types.PostProcessorProcessorsHertz
 	defaultHttpTransport  *http.Transport
 	healthChecker         *NodeHealthChecker
+	chainVersionRouter    *ChainVersionRouter
 }
 
 var headerUserAgent = "User-Agent"
@@ -72,6 +74,7 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 	mirrorLimiter jsonrpc.MirrorLimiter,
 	nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight,
 	gatewayChannel <-chan *discovery.Gateway, mirrorChannel <-chan *discovery.MirrorTarget,
+	versionChannel <-chan *discovery.ChainVersion,
 ) *LoadBalancer {
 	gatewayStrategy := jsonrpc.NewGatewayStrategy()
 	mirrorMap := jsonrpc.NewMirrorMap()
@@ -113,11 +116,13 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		heightChannel:         heightChannel,
 		gatewayChannel:        gatewayChannel,
 		mirrorChannel:         mirrorChannel,
+		versionChannel:        versionChannel,
 		rpcMethodTransportMap: rpcMethodTransportMap,
 		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter, mirrorMap, mirrorLimiter),
 		postProcessorsHertz:   jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
 		defaultHttpTransport:  NewHttpTransportWithTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond, config.ConnectionPoolSize),
 		healthChecker:         NewNodeHealthChecker(healthCheckTimeout, maxWaitTime),
+		chainVersionRouter:    NewChainVersionRouter(),
 	}
 }
 
@@ -134,7 +139,7 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			switch changeType {
 			case etcd.EVENT_PUT:
 				// Perform health check in background goroutine
-				go func(node *discovery.TargetNode) {
+				go func(chainId string, role discovery.NodeType, node *discovery.TargetNode) {
 					log.Info("performing health check for new node",
 						log.Any("node_key", node.NodeKey),
 						log.Any("address", fmt.Sprintf("%s:%d", node.Address, node.Port)),
@@ -156,7 +161,7 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 						log.Any("chain_id", chainId))
 
 					_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
-				}(tempNode)
+				}(chainId, role, tempNode)
 
 			case etcd.EVENT_DELETE:
 				log.Debug("removing node from pool",
@@ -203,7 +208,33 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 					log.Any("addrKey", mirror.AddrKey),
 					log.Any("url", mirror.URL()))
 			}
+		case version := <-lb.versionChannel:
+			lb.handleChainVersionUpdate(version)
 		}
+	}
+}
+
+func (lb *LoadBalancer) handleChainVersionUpdate(update *discovery.ChainVersion) {
+	if update == nil {
+		return
+	}
+	version := strings.TrimSpace(update.Version)
+	switch update.ChangeType {
+	case etcd.EVENT_PUT:
+		lb.chainVersionRouter.Update(update.ChainId, version)
+		if version == "" {
+			log.Info("chain version cleared via empty update",
+				log.Any("chain_id", update.ChainId))
+		} else {
+			log.Info("chain version override updated",
+				log.Any("chain_id", update.ChainId),
+				log.Any("version", version),
+				log.Any("target_chain_id", lb.chainVersionRouter.Resolve(update.ChainId)))
+		}
+	case etcd.EVENT_DELETE:
+		lb.chainVersionRouter.Remove(update.ChainId)
+		log.Info("chain version override removed",
+			log.Any("chain_id", update.ChainId))
 	}
 }
 
@@ -220,6 +251,35 @@ func parseNumber(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
 }
 
+func normalizeChainID(chainID string) string {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return ""
+	}
+
+	if chainIDNum, err := parseNumber(chainID); err == nil {
+		return fmt.Sprint(chainIDNum)
+	}
+
+	return chainID
+}
+
+func splitChainIdentifier(chainID string) (string, string, string) {
+	trimmed := strings.TrimSpace(chainID)
+	if trimmed == "" {
+		return "", "", ""
+	}
+
+	parts := strings.SplitN(trimmed, "-", 2)
+	base := parts[0]
+	var uuid string
+	if len(parts) == 2 {
+		uuid = strings.TrimSpace(parts[1])
+	}
+
+	return normalizeChainID(base), uuid, trimmed
+}
+
 // func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
 func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, chainID string) {
 	requestContext := lb.generateRequestContext(ctx, &c.Request)
@@ -229,14 +289,28 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		return
 	}
 
-	chainIDNum, err := parseNumber(chainID)
-	if err != nil {
+	baseChainID, chainUUID, rawChainID := splitChainIdentifier(chainID)
+	if baseChainID == "" {
 		_, object, _ := ejrpc.BadRequest(errors.New("invalid chain id"))
 		c.JSON(consts.StatusOK, object)
 		return
 	}
 
-	requestContext.ChainId = fmt.Sprint(chainIDNum)
+	var effectiveChainID string
+	if chainUUID == "" {
+		effectiveChainID = lb.chainVersionRouter.Resolve(baseChainID)
+		if effectiveChainID != baseChainID {
+			log.Debug("chain version override applied",
+				log.Any("chain_id", baseChainID),
+				log.Any("target_chain_id", effectiveChainID))
+		}
+	} else {
+		effectiveChainID = rawChainID
+	}
+
+	requestContext.BaseChainId = baseChainID
+	requestContext.ChainUUID = chainUUID
+	requestContext.ChainId = effectiveChainID
 
 	ctx, roundTripSpan := jsonrpc.Tracer.Start(ctx, "RoundTrip")
 	defer roundTripSpan.End()
@@ -417,11 +491,11 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 		err := sonic.Unmarshal(value.Params, &arr)
 		if err != nil {
 			log.Error("failed to unmarshal params", err)
-			break
+			continue
 		}
 		log.Debug("ParseBlockContext", log.Any("params", arr), log.Any("method", value.Method))
 		if len(arr) <= 0 {
-			break
+			continue
 		}
 		blockCtx := arr[len(arr)-1]
 		if (value.Method == ejrpc.ContractMultiCall || value.Method == ejrpc.SimulateTransactions) && len(arr) > 1 {
@@ -430,7 +504,7 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 
 		var ctx types.BlockContext
 		if err := sonic.Unmarshal(blockCtx, &ctx); err != nil {
-			break
+			continue
 		}
 
 		return &ctx
@@ -444,20 +518,20 @@ func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *t
 		err := sonic.Unmarshal(value.Params, &arr)
 		if err != nil {
 			log.Error("failed to unmarshal params", err)
-			break
+			continue
 		}
 		if len(arr) <= 0 {
-			break
+			continue
 		}
 		lastElem := arr[len(arr)-1]
 		lastBytes, err := sonic.Marshal(lastElem)
 		if err != nil {
 			log.Error("failed to marshal params", err)
-			break
+			continue
 		}
 		var ctx types.BlockContext
 		if err := sonic.Unmarshal(lastBytes, &ctx); err != nil {
-			break
+			continue
 		}
 		return &ctx
 	}

@@ -111,7 +111,13 @@ func (m *MirrorTarget) URL() string {
 	return fmt.Sprintf("http://%s:%d", m.Address, m.Port)
 }
 
+type ChainVersion struct {
+	ChainId    string `json:"-"`
+	Version    string `json:"version"`
+	ChangeType int    `json:"-"`
+}
+
 type Discover interface {
-	Init(ctx context.Context) (<-chan *TargetNode, <-chan *ChainHeight, <-chan *Gateway, <-chan *MirrorTarget, error)
+	Init(ctx context.Context) (chan *TargetNode, <-chan *ChainHeight, <-chan *Gateway, <-chan *MirrorTarget, <-chan *ChainVersion, error)
 	Close() error
 }
