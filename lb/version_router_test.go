@@ -18,8 +18,8 @@ func TestChainVersionRouter_Update(t *testing.T) {
 		{
 			name:            "normal version update",
 			chain:           "1",
-			version:         "multivesion1",
-			expectedResolve: "1-multivesion1",
+			version:         "a1b2c3d4",
+			expectedResolve: "1-a1b2c3d4",
 		},
 		{
 			name:            "version with slash should be normalized",
@@ -75,8 +75,8 @@ func TestChainVersionRouter_Remove(t *testing.T) {
 	router := NewChainVersionRouter()
 
 	// Add an override
-	router.Update("1", "multivesion1")
-	assert.Equal(t, "1-multivesion1", router.Resolve("1"))
+	router.Update("1", "a1b2c3d4")
+	assert.Equal(t, "1-a1b2c3d4", router.Resolve("1"))
 
 	// Remove the override
 	router.Remove("1")
@@ -115,10 +115,10 @@ func TestChainVersionRouter_Resolve(t *testing.T) {
 		{
 			name: "resolve with override returns target",
 			setup: func(r *ChainVersionRouter) {
-				r.Update("1", "multivesion1")
+				r.Update("1", "a1b2c3d4")
 			},
 			chain:    "1",
-			expected: "1-multivesion1",
+			expected: "1-a1b2c3d4",
 		},
 		{
 			name:     "resolve empty chain returns empty",
@@ -157,12 +157,12 @@ func TestChainVersionRouter_MultipleChains(t *testing.T) {
 	router := NewChainVersionRouter()
 
 	// Setup multiple chains
-	router.Update("1", "multivesion1")
+	router.Update("1", "a1b2c3d4")
 	router.Update("56", "bsc-v2")
 	router.Update("137", "polygon-mainnet")
 
 	// Verify each chain resolves correctly
-	assert.Equal(t, "1-multivesion1", router.Resolve("1"))
+	assert.Equal(t, "1-a1b2c3d4", router.Resolve("1"))
 	assert.Equal(t, "56-bsc-v2", router.Resolve("56"))
 	assert.Equal(t, "137-polygon-mainnet", router.Resolve("137"))
 
