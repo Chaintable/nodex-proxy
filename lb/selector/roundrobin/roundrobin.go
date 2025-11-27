@@ -115,6 +115,9 @@ func (r *RoundRobin) UpsertNode(_ context.Context, chainId string, role discover
 }
 
 func (r *RoundRobin) RemoveNode(_ context.Context, chainId string, role discovery.NodeType, node *lbnode.Node) error {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
 	if role == discovery.NodeTypeArchive {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {

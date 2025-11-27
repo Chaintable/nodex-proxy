@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -166,12 +167,40 @@ func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan
 }
 
 func (r *Discover) watchConfig(ctx context.Context) {
-	watchChan := r.etcdClient.Watch(ctx, r.keyPrefix, clientv3.WithPrefix(), clientv3.WithPrevKV(), clientv3.WithRev(r.watchRevision))
+	for {
+		watchChan := r.etcdClient.Watch(ctx, r.keyPrefix, clientv3.WithPrefix(), clientv3.WithPrevKV(), clientv3.WithRev(r.watchRevision))
+		if err := r.processWatchEvents(ctx, watchChan); err != nil {
+			log.Error("watch channel error, will retry", err)
+			time.Sleep(time.Second) // 重连前等待1秒
+			// 重新获取最新 revision
+			resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
+			if err != nil {
+				log.Error("failed to get latest revision for watch retry", err)
+				continue
+			}
+			r.watchRevision = resp.Header.Revision
+			continue
+		}
+		return // quit 信号触发时退出
+	}
+}
+
+func (r *Discover) processWatchEvents(ctx context.Context, watchChan clientv3.WatchChan) error {
 	for {
 		select {
 		case <-r.quit:
-			return
-		case watchResp := <-watchChan:
+			return nil
+		case watchResp, ok := <-watchChan:
+			if !ok {
+				return fmt.Errorf("watch channel closed")
+			}
+			if watchResp.Err() != nil {
+				return fmt.Errorf("watch response error: %w", watchResp.Err())
+			}
+			if watchResp.Canceled {
+				return fmt.Errorf("watch canceled")
+			}
+			r.watchRevision = watchResp.Header.Revision
 			for _, event := range watchResp.Events {
 				if event.Type == clientv3.EventTypePut {
 					key := event.Kv.Key
@@ -242,19 +271,24 @@ func (r *Discover) watchConfig(ctx context.Context) {
 					}
 				} else {
 					key := event.Kv.Key
-					value := event.PrevKv.Value
+					var value []byte
+					if event.PrevKv != nil {
+						value = event.PrevKv.Value
+					}
 					if match := nodesPattern.FindStringSubmatch(string(key)); match != nil {
 						chainId := normalizeMultiVersionChainID(match[nodesPattern.SubexpIndex("chain")])
 						nodeKey := match[nodesPattern.SubexpIndex("node")]
 						var node discovery.TargetNode
-						err := json.Unmarshal(value, &node)
-						if err != nil {
-							log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
-							continue
+						if value != nil {
+							err := json.Unmarshal(value, &node)
+							if err != nil {
+								log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
+							}
 						}
 						node.NodeKey = nodeKey
 						node.ChangeType = EVENT_DELETE
 						node.ChainId = chainId
+						log.Info("node delete event detected", log.Any("key", key), log.Any("chain_id", chainId), log.Any("node_key", nodeKey))
 						r.nodeChannel <- &node
 						continue
 					}
