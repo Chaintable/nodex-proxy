@@ -164,7 +164,7 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 				}(chainId, role, tempNode)
 
 			case etcd.EVENT_DELETE:
-				log.Debug("removing node from pool",
+				log.Info("removing node from pool",
 					log.Any("node_key", tempNode.NodeKey),
 					log.Any("address", fmt.Sprintf("%s:%d", tempNode.Address, tempNode.Port)),
 					log.Any("chain_id", chainId))
