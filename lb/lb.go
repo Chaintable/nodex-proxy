@@ -29,6 +29,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/ethereum/go-ethereum/rpc"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -498,8 +499,16 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			continue
 		}
 		blockCtx := arr[len(arr)-1]
-		if (value.Method == ejrpc.ContractMultiCall || value.Method == ejrpc.SimulateTransactions) && len(arr) > 1 {
-			blockCtx = arr[1]
+		if value.Method == ejrpc.ContractMultiCall || value.Method == ejrpc.SimulateTransactions || value.Method == ejrpc.EstimateGas {
+			if len(arr) > 1 {
+				blockCtx = arr[1]
+			} else {
+				blockID := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
+				return &types.BlockContext{
+					BlockId: &blockID,
+					Type:    "Contains",
+				}
+			}
 		}
 
 		var ctx types.BlockContext
