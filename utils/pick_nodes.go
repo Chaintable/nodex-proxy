@@ -16,12 +16,8 @@ func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archi
 		return archiveNodes
 	}
 
-	var backupNodes []*lbnode.Node
-	backupNodes = append(backupNodes, stateNodes...)
-
 	if len(stateNodes) == 0 {
 		stateNodes = archiveNodes
-		backupNodes = append(backupNodes, archiveNodes...)
 	}
 	if len(archiveNodes) == 0 {
 		archiveNodes = stateNodes
@@ -48,8 +44,8 @@ func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archi
 		} else if blockContext.Type == "Contains" {
 			return stateNodes
 		} else {
-			return archiveNodes
+			return stateNodes
 		}
 	}
-	return backupNodes
+	return stateNodes
 }
