@@ -9,9 +9,12 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-type PickNodesFunc func(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, fourceArchive bool) []*lbnode.Node
+type PickNodesFunc func(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, fourceArchive bool, fourceNative bool) []*lbnode.Node
 
-func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, fourceArchive bool) []*lbnode.Node {
+func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, fourceArchive bool, fourceNative bool) []*lbnode.Node {
+	if fourceNative {
+		return nativeNodes
+	}
 	if fourceArchive {
 		return archiveNodes
 	}

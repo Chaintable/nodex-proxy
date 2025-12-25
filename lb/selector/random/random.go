@@ -18,6 +18,7 @@ import (
 type Random struct {
 	archiveNodes    map[string][]*lbnode.Node
 	stateNodes      map[string][]*lbnode.Node
+	nativeNodes     map[string][]*lbnode.Node
 	chainHeight     map[string]*hexutil.Big
 	pickNodeFunc    utils.PickNodesFunc
 	GatewayStrategy jsonrpc.GatewayStrategy
@@ -28,6 +29,7 @@ func New(pickNodeFunc utils.PickNodesFunc, gatewayStrategy jsonrpc.GatewayStrate
 	return &Random{
 		archiveNodes:    make(map[string][]*lbnode.Node),
 		stateNodes:      make(map[string][]*lbnode.Node),
+		nativeNodes:     make(map[string][]*lbnode.Node),
 		chainHeight:     make(map[string]*hexutil.Big),
 		pickNodeFunc:    pickNodeFunc,
 		GatewayStrategy: gatewayStrategy,
@@ -41,17 +43,10 @@ func (r *Random) GetNode(ctx *types.RequestContext, requestKey string) (*lbnode.
 	chainId := ctx.ChainId
 	archiveNodes := r.archiveNodes[chainId]
 	stateNodes := r.stateNodes[chainId]
+	nativeNodes := r.nativeNodes[chainId]
+	forceNative := requestKey == "native"
 
-	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[chainId], archiveNodes, stateNodes, ctx.Archive)
-	if requestKey == "native" {
-		var filtered []*lbnode.Node
-		for _, n := range nodes {
-			if n.Source() == "native" {
-				filtered = append(filtered, n)
-			}
-		}
-		nodes = filtered
-	}
+	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[chainId], archiveNodes, stateNodes, nativeNodes, ctx.Archive, forceNative)
 	if len(nodes) == 0 {
 		log.Warn(fmt.Sprintf("No nodes available after picking for chain %s: archive_nodes=%d, state_nodes=%d, archive_mode=%v, chain_height=%v",
 			chainId, len(archiveNodes), len(stateNodes), ctx.Archive, r.chainHeight[chainId]))
@@ -113,6 +108,22 @@ func (r *Random) UpsertNode(_ context.Context, chainId string, role discovery.No
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
+	if node.Source() == "native" {
+		nodes, exists := r.nativeNodes[chainId]
+		if !exists {
+			r.nativeNodes[chainId] = []*lbnode.Node{node}
+			return nil
+		}
+		for i, existingNode := range nodes {
+			if existingNode.Key() == node.Key() {
+				nodes[i] = node
+				return nil
+			}
+		}
+		r.nativeNodes[chainId] = append(nodes, node)
+		return nil
+	}
+
 	if role == discovery.NodeTypeArchive {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
@@ -149,6 +160,20 @@ func (r *Random) UpsertNode(_ context.Context, chainId string, role discovery.No
 func (r *Random) RemoveNode(_ context.Context, chainId string, role discovery.NodeType, node *lbnode.Node) error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
+
+	if node.Source() == "native" {
+		nodes, exists := r.nativeNodes[chainId]
+		if !exists {
+			return nil
+		}
+		for i, existingNode := range nodes {
+			if existingNode.Key() == node.Key() {
+				r.nativeNodes[chainId] = append(nodes[:i], nodes[i+1:]...)
+				return nil
+			}
+		}
+		return nil
+	}
 
 	if role == discovery.NodeTypeArchive {
 		nodes, exists := r.archiveNodes[chainId]
@@ -197,6 +222,7 @@ func (r *Random) GetAllNodes(chainId string) ([]*lbnode.Node, bool) {
 	var nodes []*lbnode.Node
 	nodes = append(nodes, r.archiveNodes[chainId]...)
 	nodes = append(nodes, r.stateNodes[chainId]...)
+	nodes = append(nodes, r.nativeNodes[chainId]...)
 	return nodes, len(nodes) > 0
 }
 
@@ -216,6 +242,14 @@ func (r *Random) GetStateNodes(chainId string) ([]*lbnode.Node, bool) {
 	return nodes, exists
 }
 
+func (r *Random) GetNativeNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	nodes, exists := r.nativeNodes[chainId]
+	return nodes, exists
+}
+
 func (r *Random) GetAllChainsIDs() []string {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
@@ -225,6 +259,9 @@ func (r *Random) GetAllChainsIDs() []string {
 		chainsMap[chainId] = true
 	}
 	for chainId := range r.stateNodes {
+		chainsMap[chainId] = true
+	}
+	for chainId := range r.nativeNodes {
 		chainsMap[chainId] = true
 	}
 
