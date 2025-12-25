@@ -34,7 +34,7 @@ func New(pickNodeFunc utils.PickNodesFunc, gatewayStrategy jsonrpc.GatewayStrate
 	}
 }
 
-func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, error) {
+func (r *Random) GetNode(ctx *types.RequestContext, requestKey string) (*lbnode.Node, error) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 
@@ -43,6 +43,15 @@ func (r *Random) GetNode(ctx *types.RequestContext, _ string) (*lbnode.Node, err
 	stateNodes := r.stateNodes[chainId]
 
 	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[chainId], archiveNodes, stateNodes, ctx.Archive)
+	if requestKey == "native" {
+		var filtered []*lbnode.Node
+		for _, n := range nodes {
+			if n.Source() == "native" {
+				filtered = append(filtered, n)
+			}
+		}
+		nodes = filtered
+	}
 	if len(nodes) == 0 {
 		log.Warn(fmt.Sprintf("No nodes available after picking for chain %s: archive_nodes=%d, state_nodes=%d, archive_mode=%v, chain_height=%v",
 			chainId, len(archiveNodes), len(stateNodes), ctx.Archive, r.chainHeight[chainId]))

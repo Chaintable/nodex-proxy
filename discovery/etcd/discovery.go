@@ -37,6 +37,7 @@ const (
 var (
 	lastBlockPattern = regexp.MustCompile(`^(?P<chain>.*?)/lastBlockNumber$`)
 	nodesPattern     = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
+	nativeNodesPattern = regexp.MustCompile(`^(?P<chain>.*?)/nativeNodes/(?P<node>.*?)$`)
 	gateWayPattern   = regexp.MustCompile(`^(?P<chain>.*?)/gateway$`)
 	mirrorPattern    = regexp.MustCompile(`^(?P<chain>.*?)/mirror/(?P<addr>.*?)$`)
 	versionPattern   = regexp.MustCompile(`^(?P<chain>.*?)/version$`)
@@ -107,6 +108,22 @@ func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan
 			node.NodeKey = nodeKey
 			node.ChangeType = EVENT_PUT
 			node.ChainId = chainId
+			nodeChannel <- &node
+			continue
+		}
+		if match := nativeNodesPattern.FindStringSubmatch(string(kv.Key)); match != nil {
+			chainId := normalizeMultiVersionChainID(match[nativeNodesPattern.SubexpIndex("chain")])
+			nodeKey := match[nativeNodesPattern.SubexpIndex("node")]
+			var node discovery.TargetNode
+			err := json.Unmarshal(kv.Value, &node)
+			if err != nil {
+				log.Error("failed to unmarshal value for key", err, log.Any("key", kv.Key), log.Any("chain_id", chainId))
+				continue
+			}
+			node.NodeKey = nodeKey
+			node.ChangeType = EVENT_PUT
+			node.ChainId = chainId
+			node.Source = "native"
 			nodeChannel <- &node
 			continue
 		}
@@ -220,6 +237,22 @@ func (r *Discover) processWatchEvents(ctx context.Context, watchChan clientv3.Wa
 						r.nodeChannel <- &node
 						continue
 					}
+					if match := nativeNodesPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := normalizeMultiVersionChainID(match[nativeNodesPattern.SubexpIndex("chain")])
+						nodeKey := match[nativeNodesPattern.SubexpIndex("node")]
+						var node discovery.TargetNode
+						err := json.Unmarshal(value, &node)
+						if err != nil {
+							log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
+							continue
+						}
+						node.NodeKey = nodeKey
+						node.ChangeType = EVENT_PUT
+						node.ChainId = chainId
+						node.Source = "native"
+						r.nodeChannel <- &node
+						continue
+					}
 					if match := lastBlockPattern.FindStringSubmatch(string(key)); match != nil {
 						chainId := normalizeMultiVersionChainID(match[lastBlockPattern.SubexpIndex("chain")])
 						var height discovery.ChainHeight
@@ -289,6 +322,24 @@ func (r *Discover) processWatchEvents(ctx context.Context, watchChan clientv3.Wa
 						node.ChangeType = EVENT_DELETE
 						node.ChainId = chainId
 						log.Info("node delete event detected", log.Any("key", key), log.Any("chain_id", chainId), log.Any("node_key", nodeKey))
+						r.nodeChannel <- &node
+						continue
+					}
+					if match := nativeNodesPattern.FindStringSubmatch(string(key)); match != nil {
+						chainId := normalizeMultiVersionChainID(match[nativeNodesPattern.SubexpIndex("chain")])
+						nodeKey := match[nativeNodesPattern.SubexpIndex("node")]
+						var node discovery.TargetNode
+						if value != nil {
+							err := json.Unmarshal(value, &node)
+							if err != nil {
+								log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
+							}
+						}
+						node.NodeKey = nodeKey
+						node.ChangeType = EVENT_DELETE
+						node.ChainId = chainId
+						node.Source = "native"
+						log.Info("native node delete event detected", log.Any("key", key), log.Any("chain_id", chainId), log.Any("node_key", nodeKey))
 						r.nodeChannel <- &node
 						continue
 					}

@@ -1,6 +1,7 @@
 package lb
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -387,6 +388,29 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
 		lb.attemptRequest(ctx, c, targetNode)
 	}
+
+	// Retry to nativeNodes when CosmosPrecompile
+	if lb.shouldRetryWithNative(c, requestContext) {
+		log.Info("Received error code -39008(CosmosPrecompile), retrying with native node")
+		c.Response.Reset()
+		requestContext.Native = true
+
+		targetNode, err := lb.NodeSelector.GetNode(requestContext, "native")
+		if err != nil {
+			log.Error("failed to get native node, err ", err)
+			_, object, _ := ejrpc.BadGateway(errors.New("no native backends available"))
+			c.JSON(consts.StatusOK, object)
+			return
+		}
+		if targetNode.ReverseProxy == nil {
+			log.Error("failed to get native node, err ", errors.New("no reverse proxy available"))
+			_, object, _ := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+			c.JSON(consts.StatusOK, object)
+			return
+		}
+		log.Debug("Selected native target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
+		lb.attemptRequest(ctx, c, targetNode)
+	}
 }
 
 func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, targetNode *lbnode.Node) {
@@ -418,13 +442,23 @@ func (lb *LoadBalancer) shouldRetryWithArchive(c *app.RequestContext, requestCon
 	if requestContext.Archive {
 		return false
 	}
+	return lb.hasRPCErrorCode(c.Response.Body(), types.StateBlockNotFound)
+}
 
-	responseBody := c.Response.Body()
-	if len(responseBody) == 0 {
+func (lb *LoadBalancer) shouldRetryWithNative(c *app.RequestContext, requestContext *types.RequestContext) bool {
+	if requestContext.Native {
+		return false
+	}
+	return lb.hasRPCErrorCode(c.Response.Body(), types.CosmosPrecompile)
+}
+
+func (lb *LoadBalancer) hasRPCErrorCode(responseBody []byte, code int) bool {
+	trimmed := bytes.TrimSpace(responseBody)
+	if len(trimmed) == 0 {
 		return false
 	}
 
-	log.Debug("Response received", log.Any("response", string(responseBody)))
+	log.Debug("Response received", log.Any("response", string(trimmed)))
 
 	type rpcResponse struct {
 		Error *struct {
@@ -433,15 +467,27 @@ func (lb *LoadBalancer) shouldRetryWithArchive(c *app.RequestContext, requestCon
 		} `json:"error"`
 	}
 
+	// batch response
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var resps []rpcResponse
+		if err := sonic.Unmarshal(trimmed, &resps); err != nil {
+			log.Error("failed to unmarshal batch response, err ", err)
+			return false
+		}
+		for _, r := range resps {
+			if r.Error != nil && r.Error.Code == code {
+				return true
+			}
+		}
+		return false
+	}
+
 	var resp rpcResponse
-	if err := sonic.Unmarshal(responseBody, &resp); err != nil {
+	if err := sonic.Unmarshal(trimmed, &resp); err != nil {
 		log.Error("failed to unmarshal response, err ", err)
 		return false
 	}
-	if resp.Error != nil && resp.Error.Code == types.StateBlockNotFound {
-		return true
-	}
-	return false
+	return resp.Error != nil && resp.Error.Code == code
 }
 
 func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *protocol.Request) func(*http.Request) {
