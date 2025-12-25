@@ -360,7 +360,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	}
 
 	// First attempt with state node
-	lb.attemptRequest(ctx, c, targetNode)
+	lb.attemptRequest(ctx, c, requestContext, targetNode)
 	// Check if response contains error code -39006
 	if lb.shouldRetryWithArchive(c, requestContext) {
 		log.Info("Received error code -39006(StateBlockNotFound), retrying with archive node")
@@ -386,7 +386,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			return
 		}
 		log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
-		lb.attemptRequest(ctx, c, targetNode)
+		lb.attemptRequest(ctx, c, requestContext, targetNode)
 	}
 
 	// Retry to nativeNodes when CosmosPrecompile
@@ -409,11 +409,15 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			return
 		}
 		log.Debug("Selected native target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
-		lb.attemptRequest(ctx, c, targetNode)
+		lb.attemptRequest(ctx, c, requestContext, targetNode)
 	}
 }
 
-func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, targetNode *lbnode.Node) {
+func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, requestContext *types.RequestContext, targetNode *lbnode.Node) {
+	if requestContext != nil && requestContext.Native {
+		c.Request.URI().SetPath("/")
+	}
+
 	props := otel.GetTextMapPropagator()
 	httpHeaders := http.Header{}
 	c.Request.Header.VisitAll(func(key, value []byte) {
