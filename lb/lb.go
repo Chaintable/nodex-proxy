@@ -397,6 +397,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		log.Info("Received error code -39008(CosmosPrecompile), retrying with native node")
 		c.Response.Reset()
 		requestContext.Native = true
+		lb.rewriteMethodForNativeRetry(c, requestContext)
 
 		targetNode, err := lb.NodeSelector.GetNode(requestContext, "native")
 		if err != nil {
@@ -457,6 +458,54 @@ func (lb *LoadBalancer) shouldRetryWithNative(c *app.RequestContext, requestCont
 		return false
 	}
 	return lb.hasRPCErrorCode(c.Response.Body(), types.CosmosPrecompile)
+}
+
+func (lb *LoadBalancer) rewriteMethodForNativeRetry(c *app.RequestContext, requestContext *types.RequestContext) {
+	if c == nil || requestContext == nil {
+		return
+	}
+	if len(requestContext.RequestBody) == 0 {
+		return
+	}
+
+	rewriteMap := map[ejrpc.RPCMethod]ejrpc.RPCMethod{
+		ejrpc.SimulateTransactions: "debank_contractMulticall",
+		ejrpc.ContractMultiCall:    "debank_contractMultiCall",
+		ejrpc.EstimateGas:          "debank_estimateGas",
+	}
+
+	changed := false
+	for _, req := range requestContext.RequestBody {
+		if req == nil {
+			continue
+		}
+		if to, ok := rewriteMap[req.Method]; ok {
+			req.Method = to
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+
+	var (
+		newBody []byte
+		err     error
+	)
+	if requestContext.IsBatch {
+		newBody, err = sonic.Marshal(requestContext.RequestBody)
+	} else {
+		newBody, err = sonic.Marshal(requestContext.RequestBody[0])
+		requestContext.Method = requestContext.RequestBody[0].Method
+	}
+	if err != nil {
+		log.Error("failed to rewrite request body for native retry", err)
+		return
+	}
+
+	requestContext.RawRequestBody = newBody
+	requestContext.RequestBodySize = len(newBody)
+	c.Request.SetBody(newBody)
 }
 
 func (lb *LoadBalancer) hasRPCErrorCode(responseBody []byte, code int) bool {
