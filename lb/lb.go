@@ -1,6 +1,7 @@
 package lb
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -359,7 +360,10 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	}
 
 	// First attempt with state node
-	lb.attemptRequest(ctx, c, targetNode)
+	lb.attemptRequest(ctx, c, requestContext, targetNode)
+	// log codde and response body
+	log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body", string(c.Response.Body())))
+
 	// Check if response contains error code -39006
 	if lb.shouldRetryWithArchive(c, requestContext) {
 		log.Info("Received error code -39006(StateBlockNotFound), retrying with archive node")
@@ -385,11 +389,39 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			return
 		}
 		log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
-		lb.attemptRequest(ctx, c, targetNode)
+		lb.attemptRequest(ctx, c, requestContext, targetNode)
+	}
+
+	// Retry to nativeNodes when CosmosPrecompile
+	if lb.shouldRetryWithNative(c, requestContext) {
+		log.Info("Received error code -39008(CosmosPrecompile), retrying with native node")
+		c.Response.Reset()
+		requestContext.Native = true
+		lb.rewriteMethodForNativeRetry(c, requestContext)
+
+		targetNode, err := lb.NodeSelector.GetNode(requestContext, "native")
+		if err != nil {
+			log.Error("failed to get native node, err ", err)
+			_, object, _ := ejrpc.BadGateway(errors.New("no native backends available"))
+			c.JSON(consts.StatusOK, object)
+			return
+		}
+		if targetNode.ReverseProxy == nil {
+			log.Error("failed to get native node, err ", errors.New("no reverse proxy available"))
+			_, object, _ := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+			c.JSON(consts.StatusOK, object)
+			return
+		}
+		log.Debug("Selected native target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
+		lb.attemptRequest(ctx, c, requestContext, targetNode)
 	}
 }
 
-func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, targetNode *lbnode.Node) {
+func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, requestContext *types.RequestContext, targetNode *lbnode.Node) {
+	if requestContext != nil && requestContext.Native {
+		c.Request.URI().SetPath("/")
+	}
+
 	props := otel.GetTextMapPropagator()
 	httpHeaders := http.Header{}
 	c.Request.Header.VisitAll(func(key, value []byte) {
@@ -418,13 +450,71 @@ func (lb *LoadBalancer) shouldRetryWithArchive(c *app.RequestContext, requestCon
 	if requestContext.Archive {
 		return false
 	}
+	return lb.hasRPCErrorCode(c.Response.Body(), types.StateBlockNotFound)
+}
 
-	responseBody := c.Response.Body()
-	if len(responseBody) == 0 {
+func (lb *LoadBalancer) shouldRetryWithNative(c *app.RequestContext, requestContext *types.RequestContext) bool {
+	if requestContext.Native {
+		return false
+	}
+	return lb.hasRPCErrorCode(c.Response.Body(), types.CosmosPrecompile)
+}
+
+func (lb *LoadBalancer) rewriteMethodForNativeRetry(c *app.RequestContext, requestContext *types.RequestContext) {
+	if c == nil || requestContext == nil {
+		return
+	}
+	if len(requestContext.RequestBody) == 0 {
+		return
+	}
+
+	rewriteMap := map[ejrpc.RPCMethod]ejrpc.RPCMethod{
+		ejrpc.SimulateTransactions: "debank_simulateTransactions",
+		ejrpc.ContractMultiCall:    "debank_contractMultiCall",
+		ejrpc.EstimateGas:          "debank_estimateGas",
+	}
+
+	changed := false
+	for _, req := range requestContext.RequestBody {
+		if req == nil {
+			continue
+		}
+		if to, ok := rewriteMap[req.Method]; ok {
+			req.Method = to
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+
+	var (
+		newBody []byte
+		err     error
+	)
+	if requestContext.IsBatch {
+		newBody, err = sonic.Marshal(requestContext.RequestBody)
+	} else {
+		newBody, err = sonic.Marshal(requestContext.RequestBody[0])
+		requestContext.Method = requestContext.RequestBody[0].Method
+	}
+	if err != nil {
+		log.Error("failed to rewrite request body for native retry", err)
+		return
+	}
+
+	requestContext.RawRequestBody = newBody
+	requestContext.RequestBodySize = len(newBody)
+	c.Request.SetBody(newBody)
+}
+
+func (lb *LoadBalancer) hasRPCErrorCode(responseBody []byte, code int) bool {
+	trimmed := bytes.TrimSpace(responseBody)
+	if len(trimmed) == 0 {
 		return false
 	}
 
-	log.Debug("Response received", log.Any("response", string(responseBody)))
+	log.Debug("Response received", log.Any("response", string(trimmed)))
 
 	type rpcResponse struct {
 		Error *struct {
@@ -433,15 +523,27 @@ func (lb *LoadBalancer) shouldRetryWithArchive(c *app.RequestContext, requestCon
 		} `json:"error"`
 	}
 
+	// batch response
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var resps []rpcResponse
+		if err := sonic.Unmarshal(trimmed, &resps); err != nil {
+			log.Error("failed to unmarshal batch response, err ", err)
+			return false
+		}
+		for _, r := range resps {
+			if r.Error != nil && r.Error.Code == code {
+				return true
+			}
+		}
+		return false
+	}
+
 	var resp rpcResponse
-	if err := sonic.Unmarshal(responseBody, &resp); err != nil {
+	if err := sonic.Unmarshal(trimmed, &resp); err != nil {
 		log.Error("failed to unmarshal response, err ", err)
 		return false
 	}
-	if resp.Error != nil && resp.Error.Code == types.StateBlockNotFound {
-		return true
-	}
-	return false
+	return resp.Error != nil && resp.Error.Code == code
 }
 
 func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *protocol.Request) func(*http.Request) {

@@ -170,6 +170,33 @@ func TestPatternMatching(t *testing.T) {
 		}
 	})
 
+	t.Run("nativeNodesPattern", func(t *testing.T) {
+		tests := []struct {
+			input         string
+			shouldMatch   bool
+			expectedChain string
+			expectedNode  string
+		}{
+			{"1/nativeNodes/127.0.0.1_8545", true, "1", "127.0.0.1_8545"},
+			{"1/a1b2c3d4/nativeNodes/127.0.0.1_8545", true, "1/a1b2c3d4", "127.0.0.1_8545"},
+			{"56/nativeNodes/172.21.59.215_8771", true, "56", "172.21.59.215_8771"},
+			{"1/lastBlockNumber", false, "", ""},
+			{"1/nodes/127.0.0.1_8545", false, "", ""},
+			{"1/gateway", false, "", ""},
+		}
+
+		for _, tt := range tests {
+			match := nativeNodesPattern.FindStringSubmatch(tt.input)
+			if tt.shouldMatch {
+				assert.NotNil(t, match, "expected match for %s", tt.input)
+				assert.Equal(t, tt.expectedChain, match[nativeNodesPattern.SubexpIndex("chain")])
+				assert.Equal(t, tt.expectedNode, match[nativeNodesPattern.SubexpIndex("node")])
+			} else {
+				assert.Nil(t, match, "expected no match for %s", tt.input)
+			}
+		}
+	})
+
 	t.Run("lastBlockPattern", func(t *testing.T) {
 		tests := []struct {
 			input         string
@@ -286,6 +313,12 @@ func TestNormalizeMultiVersionChainID_Integration(t *testing.T) {
 			normalizedID:  "1-a1b2c3d4",
 		},
 		{
+			name:          "versioned chain native node",
+			key:           "1/a1b2c3d4/nativeNodes/127.0.0.1_8545",
+			expectedChain: "1/a1b2c3d4",
+			normalizedID:  "1-a1b2c3d4",
+		},
+		{
 			name:          "versioned chain height",
 			key:           "1/e5f6g7h8/lastBlockNumber",
 			expectedChain: "1/e5f6g7h8",
@@ -305,6 +338,8 @@ func TestNormalizeMultiVersionChainID_Integration(t *testing.T) {
 
 			if match := nodesPattern.FindStringSubmatch(tt.key); match != nil {
 				chainFromPattern = match[nodesPattern.SubexpIndex("chain")]
+			} else if match := nativeNodesPattern.FindStringSubmatch(tt.key); match != nil {
+				chainFromPattern = match[nativeNodesPattern.SubexpIndex("chain")]
 			} else if match := lastBlockPattern.FindStringSubmatch(tt.key); match != nil {
 				chainFromPattern = match[lastBlockPattern.SubexpIndex("chain")]
 			} else if match := versionPattern.FindStringSubmatch(tt.key); match != nil {

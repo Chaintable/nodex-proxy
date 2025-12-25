@@ -17,6 +17,7 @@ import (
 type RoundRobin struct {
 	archiveNodes map[string][]*lbnode.Node
 	stateNodes   map[string][]*lbnode.Node
+	nativeNodes  map[string][]*lbnode.Node
 	chainHeight  map[string]*hexutil.Big
 	pickNodeFunc utils.PickNodesFunc
 	lock         sync.RWMutex
@@ -26,6 +27,7 @@ func New(pickNodeFunc utils.PickNodesFunc) *RoundRobin {
 	return &RoundRobin{
 		archiveNodes: make(map[string][]*lbnode.Node),
 		stateNodes:   make(map[string][]*lbnode.Node),
+		nativeNodes:  make(map[string][]*lbnode.Node),
 		chainHeight:  make(map[string]*hexutil.Big),
 		pickNodeFunc: pickNodeFunc,
 	}
@@ -37,7 +39,8 @@ func (r *RoundRobin) GetNode(ctx *types.RequestContext, requestKey string) (*lbn
 
 	var best *lbnode.Node
 	total := 0
-	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId], ctx.Archive)
+	forceNative := requestKey == "native"
+	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId], r.nativeNodes[ctx.ChainId], ctx.Archive, forceNative)
 
 	// Log detailed information when no nodes are available after node selection
 	if len(nodes) == 0 {
@@ -81,6 +84,22 @@ func (r *RoundRobin) UpsertNode(_ context.Context, chainId string, role discover
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
+	if node.Source() == "native" {
+		nodes, exists := r.nativeNodes[chainId]
+		if !exists {
+			r.nativeNodes[chainId] = []*lbnode.Node{node}
+			return nil
+		}
+		for i, existingNode := range nodes {
+			if existingNode.Key() == node.Key() {
+				nodes[i] = node
+				return nil
+			}
+		}
+		r.nativeNodes[chainId] = append(nodes, node)
+		return nil
+	}
+
 	if role == discovery.NodeTypeArchive {
 		nodes, exists := r.archiveNodes[chainId]
 		if !exists {
@@ -115,8 +134,22 @@ func (r *RoundRobin) UpsertNode(_ context.Context, chainId string, role discover
 }
 
 func (r *RoundRobin) RemoveNode(_ context.Context, chainId string, role discovery.NodeType, node *lbnode.Node) error {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	if node.Source() == "native" {
+		nodes, exists := r.nativeNodes[chainId]
+		if !exists {
+			return nil
+		}
+		for i, existingNode := range nodes {
+			if existingNode.Key() == node.Key() {
+				r.nativeNodes[chainId] = append(nodes[:i], nodes[i+1:]...)
+				return nil
+			}
+		}
+		return nil
+	}
 
 	if role == discovery.NodeTypeArchive {
 		nodes, exists := r.archiveNodes[chainId]
@@ -169,6 +202,9 @@ func (r *RoundRobin) GetAllChainsIDs() []string {
 	for chainId := range r.stateNodes {
 		chainsMap[chainId] = true
 	}
+	for chainId := range r.nativeNodes {
+		chainsMap[chainId] = true
+	}
 
 	chains := make([]string, 0, len(chainsMap))
 	for chainId := range chainsMap {
@@ -185,6 +221,7 @@ func (r *RoundRobin) GetAllNodes(chainId string) ([]*lbnode.Node, bool) {
 	var nodes []*lbnode.Node
 	nodes = append(nodes, r.archiveNodes[chainId]...)
 	nodes = append(nodes, r.stateNodes[chainId]...)
+	nodes = append(nodes, r.nativeNodes[chainId]...)
 	return nodes, len(nodes) > 0
 }
 
@@ -201,5 +238,13 @@ func (r *RoundRobin) GetStateNodes(chainId string) ([]*lbnode.Node, bool) {
 	defer r.lock.RUnlock()
 
 	nodes, exists := r.stateNodes[chainId]
+	return nodes, exists
+}
+
+func (r *RoundRobin) GetNativeNodes(chainId string) ([]*lbnode.Node, bool) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	nodes, exists := r.nativeNodes[chainId]
 	return nodes, exists
 }

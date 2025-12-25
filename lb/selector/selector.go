@@ -24,5 +24,6 @@ type Strategy interface {
 	GetAllNodes(chainId string) ([]*lbnode.Node, bool)
 	GetArchiveNodes(chainId string) ([]*lbnode.Node, bool)
 	GetStateNodes(chainId string) ([]*lbnode.Node, bool)
+	GetNativeNodes(chainId string) ([]*lbnode.Node, bool)
 	GetAllChainsIDs() []string
 }

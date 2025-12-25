@@ -259,6 +259,7 @@ func (h *Handler) GetAllNodes(ctx context.Context, c *app.RequestContext) {
 	// Get nodes for the chain
 	archiveNodes, _ := h.nodeSelector.GetArchiveNodes(chainId)
 	stateNodes, _ := h.nodeSelector.GetStateNodes(chainId)
+	nativeNodes, _ := h.nodeSelector.GetNativeNodes(chainId)
 
 	// Convert nodes to response format
 	archiveNodesResp := make([]map[string]interface{}, 0, len(archiveNodes))
@@ -285,9 +286,22 @@ func (h *Handler) GetAllNodes(ctx context.Context, c *app.RequestContext) {
 		})
 	}
 
+	nativeNodesResp := make([]map[string]interface{}, 0, len(nativeNodes))
+	for _, node := range nativeNodes {
+		nativeNodesResp = append(nativeNodesResp, map[string]interface{}{
+			"key":    node.Key(),
+			"weight": node.Weight(),
+			"ip":     node.IP(),
+			"port":   node.Port(),
+			"state":  node.State(),
+			"source": node.Source(),
+		})
+	}
+
 	c.JSON(consts.StatusOK, map[string]interface{}{
 		"archive_nodes": archiveNodesResp,
 		"state_nodes":   stateNodesResp,
+		"native_nodes":  nativeNodesResp,
 	})
 }
 

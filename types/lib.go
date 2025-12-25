@@ -75,6 +75,7 @@ type RequestContext struct {
 	ChainUUID        string                   `json:"chain_uuid"`
 	ChainId          string                   `json:"chain_id"`
 	Archive          bool                     `json:"archive"`
+	Native           bool                     `json:"native"`
 }
 
 type (

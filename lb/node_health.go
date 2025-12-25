@@ -113,10 +113,15 @@ func (hc *NodeHealthChecker) CheckNodeHealth(ctx context.Context, tempNode *disc
 
 // processHealthCheck performs the actual health check by querying block height
 func (hc *NodeHealthChecker) processHealthCheck(node *lbnode.Node) bool {
-	// Construct JSON-RPC request for getting block height
+	// Construct JSON-RPC request for getting block height.
+	// native nodes should use standard EVM JSON-RPC method eth_blockNumber.
+	method := "getLatestBlock"
+	if node.Source() == "native" {
+		method = "eth_blockNumber"
+	}
 	reqBody := map[string]interface{}{
 		"jsonrpc": "2.0",
-		"method":  "getLatestBlock",
+		"method":  method,
 		"params":  []interface{}{},
 		"id":      1,
 	}
