@@ -361,6 +361,9 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 
 	// First attempt with state node
 	lb.attemptRequest(ctx, c, requestContext, targetNode)
+	// log codde and response body
+	log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body", string(c.Response.Body())))
+
 	// Check if response contains error code -39006
 	if lb.shouldRetryWithArchive(c, requestContext) {
 		log.Info("Received error code -39006(StateBlockNotFound), retrying with archive node")
