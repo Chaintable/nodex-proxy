@@ -469,7 +469,7 @@ func (lb *LoadBalancer) rewriteMethodForNativeRetry(c *app.RequestContext, reque
 	}
 
 	rewriteMap := map[ejrpc.RPCMethod]ejrpc.RPCMethod{
-		ejrpc.SimulateTransactions: "debank_contractMulticall",
+		ejrpc.SimulateTransactions: "debank_simulateTransactions",
 		ejrpc.ContractMultiCall:    "debank_contractMultiCall",
 		ejrpc.EstimateGas:          "debank_estimateGas",
 	}
