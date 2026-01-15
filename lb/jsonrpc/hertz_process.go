@@ -94,7 +94,8 @@ func checkJRPCRequestBodyHertz(config types.MethodNameCheckerConfig) types.Proce
 
 func updatePreprocessorMetricsHertz() types.ProcessorFuncHertz {
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, processData.ChainId)
+		chainID, chainVersion := metricChainLabels(processData)
+		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, chainID, chainVersion)
 		sourceDapp := c.Request.Header.Get(headerDappKey)
 		m.IncrCallsStarted(processData.Method, sourceDapp)
 		return ctx, c, processData
@@ -322,7 +323,8 @@ func observabilityLogHertz(config types.ObservabilityLogProcessorConfig) types.P
 
 func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, processData.ChainId)
+		chainID, chainVersion := metricChainLabels(processData)
+		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, chainID, chainVersion)
 		responseDuration := time.Since(processData.Start)
 
 		// basic request statistics
@@ -374,4 +376,27 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		}
 		return ctx, c, processData
 	}
+}
+
+func metricChainLabels(processData *types.RequestContext) (string, string) {
+	if processData == nil {
+		return "", ""
+	}
+
+	baseChainID := strings.TrimSpace(processData.BaseChainId)
+	if baseChainID == "" {
+		baseChainID = strings.TrimSpace(processData.ChainId)
+	}
+
+	chainVersion := ""
+	if processData.ChainUUID != "" {
+		chainVersion = processData.ChainUUID
+	} else if baseChainID != "" && processData.ChainId != "" && processData.ChainId != baseChainID {
+		prefix := baseChainID + "-"
+		if strings.HasPrefix(processData.ChainId, prefix) {
+			chainVersion = strings.TrimPrefix(processData.ChainId, prefix)
+		}
+	}
+
+	return baseChainID, chainVersion
 }
