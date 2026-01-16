@@ -397,7 +397,6 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		log.Info("Received error code -39008(CosmosPrecompile), retrying with native node")
 		c.Response.Reset()
 		requestContext.Native = true
-		lb.rewriteMethodForNativeRetry(c, requestContext)
 
 		targetNode, err := lb.NodeSelector.GetNode(requestContext, "native")
 		if err != nil {
