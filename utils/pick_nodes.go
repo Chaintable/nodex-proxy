@@ -11,7 +11,31 @@ import (
 
 type PickNodesFunc func(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, fourceArchive bool, fourceNative bool) []*lbnode.Node
 
+// preferAvailableNodes returns available nodes if any exist, otherwise returns all nodes as fallback
+func preferAvailableNodes(nodes []*lbnode.Node) []*lbnode.Node {
+	if len(nodes) == 0 {
+		return nodes
+	}
+
+	available := make([]*lbnode.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Available() {
+			available = append(available, node)
+		}
+	}
+
+	if len(available) > 0 {
+		return available
+	}
+	return nodes
+}
+
 func PickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, fourceArchive bool, fourceNative bool) []*lbnode.Node {
+	// Prefer available nodes for each node type
+	archiveNodes = preferAvailableNodes(archiveNodes)
+	stateNodes = preferAvailableNodes(stateNodes)
+	nativeNodes = preferAvailableNodes(nativeNodes)
+
 	if fourceNative {
 		return nativeNodes
 	}
