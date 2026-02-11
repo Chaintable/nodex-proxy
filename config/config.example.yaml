@@ -23,10 +23,6 @@ processor:
         eth_call: 1000
         eth_getLogs: 2000
   
-  rate_limiter:
-    rpc_methods:
-      eth_call: 10000  # requests per second
-  
   block_range_query_limit:
     enable: false
     recent_blocks: 0
