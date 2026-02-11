@@ -66,9 +66,7 @@ var defaultConfig = Config{
 			},
 		},
 		RateLimiter: RateLimiterProcessorConfig{
-			RpcMethods: map[string]int{
-				"eth_call": 10_000,
-			},
+			RpcMethods: map[string]int{},
 		},
 		BlockRangeQueryLimit: BlockRangeQueryLimitProcessorConfig{
 			Enable:          false,
