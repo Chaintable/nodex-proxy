@@ -35,11 +35,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	// TODO platform specific
-	defaultSnapRootDir = "~/.jrpcx/raft/snap-root"
-)
-
 var (
 	DefaultWeight                 = 100
 	DefaultLoadBalancerTargetPort = 80
@@ -106,10 +101,6 @@ var defaultConfig = Config{
 	NodeHealthCheckMaxWait: 300, // in seconds
 }
 
-type DebugLogProcessorConfig struct {
-	DebugInfoWriteDirectory string `yaml:"debug_info_write_directory"`
-}
-
 type ObservabilityLogProcessorConfig struct {
 	Enable         bool                   `yaml:"enable"`
 	SlowThreshold  SlowLogThresholdConfig `yaml:"slow_threshold"`
@@ -131,10 +122,6 @@ type BlockRangeQueryLimitProcessorConfig struct {
 	HashBlockEnable bool   `yaml:"hash_block_enable"`
 	RecentBlocks    uint64 `yaml:"recent_blocks"` // most recently blocks
 	RewriteToLatest bool   `yaml:"rewrite_to_latest"`
-}
-
-type RPCCacheProcessorConfig struct {
-	Enable bool `yaml:"enable"`
 }
 
 type RequestMirrorConfig struct {
@@ -448,16 +435,6 @@ func (_ manualProbeFlagType) RouterRegister(r *chi.Mux) {
 				w.WriteHeader(http.StatusOK)
 			}
 		}))
-}
-
-const normalRunmode = "normal"
-
-func IsNormalRunmode(filepath string) bool {
-	b, err := os.ReadFile(filepath)
-	if err != nil {
-		return false
-	}
-	return string(b) == normalRunmode
 }
 
 func DefaultConfig() Config {

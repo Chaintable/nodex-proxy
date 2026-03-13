@@ -341,16 +341,6 @@ func (h *Handler) ChooseOneNode(ctx context.Context, c *app.RequestContext) {
 func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 
-	// 定义请求结构体
-	type AddNodeRequest struct {
-		NodeType int    `json:"node_type"`
-		NodeKey  string `json:"node_key"`
-		IP       string `json:"ip"`
-		Port     int    `json:"port"`
-		State    int    `json:"state"`
-		Weight   int    `json:"weight"`
-	}
-
 	var req AddNodeRequest
 	if err := c.BindJSON(&req); err != nil {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid request format"})
@@ -958,15 +948,6 @@ func (h *Handler) RemoveMethodRoute(ctx context.Context, c *app.RequestContext) 
 
 func (h *Handler) AddLocalNode(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
-
-	type AddNodeRequest struct {
-		NodeType int    `json:"node_type"`
-		NodeKey  string `json:"node_key"`
-		IP       string `json:"ip"`
-		Port     int    `json:"port"`
-		State    int    `json:"state"`
-		Weight   int    `json:"weight"`
-	}
 
 	var req AddNodeRequest
 	if err := c.BindJSON(&req); err != nil {

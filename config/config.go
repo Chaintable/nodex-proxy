@@ -16,10 +16,6 @@ type Config struct {
 	LogLevel      string        `yaml:"log_level"` // debug, info, warn, error
 }
 
-type ReplicaNotificationSetting struct {
-	EtcdEndpoints []string `yaml:"etcd_endpoints"`
-}
-
 var defaultConfig = Config{
 	Listen:       "8663",
 	MetricListen: "8664",

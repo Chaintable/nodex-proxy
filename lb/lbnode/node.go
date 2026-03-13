@@ -10,17 +10,15 @@ import (
 )
 
 type Node struct {
-	key         string
-	ip          string
-	port        int
-	weight      int
-	shardingKey int
+	key    string
+	ip     string
+	port   int
+	weight int
 
-	conns           int64
-	currentWeight   int
-	currentHandling int64
-	stateType       int
-	source          string
+	conns         int64
+	currentWeight int
+	stateType     int
+	source        string
 
 	NodeType discovery.NodeType
 
@@ -181,19 +179,17 @@ func (node *Node) Clone() *Node {
 	defer node.lock.RUnlock()
 
 	n := Node{
-		key:             node.key,
-		ip:              node.ip,
-		port:            node.port,
-		weight:          node.weight,
-		source:          node.source,
-		shardingKey:     node.shardingKey,
-		conns:           node.conns,
-		currentWeight:   node.currentWeight,
-		lock:            sync.RWMutex{},
-		currentHandling: node.currentHandling,
-		stateType:       node.stateType,
-		NodeType:        node.NodeType,
-		ReverseProxy:    node.ReverseProxy,
+		key:           node.key,
+		ip:            node.ip,
+		port:          node.port,
+		weight:        node.weight,
+		source:        node.source,
+		conns:         node.conns,
+		currentWeight: node.currentWeight,
+		lock:          sync.RWMutex{},
+		stateType:     node.stateType,
+		NodeType:      node.NodeType,
+		ReverseProxy:  node.ReverseProxy,
 	}
 	return &n
 }

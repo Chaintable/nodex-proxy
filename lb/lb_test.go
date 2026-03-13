@@ -87,11 +87,6 @@ func TestParseBlockContext(t *testing.T) {
 	ctx := lb.ParseBlockContext([]*ejrpc.RequestObject{&params})
 	require.NotNil(t, ctx)
 
-	ctx2 := lb.parseBlockContext([]*ejrpc.RequestObject{&params})
-	require.NotNil(t, ctx2)
-
-	require.Equal(t, ctx, ctx2)
-
 	byt, err := nJson.Marshal(ctx)
 	require.NoError(t, err)
 	t.Log(string(byt))
@@ -116,7 +111,7 @@ func BenchmarkMarshal2(b *testing.B) {
 		require.NoError(b, err)
 
 		lb := &LoadBalancer{}
-		ctx := lb.parseBlockContext([]*ejrpc.RequestObject{&params})
+		ctx := lb.ParseBlockContext([]*ejrpc.RequestObject{&params})
 		require.NotNil(b, ctx)
 	}
 }

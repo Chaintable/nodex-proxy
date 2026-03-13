@@ -22,7 +22,6 @@ package jsonrpc
 
 import (
 	"context"
-	"fmt"
 
 	spec "github.com/Chaintable/nodex-proxy/jsonrpc"
 )
@@ -31,50 +30,4 @@ import (
 type RPCMethodCacheHandler interface {
 	GetRPCMethod(context.Context, *spec.RequestObject) (*spec.ResponseObject, error)
 	PutRPCMethod(context.Context, *spec.RequestObject, *spec.ResponseObject) error
-}
-
-// ImmutableMethodCacheHandler ...
-type ImmutableMethodCacheHandler struct {
-	cache interface{} // use interface{} rather than cache.Cache is more efficient
-}
-
-func (h *ImmutableMethodCacheHandler) cacheable() bool {
-	return true
-}
-
-func (h *ImmutableMethodCacheHandler) cacheKey(req *spec.RequestObject) string {
-	return fmt.Sprintf("method:%s", req.Method)
-}
-
-func (h *ImmutableMethodCacheHandler) cacheExist() bool {
-	return h.cache != nil
-}
-
-func (h *ImmutableMethodCacheHandler) GetRPCMethod(ctx context.Context, req *spec.RequestObject) (*spec.ResponseObject, error) {
-	if !h.cacheable() {
-		return nil, fmt.Errorf("rpc method %s not cacheable", req.Method)
-	}
-
-	if !h.cacheExist() {
-		return nil, nil
-	}
-
-	return &spec.ResponseObject{
-		Jsonrpc: req.Jsonrpc,
-		Result:  h.cache,
-		ID:      req.ID,
-	}, nil
-}
-
-func (h *ImmutableMethodCacheHandler) PutRPCMethod(ctx context.Context, req *spec.RequestObject, resp *spec.ResponseObject) error {
-	if !h.cacheable() {
-		return fmt.Errorf("rpc method %s not cacheable", req.Method)
-	}
-
-	if h.cacheExist() {
-		return nil
-	}
-
-	h.cache = resp.Result
-	return nil
 }
