@@ -21,45 +21,13 @@
 package jsonrpc
 
 import (
-	"fmt"
-	"net/http"
-	"time"
+	"context"
+
+	spec "github.com/Chaintable/nodex-proxy/jsonrpc"
 )
 
-const (
-	ProxyServeTimeHeader = "X-Serve-Time"
-)
-
-// LoggingDuration records the time cost to HEADER during request starts and response end.
-func LoggingDuration(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(&timedResponseWriter{
-			ResponseWriter: w,
-			start:          time.Now(),
-			headerWrote:    false,
-		}, r)
-	}
-	return http.HandlerFunc(fn)
-}
-
-// timedResponseWriter a helper object that inject `X-Serve-Time` Header to underlying response writer.
-type timedResponseWriter struct {
-	http.ResponseWriter
-	start       time.Time
-	headerWrote bool
-}
-
-func (w *timedResponseWriter) Write(b []byte) (int, error) {
-	if !w.headerWrote {
-		w.WriteHeader(200)
-	}
-
-	return w.ResponseWriter.Write(b)
-}
-
-func (w *timedResponseWriter) WriteHeader(statusCode int) {
-	elapsed := time.Since(w.start).Milliseconds()
-	w.Header().Set(ProxyServeTimeHeader, fmt.Sprintf("%dms", elapsed))
-	w.ResponseWriter.WriteHeader(statusCode)
-	w.headerWrote = true
+// RPCMethodCacheHandler ...
+type RPCMethodCacheHandler interface {
+	GetRPCMethod(context.Context, *spec.RequestObject) (*spec.ResponseObject, error)
+	PutRPCMethod(context.Context, *spec.RequestObject, *spec.ResponseObject) error
 }

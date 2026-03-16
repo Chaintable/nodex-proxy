@@ -57,8 +57,6 @@ type LoadBalancer struct {
 	chainVersionRouter    *ChainVersionRouter
 }
 
-var headerUserAgent = "User-Agent"
-
 type jrpcxContextKeyType int
 
 const (
@@ -545,26 +543,6 @@ func (lb *LoadBalancer) hasRPCErrorCode(responseBody []byte, code int) bool {
 	return resp.Error != nil && resp.Error.Code == code
 }
 
-func (lb *LoadBalancer) forwardDirector(host *lbnode.Node, inReq *protocol.Request) func(*http.Request) {
-	return func(outReq *http.Request) {
-		outReq.URL = cloneURL(outReq.URL)
-		outReq.URL.Scheme = "http"
-		outReq.URL.Host = host.Addr()
-		outReq.URL.Path = inReq.URI().String()
-		outReq.URL.RawPath = inReq.URI().String()
-		outReq.URL.RawQuery = string(inReq.QueryString())
-		outReq.RequestURI = ""
-		outReq.Host = string(inReq.Host())
-		if outReq.Host == "" {
-			outReq.Host = string(inReq.URI().Host())
-		}
-
-		if _, ok := outReq.Header[headerUserAgent]; !ok {
-			outReq.Header.Set(headerUserAgent, "")
-		}
-	}
-}
-
 func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *protocol.Request) *types.RequestContext {
 	requestContext := lb.beforeProcess(ctx, request)
 
@@ -617,32 +595,6 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			continue
 		}
 
-		return &ctx
-	}
-	return nil
-}
-
-func (lb *LoadBalancer) parseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {
-	for _, value := range requestBody {
-		var arr []interface{}
-		err := sonic.Unmarshal(value.Params, &arr)
-		if err != nil {
-			log.Error("failed to unmarshal params", err)
-			continue
-		}
-		if len(arr) <= 0 {
-			continue
-		}
-		lastElem := arr[len(arr)-1]
-		lastBytes, err := sonic.Marshal(lastElem)
-		if err != nil {
-			log.Error("failed to marshal params", err)
-			continue
-		}
-		var ctx types.BlockContext
-		if err := sonic.Unmarshal(lastBytes, &ctx); err != nil {
-			continue
-		}
 		return &ctx
 	}
 	return nil

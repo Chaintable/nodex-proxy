@@ -47,7 +47,6 @@ func main() {
 	log.InitLogger(cmdlineAndLoadConfig.LogLevel)
 
 	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
-	// log.DevelopmentMode()
 
 	nodeRefresherMap := make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -153,6 +152,4 @@ func main() {
 	for _, refresher := range nodeRefresherMap {
 		refresher.Close()
 	}
-
-	// log.Printf("[main] sig %v received, shutting down...", sig)
 }

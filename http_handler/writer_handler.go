@@ -54,7 +54,6 @@ type SwitchLeaderResponse struct {
 // LeaderStatusResponse represents the current leader status
 type LeaderStatusResponse struct {
 	CurrentLeader string `json:"current_leader"`
-	LeaderSince   string `json:"leader_since,omitempty"`
 }
 
 // GetWriters handles GET /<chain_id>/writers
@@ -179,7 +178,6 @@ func (h *Handler) GetLeaderStatus(ctx context.Context, c *app.RequestContext) {
 
 	response := LeaderStatusResponse{
 		CurrentLeader: currentLeader,
-		// TODO: Add LeaderSince timestamp if needed
 	}
 
 	c.JSON(consts.StatusOK, response)
