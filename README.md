@@ -1,5 +1,7 @@
 # nodex-proxy
 
+English | [中文](README_CN.md)
+
 A high-performance blockchain JSON-RPC proxy server with load balancing, health checking, rate limiting, and observability. It sits between clients and blockchain nodes, distributing requests across a pool of nodes while providing advanced traffic management capabilities.
 
 ## Features
@@ -69,6 +71,8 @@ A high-performance blockchain JSON-RPC proxy server with load balancing, health 
 - Explicit native request → Native nodes
 
 ## Quick Start
+
+> For comprehensive deployment instructions (Docker Compose, Kubernetes, systemd, production tuning), see the [Deployment Guide](docs/deployment.md).
 
 ### Prerequisites
 
