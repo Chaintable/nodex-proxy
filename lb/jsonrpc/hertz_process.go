@@ -353,10 +353,17 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 
 		if processData.Error != nil {
 			if processData.ResponseBody != nil && processData.ResponseBody.Error != nil {
-				m.IncrCallsFailed(processData.ResponseBody.Error.Code, processData.Method, processData.UpstreamRelated)
+				reason := classifyFailureReason(
+					processData.ResponseBody.Error.Code,
+					processData.ResponseBody.Error.Message,
+					processData.ResponseBody.Error.Data,
+					processData.Error,
+				)
+				m.IncrCallsFailed(processData.ResponseBody.Error.Code, processData.Method, processData.UpstreamRelated, reason)
 			} else {
 				log.Error("process data error", processData.Error, processData.LogField())
-				m.IncrCallsFailed(jsonrpc.InvalidResponseCode, processData.Method, processData.UpstreamRelated)
+				reason := classifyFailureReason(jsonrpc.InvalidResponseCode, "", nil, processData.Error)
+				m.IncrCallsFailed(jsonrpc.InvalidResponseCode, processData.Method, processData.UpstreamRelated, reason)
 			}
 		} else {
 			m.IncrCallsFinished(processData.Method)
@@ -375,6 +382,80 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 			m.IncrCallsCacheHits(processData.Method)
 		}
 		return ctx, c, processData
+	}
+}
+
+func classifyFailureReason(code jsonrpc.ErrorCode, msg jsonrpc.ErrorMsg, data interface{}, fallbackErr error) string {
+	rawData := strings.ToLower(extractErrorDataString(data))
+	rawMsg := strings.ToLower(string(msg))
+	rawErr := ""
+	if fallbackErr != nil {
+		rawErr = strings.ToLower(fallbackErr.Error())
+	}
+
+	// Keep buckets finite but detailed for operational diagnosis.
+	switch code {
+	case jsonrpc.ExtTooManyRequests:
+		return "rate_limited"
+	case jsonrpc.ExtMethodNotAllowed:
+		return "method_not_allowed"
+	case jsonrpc.InvalidParamsCode:
+		return "invalid_params"
+	case jsonrpc.InvalidRequestCode:
+		return "invalid_request"
+	case jsonrpc.ParseErrorCode:
+		return "parse_error"
+	case jsonrpc.InvalidResponseCode:
+		if strings.Contains(rawErr, "unmarshal") {
+			return "response_unmarshal_failed"
+		}
+		if strings.Contains(rawErr, "timeout") {
+			return "response_parse_timeout"
+		}
+		return "invalid_response"
+	case jsonrpc.ExtWaitingTargetResponseTimeout:
+		return "upstream_gateway_timeout"
+	case jsonrpc.InternalErrorCode:
+		if strings.Contains(rawData, "no native backends available") {
+			return "no_native_backends_available"
+		}
+		if strings.Contains(rawData, "no backends available") {
+			return "no_backends_available"
+		}
+		if strings.Contains(rawData, "no reverse proxy available") {
+			return "no_reverse_proxy_available"
+		}
+		if strings.Contains(rawData, "reverse proxy bad gateway") {
+			return "upstream_bad_gateway"
+		}
+		if strings.Contains(rawData, "reverse proxy gateway timeout") {
+			return "upstream_gateway_timeout"
+		}
+		if strings.Contains(rawData, "marshal") {
+			return "request_transform_failed"
+		}
+		if strings.Contains(rawMsg, "server error") {
+			return "server_error_other"
+		}
+		return "internal_error_other"
+	default:
+		if strings.Contains(rawErr, "timeout") || strings.Contains(rawData, "timeout") {
+			return "timeout_other"
+		}
+		return "rpc_error_other"
+	}
+}
+
+func extractErrorDataString(data interface{}) string {
+	switch v := data.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	default:
+		return ""
 	}
 }
 

@@ -338,14 +338,18 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	targetNode, err := lb.NodeSelector.GetNode(requestContext, "")
 	if err != nil {
 		log.Error("failed to get node, err ", err)
-		_, object, _ := ejrpc.BadGateway(errors.New("no backends available"))
+		_, object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
+		requestContext.Error = retErr
+		requestContext.ResponseBody = object
 		c.JSON(consts.StatusOK, object)
 		return
 	}
 
 	if targetNode.ReverseProxy == nil {
 		log.Error("failed to get node, err ", errors.New("no reverse proxy available"))
-		_, object, _ := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+		_, object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+		requestContext.Error = retErr
+		requestContext.ResponseBody = object
 		c.JSON(consts.StatusOK, object)
 		return
 	}
@@ -375,14 +379,18 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		targetNode, err := lb.NodeSelector.GetNode(requestContext, "")
 		if err != nil {
 			log.Error("failed to get node, err ", err)
-			_, object, _ := ejrpc.BadGateway(errors.New("no backends available"))
+			_, object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
+			requestContext.Error = retErr
+			requestContext.ResponseBody = object
 			c.JSON(consts.StatusOK, object)
 			return
 		}
 
 		if targetNode.ReverseProxy == nil {
 			log.Error("failed to get node, err ", errors.New("no reverse proxy available"))
-			_, object, _ := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+			_, object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+			requestContext.Error = retErr
+			requestContext.ResponseBody = object
 			c.JSON(consts.StatusOK, object)
 			return
 		}
@@ -399,13 +407,17 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		targetNode, err := lb.NodeSelector.GetNode(requestContext, "native")
 		if err != nil {
 			log.Error("failed to get native node, err ", err)
-			_, object, _ := ejrpc.BadGateway(errors.New("no native backends available"))
+			_, object, retErr := ejrpc.BadGateway(errors.New("no native backends available"))
+			requestContext.Error = retErr
+			requestContext.ResponseBody = object
 			c.JSON(consts.StatusOK, object)
 			return
 		}
 		if targetNode.ReverseProxy == nil {
 			log.Error("failed to get native node, err ", errors.New("no reverse proxy available"))
-			_, object, _ := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+			_, object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+			requestContext.Error = retErr
+			requestContext.ResponseBody = object
 			c.JSON(consts.StatusOK, object)
 			return
 		}
@@ -433,11 +445,15 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 	targetNode.ReverseProxy.ServeHTTP(ctx, c)
 
 	if c.Response.StatusCode() == consts.StatusGatewayTimeout {
-		_, object, _ := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
+		_, object, retErr := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
+		requestContext.Error = retErr
+		requestContext.ResponseBody = object
 		c.JSON(consts.StatusGatewayTimeout, object)
 	}
 	if c.Response.StatusCode() == consts.StatusBadGateway {
-		_, object, _ := ejrpc.BadGateway(errors.New("reverse proxy bad gateway"))
+		_, object, retErr := ejrpc.BadGateway(errors.New("reverse proxy bad gateway"))
+		requestContext.Error = retErr
+		requestContext.ResponseBody = object
 		c.JSON(consts.StatusBadGateway, object)
 	}
 }
