@@ -35,12 +35,12 @@ const (
 )
 
 var (
-	lastBlockPattern = regexp.MustCompile(`^(?P<chain>.*?)/lastBlockNumber$`)
-	nodesPattern     = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
+	lastBlockPattern   = regexp.MustCompile(`^(?P<chain>.*?)/lastBlockNumber$`)
+	nodesPattern       = regexp.MustCompile(`^(?P<chain>.*?)/nodes/(?P<node>.*?)$`)
 	nativeNodesPattern = regexp.MustCompile(`^(?P<chain>.*?)/nativeNodes/(?P<node>.*?)$`)
-	gateWayPattern   = regexp.MustCompile(`^(?P<chain>.*?)/gateway$`)
-	mirrorPattern    = regexp.MustCompile(`^(?P<chain>.*?)/mirror/(?P<addr>.*?)$`)
-	versionPattern   = regexp.MustCompile(`^(?P<chain>.*?)/version$`)
+	gateWayPattern     = regexp.MustCompile(`^(?P<chain>.*?)/gateway$`)
+	mirrorPattern      = regexp.MustCompile(`^(?P<chain>.*?)/mirror/(?P<addr>.*?)$`)
+	versionPattern     = regexp.MustCompile(`^(?P<chain>.*?)/version$`)
 )
 
 func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discover, error) {
