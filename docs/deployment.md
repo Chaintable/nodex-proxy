@@ -53,7 +53,7 @@ proxy_config:                  # proxy configuration (see config.example.yaml)
 | Flag | Description | Priority |
 |------|-------------|----------|
 | `-config` | Path to YAML configuration file | Required |
-| `-listen` | Override listen address (e.g. `0.0.0.0:8663`) | Overrides config file |
+| `-listen` | Override RPC listen port (e.g. `8663`) | Overrides config file |
 
 ## Deployment Options
 
@@ -70,7 +70,7 @@ go build -o node-proxy cmd/proxy/main.go
 #### Run
 
 ```bash
-./node-proxy -config config/config.example.yaml -listen 0.0.0.0:8663
+./node-proxy -config config/config.example.yaml -listen 8663
 ```
 
 #### Systemd Service (Production)
@@ -88,7 +88,7 @@ Type=simple
 User=nodex
 Group=nodex
 WorkingDirectory=/opt/nodex-proxy
-ExecStart=/opt/nodex-proxy/node-proxy -config /opt/nodex-proxy/config.yaml -listen 0.0.0.0:8663
+ExecStart=/opt/nodex-proxy/node-proxy -config /opt/nodex-proxy/config.yaml -listen 8663
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
@@ -122,10 +122,10 @@ journalctl -u nodex-proxy -f
 
 #### Build Image
 
-The Dockerfile uses a two-stage build (golang:1.23-bookworm → ubuntu:24.04). A GitHub access token is required if the project has private Go module dependencies:
+The Dockerfile uses a two-stage build (golang:1.23-bookworm → ubuntu:24.04):
 
 ```bash
-docker build --build-arg ACCESS_TOKEN=<github_token> -t nodex-proxy:latest .
+docker build -t nodex-proxy:latest .
 ```
 
 #### Run Container
@@ -205,8 +205,6 @@ services:
   nodex-proxy:
     build:
       context: .
-      args:
-        ACCESS_TOKEN: ${ACCESS_TOKEN}
     # Or use a pre-built image:
     # image: nodex-proxy:latest
     ports:
@@ -251,9 +249,6 @@ proxy_config:
 Start:
 
 ```bash
-# Set the GitHub access token for building from source
-export ACCESS_TOKEN=<github_token>
-
 docker compose up -d
 ```
 
@@ -284,8 +279,6 @@ data:
     log_level: "info"
     proxy_config:
       service_name: "jrpcx"
-      rpc_listen: ":9545"
-      internal_api_listen: ":9268"
       default_rpc_timeout: 5000
       connection_pool_size: 2000
       node_select_strategy: "random"
@@ -448,8 +441,6 @@ kubectl apply -f hpa.yaml
 |------|----------|-------------|-------------------|
 | 8663 | TCP | JSON-RPC server (main) | `listen` or `-listen` flag |
 | 8664 | TCP | Prometheus metrics | `metric_listen` |
-| 9545 | TCP | Internal RPC | `proxy_config.rpc_listen` |
-| 9268 | TCP | Internal admin API | `proxy_config.internal_api_listen` |
 
 ## Monitoring
 
@@ -473,7 +464,7 @@ For Kubernetes, the Deployment template includes Prometheus annotations for auto
 |--------|------|-------------|
 | `jrpcx_rpc_calls_started` | Counter | RPC calls initiated |
 | `jrpcx_rpc_calls_finished` | Counter | RPC calls completed |
-| `jrpcx_rpc_calls_failed` | Counter | Failed RPC calls (with error code label) |
+| `jrpcx_rpc_calls_failed` | Counter | Failed RPC calls |
 | `jrpcx_rpc_calls_time` | Histogram | RPC latency in milliseconds |
 | `jrpcx_rpc_calls_cache_hits` | Counter | Cache hit count |
 | `jrpcx_rpc_request_payload_sizes` | Histogram | Request payload size |
@@ -482,7 +473,7 @@ For Kubernetes, the Deployment template includes Prometheus annotations for auto
 | `jrpcx_rpc_batch_calls_time` | Histogram | Batch request latency |
 | `jrpcx_rpc_http_status_code` | Counter | HTTP status codes |
 
-Labels: `host`, `target`, `chain_id`, `method`, `sourcedapp`, `error_code`.
+Common labels: `host`, `target`, `chain_id`, `chain_version`. Method metrics add `method`; `jrpcx_rpc_calls_started` also adds `sourcedapp`; failures add `status_code`, `upstream_related`, and `reason`.
 
 ### Grafana
 

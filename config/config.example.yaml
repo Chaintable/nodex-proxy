@@ -1,59 +1,75 @@
-# Example configuration for nodex-proxy with node health check feature
+# Example configuration for nodex-proxy.
+#
+# The proxy binary expects top-level launch settings and a nested proxy_config
+# section. The main RPC and metrics listeners are configured by listen and
+# metric_listen.
 
-service_name: "jrpcx"
-rpc_listen: ":9545"
-internal_api_listen: ":9268"
-enable_pprof: false
-native_node_url: "http://127.0.0.1:8545"
-official_node_url: ""
-block_reader_cache_ttl: 1
-default_rpc_timeout: 5000  # in milliseconds
-connection_pool_size: 2000
-node_select_strategy: "random"  # or "round_robin"
-etcd_prefix: ""
+listen: "8663"
+metric_listen: "8664"
+etcd_endpoints:
+  - "http://127.0.0.1:2379"
+log_level: "info"  # debug, info, warn, error
 
-# Processor configuration
-processor:
-  observability_log:
-    enable: true
-    enable_error_log: true
-    slow_threshold:
-      default: 500  # in milliseconds
-      rpc_methods:
-        eth_call: 1000
-        eth_getLogs: 2000
-  
-  block_range_query_limit:
-    enable: false
-    recent_blocks: 0
-    rewrite_to_latest: false
-  
-  request_mirror:
-    enable: false
-  
-  method_name_checker:
-    enable: false
-    regexp: "^[a-zA-Z_][a-zA-Z0-9_]*$"
-  
-  method_denied:
-    - eth_newPendingTransactionFilter
-    - txpool_content
-    - txpool_inspect
-    - txpool_contentFrom
-    - txpool_status
+proxy_config:
+  service_name: "jrpcx"
+  enable_pprof: false
+  native_node_url: "http://127.0.0.1:8545"
+  official_node_url: ""
+  block_reader_cache_ttl: 1
+  default_rpc_timeout: 5000  # in milliseconds
+  connection_pool_size: 2000
+  node_select_strategy: "random"  # or "round_robin"
+  etcd_prefix: ""
+  node_health_check_timeout: 5     # in seconds
+  node_health_check_max_wait: 300  # in seconds
 
-observability:
-  trace:
-    enable: false
-    otlp_endpoint: ""
-    sampling_ratio: 0.1
-  
-  log:
-    sampling:
+  # Processor configuration
+  processor:
+    observability_log:
       enable: true
-      initial: 100
-      thereafter: 100
-  
-  static_resource:
-    service.name: "nodex-proxy"
-    service.version: "1.0.0"
+      enable_error_log: true
+      slow_threshold:
+        default: 500  # in milliseconds
+        rpc_methods:
+          eth_call: 1000
+          eth_getLogs: 2000
+
+    rate_limiter:
+      rpc_methods:
+        eth_call: 100
+        eth_getLogs: 50
+
+    block_range_query_limit:
+      enable: false
+      recent_blocks: 0
+      rewrite_to_latest: false
+
+    request_mirror:
+      enable: false
+
+    method_name_checker:
+      enable: false
+      regexp: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+
+    method_denied:
+      - eth_newPendingTransactionFilter
+      - txpool_content
+      - txpool_inspect
+      - txpool_contentFrom
+      - txpool_status
+
+  observability:
+    trace:
+      enable: false
+      otlp_endpoint: ""
+      sampling_ratio: 0.1
+
+    log:
+      sampling:
+        enable: true
+        initial: 100
+        thereafter: 100
+
+    static_resource:
+      service.name: "nodex-proxy"
+      service.version: "1.0.0"

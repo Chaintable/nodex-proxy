@@ -53,7 +53,7 @@ proxy_config:                  # 代理配置（详见 config.example.yaml）
 | 参数 | 说明 | 优先级 |
 |------|------|--------|
 | `-config` | YAML 配置文件路径 | 必需 |
-| `-listen` | 覆盖监听地址（如 `0.0.0.0:8663`） | 优先于配置文件 |
+| `-listen` | 覆盖 RPC 监听端口（如 `8663`） | 优先于配置文件 |
 
 ## 部署方式
 
@@ -70,7 +70,7 @@ go build -o node-proxy cmd/proxy/main.go
 #### 运行
 
 ```bash
-./node-proxy -config config/config.example.yaml -listen 0.0.0.0:8663
+./node-proxy -config config/config.example.yaml -listen 8663
 ```
 
 #### Systemd 服务（生产环境）
@@ -88,7 +88,7 @@ Type=simple
 User=nodex
 Group=nodex
 WorkingDirectory=/opt/nodex-proxy
-ExecStart=/opt/nodex-proxy/node-proxy -config /opt/nodex-proxy/config.yaml -listen 0.0.0.0:8663
+ExecStart=/opt/nodex-proxy/node-proxy -config /opt/nodex-proxy/config.yaml -listen 8663
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
@@ -122,10 +122,10 @@ journalctl -u nodex-proxy -f
 
 #### 构建镜像
 
-Dockerfile 使用两阶段构建（golang:1.23-bookworm → ubuntu:24.04）。如果项目有私有 Go 模块依赖，需要提供 GitHub 访问令牌：
+Dockerfile 使用两阶段构建（golang:1.23-bookworm → ubuntu:24.04）：
 
 ```bash
-docker build --build-arg ACCESS_TOKEN=<github_token> -t nodex-proxy:latest .
+docker build -t nodex-proxy:latest .
 ```
 
 #### 运行容器
@@ -205,8 +205,6 @@ services:
   nodex-proxy:
     build:
       context: .
-      args:
-        ACCESS_TOKEN: ${ACCESS_TOKEN}
     # 或使用预构建镜像：
     # image: nodex-proxy:latest
     ports:
@@ -251,9 +249,6 @@ proxy_config:
 启动：
 
 ```bash
-# 设置 GitHub 访问令牌（用于源码构建）
-export ACCESS_TOKEN=<github_token>
-
 docker compose up -d
 ```
 
@@ -284,8 +279,6 @@ data:
     log_level: "info"
     proxy_config:
       service_name: "jrpcx"
-      rpc_listen: ":9545"
-      internal_api_listen: ":9268"
       default_rpc_timeout: 5000
       connection_pool_size: 2000
       node_select_strategy: "random"
@@ -448,8 +441,6 @@ kubectl apply -f hpa.yaml
 |------|------|------|--------|
 | 8663 | TCP | JSON-RPC 服务器（主端口） | `listen` 或 `-listen` 参数 |
 | 8664 | TCP | Prometheus 指标 | `metric_listen` |
-| 9545 | TCP | 内部 RPC | `proxy_config.rpc_listen` |
-| 9268 | TCP | 内部管理 API | `proxy_config.internal_api_listen` |
 
 ## 监控
 
@@ -473,7 +464,7 @@ scrape_configs:
 |------|------|------|
 | `jrpcx_rpc_calls_started` | Counter | 已发起的 RPC 调用数 |
 | `jrpcx_rpc_calls_finished` | Counter | 已完成的 RPC 调用数 |
-| `jrpcx_rpc_calls_failed` | Counter | 失败的 RPC 调用数（含错误码标签） |
+| `jrpcx_rpc_calls_failed` | Counter | 失败的 RPC 调用数 |
 | `jrpcx_rpc_calls_time` | Histogram | RPC 延迟（毫秒） |
 | `jrpcx_rpc_calls_cache_hits` | Counter | 缓存命中数 |
 | `jrpcx_rpc_request_payload_sizes` | Histogram | 请求负载大小 |
@@ -482,7 +473,7 @@ scrape_configs:
 | `jrpcx_rpc_batch_calls_time` | Histogram | 批量请求延迟 |
 | `jrpcx_rpc_http_status_code` | Counter | HTTP 状态码 |
 
-标签：`host`、`target`、`chain_id`、`method`、`sourcedapp`、`error_code`。
+通用标签：`host`、`target`、`chain_id`、`chain_version`。按方法统计的指标会增加 `method`；`jrpcx_rpc_calls_started` 还会增加 `sourcedapp`；失败指标会增加 `status_code`、`upstream_related` 和 `reason`。
 
 ### Grafana
 

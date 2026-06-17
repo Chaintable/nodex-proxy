@@ -63,6 +63,8 @@ A high-performance blockchain JSON-RPC proxy server with load balancing, health 
    Prometheus ◄──── Metrics (:8664) ────
 ```
 
+For component boundaries, request lifecycle, dynamic configuration, and operational design details, see the [Design Architecture](docs/architecture.md).
+
 **Node selection logic:**
 
 - `latest` / `pending` block → State nodes
@@ -88,14 +90,14 @@ go build -o node-proxy cmd/proxy/main.go
 ### Docker
 
 ```bash
-docker build --build-arg ACCESS_TOKEN=<github_token> -t nodex-proxy:latest .
+docker build -t nodex-proxy:latest .
 docker run -p 8663:8663 -p 8664:8664 nodex-proxy:latest -config /path/to/config.yaml
 ```
 
 ### Run
 
 ```bash
-./node-proxy -config config/config.example.yaml -listen 0.0.0.0:8663
+./node-proxy -config config/config.example.yaml -listen 8663
 ```
 
 **Flags:**
@@ -103,7 +105,7 @@ docker run -p 8663:8663 -p 8664:8664 nodex-proxy:latest -config /path/to/config.
 | Flag | Description |
 |------|-------------|
 | `-config` | Path to YAML configuration file |
-| `-listen` | Override listen address (takes precedence over config) |
+| `-listen` | Override RPC listen port (takes precedence over config) |
 
 **Ports:**
 
@@ -111,8 +113,6 @@ docker run -p 8663:8663 -p 8664:8664 nodex-proxy:latest -config /path/to/config.
 |------|-------------|
 | `8663` | RPC server (configurable via `-listen`) |
 | `8664` | Prometheus metrics endpoint |
-| `9545` | Internal RPC listen (configurable) |
-| `9268` | Internal admin API (configurable) |
 
 ## Configuration
 
@@ -121,76 +121,83 @@ See [config/config.example.yaml](config/config.example.yaml) for a full example.
 ### Core Settings
 
 ```yaml
-service_name: "jrpcx"
-rpc_listen: ":9545"
-internal_api_listen: ":9268"
-native_node_url: "http://127.0.0.1:8545"
-default_rpc_timeout: 5000            # milliseconds
-connection_pool_size: 2000
-node_select_strategy: "random"       # "random" or "round_robin"
-etcd_prefix: ""
+listen: "8663"
+metric_listen: "8664"
+etcd_endpoints:
+  - "http://127.0.0.1:2379"
+log_level: "info"
+
+proxy_config:
+  service_name: "jrpcx"
+  native_node_url: "http://127.0.0.1:8545"
+  default_rpc_timeout: 5000            # milliseconds
+  connection_pool_size: 2000
+  node_select_strategy: "random"       # "random" or "round_robin"
+  etcd_prefix: ""
 ```
 
 ### Processor Pipeline
 
 ```yaml
-processor:
-  # Slow request logging
-  observability_log:
-    enable: true
-    enable_error_log: true
-    slow_threshold:
-      default: 500               # ms
+proxy_config:
+  processor:
+    # Slow request logging
+    observability_log:
+      enable: true
+      enable_error_log: true
+      slow_threshold:
+        default: 500               # ms
+        rpc_methods:
+          eth_call: 1000
+          eth_getLogs: 2000
+
+    # Per-method rate limiting (requests per second)
+    rate_limiter:
       rpc_methods:
-        eth_call: 1000
-        eth_getLogs: 2000
+        eth_call: 100
+        eth_getLogs: 50
 
-  # Per-method rate limiting (requests per second)
-  rate_limiter:
-    rpc_methods:
-      eth_call: 100
-      eth_getLogs: 50
+    # Block range query restriction
+    block_range_query_limit:
+      enable: false
+      recent_blocks: 0
+      rewrite_to_latest: false
 
-  # Block range query restriction
-  block_range_query_limit:
-    enable: false
-    recent_blocks: 0
-    rewrite_to_latest: false
+    # Request mirroring
+    request_mirror:
+      enable: false
 
-  # Request mirroring
-  request_mirror:
-    enable: false
+    # Method name validation
+    method_name_checker:
+      enable: false
+      regexp: "^[a-zA-Z_][a-zA-Z0-9_]*$"
 
-  # Method name validation
-  method_name_checker:
-    enable: false
-    regexp: "^[a-zA-Z_][a-zA-Z0-9_]*$"
-
-  # Denied RPC methods
-  method_denied:
-    - eth_newPendingTransactionFilter
-    - txpool_content
-    - txpool_inspect
-    - txpool_contentFrom
-    - txpool_status
+    # Denied RPC methods
+    method_denied:
+      - eth_newPendingTransactionFilter
+      - txpool_content
+      - txpool_inspect
+      - txpool_contentFrom
+      - txpool_status
 ```
 
 ### Observability
 
 ```yaml
-observability:
-  trace:
-    enable: false
-    otlp_endpoint: ""
-    sampling_ratio: 0.1
-  log:
-    sampling:
-      enable: true
-      initial: 100
-      thereafter: 100
-  static_resource:
-    service.name: "nodex-proxy"
-    service.version: "1.0.0"
+proxy_config:
+  observability:
+    trace:
+      enable: false
+      otlp_endpoint: ""
+      sampling_ratio: 0.1
+    log:
+      sampling:
+        enable: true
+        initial: 100
+        thereafter: 100
+    static_resource:
+      service.name: "nodex-proxy"
+      service.version: "1.0.0"
 ```
 
 ## Service Discovery (etcd)
@@ -225,7 +232,7 @@ Prometheus metrics are exposed at `http://<host>:8664/metrics`.
 |--------|------|-------------|
 | `jrpcx_rpc_calls_started` | Counter | RPC calls initiated |
 | `jrpcx_rpc_calls_finished` | Counter | RPC calls completed |
-| `jrpcx_rpc_calls_failed` | Counter | Failed RPC calls (with error code) |
+| `jrpcx_rpc_calls_failed` | Counter | Failed RPC calls |
 | `jrpcx_rpc_calls_time` | Histogram | RPC latency (ms) |
 | `jrpcx_rpc_calls_cache_hits` | Counter | Cache hit count |
 | `jrpcx_rpc_request_payload_sizes` | Histogram | Request payload size |
@@ -234,7 +241,7 @@ Prometheus metrics are exposed at `http://<host>:8664/metrics`.
 | `jrpcx_rpc_batch_calls_time` | Histogram | Batch request latency |
 | `jrpcx_rpc_http_status_code` | Counter | HTTP status codes |
 
-Labels include: `host`, `target`, `chain_id`, `method`, `sourcedapp`, `error_code`.
+Common labels include `host`, `target`, `chain_id`, and `chain_version`. Method metrics add `method`; `jrpcx_rpc_calls_started` also adds `sourcedapp`; failures add `status_code`, `upstream_related`, and `reason`.
 
 ## Key Dependencies
 

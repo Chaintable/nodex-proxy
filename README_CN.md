@@ -62,6 +62,8 @@
    Prometheus ◄──── 指标 (:8664) ────
 ```
 
+组件边界、请求生命周期、动态配置和运维设计细节请参考[设计架构](docs/architecture_cn.md)。
+
 **节点选择逻辑：**
 
 - `latest` / `pending` 区块 → 状态节点
@@ -87,14 +89,14 @@ go build -o node-proxy cmd/proxy/main.go
 ### Docker
 
 ```bash
-docker build --build-arg ACCESS_TOKEN=<github_token> -t nodex-proxy:latest .
+docker build -t nodex-proxy:latest .
 docker run -p 8663:8663 -p 8664:8664 nodex-proxy:latest -config /path/to/config.yaml
 ```
 
 ### 运行
 
 ```bash
-./node-proxy -config config/config.example.yaml -listen 0.0.0.0:8663
+./node-proxy -config config/config.example.yaml -listen 8663
 ```
 
 **命令行参数：**
@@ -102,7 +104,7 @@ docker run -p 8663:8663 -p 8664:8664 nodex-proxy:latest -config /path/to/config.
 | 参数 | 说明 |
 |------|------|
 | `-config` | YAML 配置文件路径 |
-| `-listen` | 覆盖监听地址（优先级高于配置文件） |
+| `-listen` | 覆盖 RPC 监听端口（优先级高于配置文件） |
 
 **端口：**
 
@@ -110,8 +112,6 @@ docker run -p 8663:8663 -p 8664:8664 nodex-proxy:latest -config /path/to/config.
 |------|------|
 | `8663` | RPC 服务（可通过 `-listen` 配置） |
 | `8664` | Prometheus 指标端点 |
-| `9545` | 内部 RPC 监听（可配置） |
-| `9268` | 内部管理 API（可配置） |
 
 ## 配置
 
@@ -120,76 +120,83 @@ docker run -p 8663:8663 -p 8664:8664 nodex-proxy:latest -config /path/to/config.
 ### 核心配置
 
 ```yaml
-service_name: "jrpcx"
-rpc_listen: ":9545"
-internal_api_listen: ":9268"
-native_node_url: "http://127.0.0.1:8545"
-default_rpc_timeout: 5000            # 毫秒
-connection_pool_size: 2000
-node_select_strategy: "random"       # "random" 或 "round_robin"
-etcd_prefix: ""
+listen: "8663"
+metric_listen: "8664"
+etcd_endpoints:
+  - "http://127.0.0.1:2379"
+log_level: "info"
+
+proxy_config:
+  service_name: "jrpcx"
+  native_node_url: "http://127.0.0.1:8545"
+  default_rpc_timeout: 5000            # 毫秒
+  connection_pool_size: 2000
+  node_select_strategy: "random"       # "random" 或 "round_robin"
+  etcd_prefix: ""
 ```
 
 ### 处理流水线
 
 ```yaml
-processor:
-  # 慢请求日志
-  observability_log:
-    enable: true
-    enable_error_log: true
-    slow_threshold:
-      default: 500               # 毫秒
+proxy_config:
+  processor:
+    # 慢请求日志
+    observability_log:
+      enable: true
+      enable_error_log: true
+      slow_threshold:
+        default: 500               # 毫秒
+        rpc_methods:
+          eth_call: 1000
+          eth_getLogs: 2000
+
+    # 按方法限流（每秒请求数）
+    rate_limiter:
       rpc_methods:
-        eth_call: 1000
-        eth_getLogs: 2000
+        eth_call: 100
+        eth_getLogs: 50
 
-  # 按方法限流（每秒请求数）
-  rate_limiter:
-    rpc_methods:
-      eth_call: 100
-      eth_getLogs: 50
+    # 区块范围查询限制
+    block_range_query_limit:
+      enable: false
+      recent_blocks: 0
+      rewrite_to_latest: false
 
-  # 区块范围查询限制
-  block_range_query_limit:
-    enable: false
-    recent_blocks: 0
-    rewrite_to_latest: false
+    # 请求镜像
+    request_mirror:
+      enable: false
 
-  # 请求镜像
-  request_mirror:
-    enable: false
+    # 方法名校验
+    method_name_checker:
+      enable: false
+      regexp: "^[a-zA-Z_][a-zA-Z0-9_]*$"
 
-  # 方法名校验
-  method_name_checker:
-    enable: false
-    regexp: "^[a-zA-Z_][a-zA-Z0-9_]*$"
-
-  # 拒绝的 RPC 方法
-  method_denied:
-    - eth_newPendingTransactionFilter
-    - txpool_content
-    - txpool_inspect
-    - txpool_contentFrom
-    - txpool_status
+    # 拒绝的 RPC 方法
+    method_denied:
+      - eth_newPendingTransactionFilter
+      - txpool_content
+      - txpool_inspect
+      - txpool_contentFrom
+      - txpool_status
 ```
 
 ### 可观测性
 
 ```yaml
-observability:
-  trace:
-    enable: false
-    otlp_endpoint: ""
-    sampling_ratio: 0.1
-  log:
-    sampling:
-      enable: true
-      initial: 100
-      thereafter: 100
-  static_resource:
-    service.name: "nodex-proxy"
-    service.version: "1.0.0"
+proxy_config:
+  observability:
+    trace:
+      enable: false
+      otlp_endpoint: ""
+      sampling_ratio: 0.1
+    log:
+      sampling:
+        enable: true
+        initial: 100
+        thereafter: 100
+    static_resource:
+      service.name: "nodex-proxy"
+      service.version: "1.0.0"
 ```
 
 ## 服务发现（etcd）
@@ -224,7 +231,7 @@ Prometheus 指标暴露在 `http://<host>:8664/metrics`。
 |------|------|------|
 | `jrpcx_rpc_calls_started` | Counter | 已发起的 RPC 调用数 |
 | `jrpcx_rpc_calls_finished` | Counter | 已完成的 RPC 调用数 |
-| `jrpcx_rpc_calls_failed` | Counter | 失败的 RPC 调用数（含错误码） |
+| `jrpcx_rpc_calls_failed` | Counter | 失败的 RPC 调用数 |
 | `jrpcx_rpc_calls_time` | Histogram | RPC 延迟（毫秒） |
 | `jrpcx_rpc_calls_cache_hits` | Counter | 缓存命中次数 |
 | `jrpcx_rpc_request_payload_sizes` | Histogram | 请求负载大小 |
@@ -233,7 +240,7 @@ Prometheus 指标暴露在 `http://<host>:8664/metrics`。
 | `jrpcx_rpc_batch_calls_time` | Histogram | 批量请求延迟 |
 | `jrpcx_rpc_http_status_code` | Counter | HTTP 状态码 |
 
-标签包括：`host`、`target`、`chain_id`、`method`、`sourcedapp`、`error_code`。
+通用标签包括 `host`、`target`、`chain_id` 和 `chain_version`。按方法统计的指标会增加 `method`；`jrpcx_rpc_calls_started` 还会增加 `sourcedapp`；失败指标会增加 `status_code`、`upstream_related` 和 `reason`。
 
 ## 主要依赖
 
