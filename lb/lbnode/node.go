@@ -5,7 +5,10 @@ import (
 	"sync"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
+	"github.com/Chaintable/nodex-proxy/lib/log"
+	"github.com/cloudwego/hertz/pkg/app"
 	rconfig "github.com/cloudwego/hertz/pkg/common/config"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/hertz-contrib/reverseproxy"
 )
 
@@ -62,6 +65,18 @@ func New(key, ip string, port, weight int, nodeType discovery.NodeType, opts ...
 	if err != nil {
 		return node, err
 	}
+	proxy.SetErrorHandler(func(c *app.RequestContext, err error) {
+		log.Error("reverse proxy transport error", err,
+			log.Any("node_addr", node.Addr()),
+			log.Any("node_key", node.key),
+			log.Any("node_type", node.NodeType),
+			log.Any("request_method", string(c.Request.Method())),
+			log.Any("request_uri", string(c.Request.URI().FullURI())),
+			log.Any("request_host", string(c.Request.Host())),
+			log.Any("accept_encoding", c.Request.Header.Get("Accept-Encoding")),
+		)
+		c.Response.Header.SetStatusCode(consts.StatusBadGateway)
+	})
 	node.ReverseProxy = proxy
 	return node, nil
 }

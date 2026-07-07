@@ -3,6 +3,7 @@ package lb
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -462,6 +463,7 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 
 	props.Inject(ctx, propagation.HeaderCarrier(httpHeaders))
 	targetNode.ReverseProxy.ServeHTTP(ctx, c)
+	logAbnormalUpstreamResponse(c, requestContext, targetNode)
 
 	if c.Response.StatusCode() == consts.StatusGatewayTimeout {
 		_, object, retErr := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
@@ -475,6 +477,70 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 		requestContext.ResponseBody = object
 		c.JSON(consts.StatusBadGateway, object)
 	}
+}
+
+func logAbnormalUpstreamResponse(c *app.RequestContext, requestContext *types.RequestContext, targetNode *lbnode.Node) {
+	if c == nil {
+		return
+	}
+	statusCode := c.Response.StatusCode()
+	if statusCode != consts.StatusBadGateway && statusCode != consts.StatusGatewayTimeout {
+		return
+	}
+
+	var (
+		chainID string
+		method  string
+		archive bool
+		native  bool
+	)
+	if requestContext != nil {
+		chainID = requestContext.ChainId
+		method = string(requestContext.Method)
+		archive = requestContext.Archive
+		native = requestContext.Native
+	}
+
+	var (
+		nodeAddr string
+		nodeKey  string
+		nodeType discovery.NodeType
+	)
+	if targetNode != nil {
+		nodeAddr = targetNode.Addr()
+		nodeKey = targetNode.Key()
+		nodeType = targetNode.NodeType
+	}
+
+	body := c.Response.Body()
+	log.Warn("upstream response abnormal",
+		log.Any("node_addr", nodeAddr),
+		log.Any("node_key", nodeKey),
+		log.Any("node_type", nodeType),
+		log.Any("chain_id", chainID),
+		log.Any("rpc_method", method),
+		log.Any("archive", archive),
+		log.Any("native", native),
+		log.Any("http_status", statusCode),
+		log.Any("request_accept_encoding", c.Request.Header.Get("Accept-Encoding")),
+		log.Any("response_content_type", c.Response.Header.Get("Content-Type")),
+		log.Any("response_content_encoding", c.Response.Header.Get("Content-Encoding")),
+		log.Any("response_server", c.Response.Header.Get("Server")),
+		log.Any("response_via", c.Response.Header.Get("Via")),
+		log.Any("response_x_envoy_upstream_service_time", c.Response.Header.Get("X-Envoy-Upstream-Service-Time")),
+		log.Any("body_size", len(body)),
+		log.Any("body_prefix_hex", bodyPrefixHex(body, 64)),
+	)
+}
+
+func bodyPrefixHex(body []byte, limit int) string {
+	if len(body) == 0 || limit <= 0 {
+		return ""
+	}
+	if len(body) < limit {
+		limit = len(body)
+	}
+	return hex.EncodeToString(body[:limit])
 }
 
 func (lb *LoadBalancer) shouldRetryWithArchive(c *app.RequestContext, requestContext *types.RequestContext) bool {
