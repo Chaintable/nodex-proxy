@@ -7,7 +7,6 @@ import (
 
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
-	"github.com/Chaintable/nodex-proxy/types"
 	nJson "github.com/bytedance/sonic"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/stretchr/testify/require"
@@ -118,7 +117,7 @@ func TestBeforeProcessForceArchiveHeader(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var request protocol.Request
 			if tt.setHeader {
-				request.Header.Set(types.NodexForceArchive, tt.headerValue)
+				request.Header.Set(NodexForceArchive, tt.headerValue)
 			}
 
 			requestContext := lb.beforeProcess(context.Background(), &request)
