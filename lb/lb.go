@@ -62,11 +62,12 @@ type jrpcxContextKeyType int
 const (
 	originHostKey jrpcxContextKeyType = iota
 
-	DBKBiz           = "x-dbk-biz"
-	DBKSourceHost    = "x-dbk-source-host"
-	DBKSource        = "x-dbk-source"
-	DBKEnv           = "x-dbk-env"
-	DBKServerVersion = "x-dbk-server-version"
+	DBKBiz            = "x-dbk-biz"
+	DBKSourceHost     = "x-dbk-source-host"
+	DBKSource         = "x-dbk-source"
+	DBKEnv            = "x-dbk-env"
+	DBKServerVersion  = "x-dbk-server-version"
+	NodexForceArchive = "x-nodex-force-archive"
 )
 
 func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config,
@@ -625,6 +626,7 @@ func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Req
 	sourceIP := request.Header.Get(DBKSource)
 	sourceEnv := request.Header.Get(DBKEnv)
 	sourceServerVersion := request.Header.Get(DBKServerVersion)
+	forceArchive := isForceArchiveHeaderValue(request.Header.Get(NodexForceArchive))
 
 	// TODO: add some general metrics
 	return &types.RequestContext{
@@ -641,7 +643,12 @@ func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Req
 		Host:            types.ProcessorHost(originHostFromContext(ctx, string(request.Host()))),
 		Target:          "native",
 		UpstreamRelated: false,
+		Archive:         forceArchive,
 	}
+}
+
+func isForceArchiveHeaderValue(value string) bool {
+	return strings.TrimSpace(value) == "true"
 }
 
 func originHostFromContext(ctx context.Context, defaultHost string) string {
