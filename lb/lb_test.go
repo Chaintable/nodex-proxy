@@ -1,12 +1,14 @@
 package lb
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	nJson "github.com/bytedance/sonic"
+	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/stretchr/testify/require"
 )
 
@@ -90,6 +92,36 @@ func TestParseBlockContext(t *testing.T) {
 	byt, err := nJson.Marshal(ctx)
 	require.NoError(t, err)
 	t.Log(string(byt))
+}
+
+func TestBeforeProcessNodeTypeArchiveHeader(t *testing.T) {
+	tests := []struct {
+		name        string
+		headerValue string
+		setHeader   bool
+		wantArchive bool
+	}{
+		{name: "missing header", wantArchive: false},
+		{name: "archive", headerValue: "archive", setHeader: true, wantArchive: true},
+		{name: "uppercase archive", headerValue: "ARCHIVE", setHeader: true, wantArchive: false},
+		{name: "state", headerValue: "state", setHeader: true, wantArchive: false},
+		{name: "native", headerValue: "native", setHeader: true, wantArchive: false},
+		{name: "true", headerValue: "true", setHeader: true, wantArchive: false},
+		{name: "invalid", headerValue: "invalid", setHeader: true, wantArchive: false},
+	}
+
+	lb := &LoadBalancer{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var request protocol.Request
+			if tt.setHeader {
+				request.Header.Set(NodexNodeType, tt.headerValue)
+			}
+
+			requestContext := lb.beforeProcess(context.Background(), &request)
+			require.Equal(t, tt.wantArchive, requestContext.Archive)
+		})
+	}
 }
 
 func BenchmarkMarshal(b *testing.B) {
