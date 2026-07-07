@@ -352,6 +352,7 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		}
 
 		if processData.Error != nil {
+			nodeAddr := failureNodeAddr(processData)
 			if processData.ResponseBody != nil && processData.ResponseBody.Error != nil {
 				reason := classifyFailureReason(
 					processData.ResponseBody.Error.Code,
@@ -359,11 +360,11 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 					processData.ResponseBody.Error.Data,
 					processData.Error,
 				)
-				m.IncrCallsFailed(processData.ResponseBody.Error.Code, processData.Method, processData.UpstreamRelated, reason)
+				m.IncrCallsFailed(processData.ResponseBody.Error.Code, processData.Method, processData.UpstreamRelated, reason, nodeAddr)
 			} else {
 				log.Error("process data error", processData.Error, processData.LogField())
 				reason := classifyFailureReason(jsonrpc.InvalidResponseCode, "", nil, processData.Error)
-				m.IncrCallsFailed(jsonrpc.InvalidResponseCode, processData.Method, processData.UpstreamRelated, reason)
+				m.IncrCallsFailed(jsonrpc.InvalidResponseCode, processData.Method, processData.UpstreamRelated, reason, nodeAddr)
 			}
 		} else {
 			m.IncrCallsFinished(processData.Method)
@@ -383,6 +384,13 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		}
 		return ctx, c, processData
 	}
+}
+
+func failureNodeAddr(processData *types.RequestContext) string {
+	if processData == nil || strings.TrimSpace(processData.TargetNodeAddr) == "" {
+		return "unknown"
+	}
+	return processData.TargetNodeAddr
 }
 
 func classifyFailureReason(code jsonrpc.ErrorCode, msg jsonrpc.ErrorMsg, data interface{}, fallbackErr error) string {

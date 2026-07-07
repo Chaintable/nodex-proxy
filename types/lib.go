@@ -74,8 +74,23 @@ type RequestContext struct {
 	BaseChainId      string                   `json:"base_chain_id"`
 	ChainUUID        string                   `json:"chain_uuid"`
 	ChainId          string                   `json:"chain_id"`
+	TargetNodeAddr   string                   `json:"target_node_addr"`
 	Archive          bool                     `json:"archive"`
 	Native           bool                     `json:"native"`
+}
+
+func (p *RequestContext) SetTargetNode(addr string) {
+	if p == nil {
+		return
+	}
+	p.TargetNodeAddr = addr
+}
+
+func (p *RequestContext) ClearTargetNode() {
+	if p == nil {
+		return
+	}
+	p.TargetNodeAddr = ""
 }
 
 type (
