@@ -336,7 +336,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	// Mark as upstream related request
 	requestContext.UpstreamRelated = true
 
-	targetNode, err := lb.NodeSelector.GetNode(requestContext, "")
+	targetNode, err := lb.chooseTargetNode(requestContext, "")
 	if err != nil {
 		log.Error("failed to get node, err ", err)
 		_, object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
@@ -377,7 +377,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		// Retry with archive node
 		requestContext.Archive = true
 
-		targetNode, err := lb.NodeSelector.GetNode(requestContext, "")
+		targetNode, err := lb.chooseTargetNode(requestContext, "")
 		if err != nil {
 			log.Error("failed to get node, err ", err)
 			_, object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
@@ -405,7 +405,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		c.Response.Reset()
 		requestContext.Native = true
 
-		targetNode, err := lb.NodeSelector.GetNode(requestContext, "native")
+		targetNode, err := lb.chooseTargetNode(requestContext, "native")
 		if err != nil {
 			log.Error("failed to get native node, err ", err)
 			_, object, retErr := ejrpc.BadGateway(errors.New("no native backends available"))
@@ -425,6 +425,24 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		log.Debug("Selected native target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
 		lb.attemptRequest(ctx, c, requestContext, targetNode)
 	}
+}
+
+func (lb *LoadBalancer) chooseTargetNode(requestContext *types.RequestContext, requestKey string) (*lbnode.Node, error) {
+	if requestContext == nil {
+		return nil, errors.New("nil request context")
+	}
+	requestContext.ClearTargetNode()
+
+	targetNode, err := lb.NodeSelector.GetNode(requestContext, requestKey)
+	if err != nil {
+		return nil, err
+	}
+	if targetNode == nil {
+		return nil, errors.New("no target node selected")
+	}
+
+	requestContext.SetTargetNode(targetNode.Addr())
+	return targetNode, nil
 }
 
 func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, requestContext *types.RequestContext, targetNode *lbnode.Node) {

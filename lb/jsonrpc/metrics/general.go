@@ -58,12 +58,13 @@ func (m CommonLabelMetrics) IncrTotalJRPCRequest() {
 	totalJRPCRequest.With(m.labelValues...).Add(1)
 }
 
-func (m CommonLabelMetrics) IncrCallsFailed(code jsonrpc.ErrorCode, method jsonrpc.RPCMethod, upstreamRelated bool, reason string) {
+func (m CommonLabelMetrics) IncrCallsFailed(code jsonrpc.ErrorCode, method jsonrpc.RPCMethod, upstreamRelated bool, reason string, nodeAddr string) {
 	callsFailed.With(m.labelValues...).With(
 		"status_code", strconv.FormatInt(int64(code), 10),
 		"method", string(method),
 		"upstream_related", strconv.FormatBool(upstreamRelated),
 		"reason", reason,
+		"node_addr", nodeAddr,
 	).Add(1)
 }
 
@@ -128,7 +129,7 @@ var (
 		Subsystem: promSubsystem,
 		Name:      "calls_failed",
 		Help:      "Number of failure RPC calls (unique un-batched requests)",
-	}, newLabelNames(methodCommonLabelNames, "status_code", "upstream_related", "reason"))
+	}, newLabelNames(methodCommonLabelNames, "status_code", "upstream_related", "reason", "node_addr"))
 	batchCallsFinished = prometheus.NewCounterFrom(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,

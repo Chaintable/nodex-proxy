@@ -69,3 +69,22 @@ func TestMetricChainLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestFailureNodeAddr(t *testing.T) {
+	cases := []struct {
+		name string
+		ctx  *types.RequestContext
+		want string
+	}{
+		{name: "nil context", ctx: nil, want: "unknown"},
+		{name: "empty node addr", ctx: &types.RequestContext{}, want: "unknown"},
+		{name: "blank node addr", ctx: &types.RequestContext{TargetNodeAddr: " "}, want: "unknown"},
+		{name: "node addr", ctx: &types.RequestContext{TargetNodeAddr: "10.0.0.12:8545"}, want: "10.0.0.12:8545"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, failureNodeAddr(tc.ctx))
+		})
+	}
+}
