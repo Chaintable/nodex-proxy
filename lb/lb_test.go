@@ -94,7 +94,7 @@ func TestParseBlockContext(t *testing.T) {
 	t.Log(string(byt))
 }
 
-func TestBeforeProcessForceArchiveHeader(t *testing.T) {
+func TestBeforeProcessNodeTypeArchiveHeader(t *testing.T) {
 	tests := []struct {
 		name        string
 		headerValue string
@@ -102,14 +102,12 @@ func TestBeforeProcessForceArchiveHeader(t *testing.T) {
 		wantArchive bool
 	}{
 		{name: "missing header", wantArchive: false},
-		{name: "true", headerValue: "true", setHeader: true, wantArchive: true},
-		{name: "uppercase true", headerValue: "TRUE", setHeader: true, wantArchive: false},
-		{name: "one", headerValue: "1", setHeader: true, wantArchive: false},
-		{name: "yes", headerValue: "yes", setHeader: true, wantArchive: false},
-		{name: "on", headerValue: "on", setHeader: true, wantArchive: false},
-		{name: "false", headerValue: "false", setHeader: true, wantArchive: false},
-		{name: "zero", headerValue: "0", setHeader: true, wantArchive: false},
-		{name: "invalid", headerValue: "archive", setHeader: true, wantArchive: false},
+		{name: "archive", headerValue: "archive", setHeader: true, wantArchive: true},
+		{name: "uppercase archive", headerValue: "ARCHIVE", setHeader: true, wantArchive: false},
+		{name: "state", headerValue: "state", setHeader: true, wantArchive: false},
+		{name: "native", headerValue: "native", setHeader: true, wantArchive: false},
+		{name: "true", headerValue: "true", setHeader: true, wantArchive: false},
+		{name: "invalid", headerValue: "invalid", setHeader: true, wantArchive: false},
 	}
 
 	lb := &LoadBalancer{}
@@ -117,7 +115,7 @@ func TestBeforeProcessForceArchiveHeader(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var request protocol.Request
 			if tt.setHeader {
-				request.Header.Set(NodexForceArchive, tt.headerValue)
+				request.Header.Set(NodexNodeType, tt.headerValue)
 			}
 
 			requestContext := lb.beforeProcess(context.Background(), &request)
