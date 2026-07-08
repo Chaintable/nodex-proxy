@@ -3,6 +3,7 @@ package jsonrpc
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -131,6 +132,15 @@ func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig,
 
 	httpClient := http.Client{
 		Timeout: timeout,
+		Transport: &http.Transport{
+			// no global idle cap: with hundreds of mirror hosts a small cap
+			// evicts other hosts' idle conns and reintroduces churn; idle
+			// conns are reclaimed by IdleConnTimeout instead
+			MaxIdleConns:        0,
+			MaxIdleConnsPerHost: 32,
+			MaxConnsPerHost:     128,
+			IdleConnTimeout:     90 * time.Second,
+		},
 	}
 	doMirrorRequest := func(c *app.RequestContext, processData *types.RequestContext, target string) {
 		mirrorRequest, err := http.NewRequest(string(c.Method()), target, bytes.NewReader(processData.RawRequestBody))
@@ -154,6 +164,9 @@ func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig,
 			return
 		}
 		defer resp.Body.Close()
+		// The connection only goes back to the pool after the body is read to
+		// EOF; without draining every mirror request dials a new connection.
+		_, _ = io.Copy(io.Discard, resp.Body)
 	}
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
 		mirrorURLs := mirrorMap.GetMirrorURLs(processData.ChainId)
