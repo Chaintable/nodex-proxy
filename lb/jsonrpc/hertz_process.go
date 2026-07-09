@@ -387,8 +387,9 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		if processData.RequestBodySize > 0 {
 			m.ObRequestPayloadSizes(processData.Method, processData.RequestBodySize)
 		}
-		if processData.ResponseBodySize > 0 {
-			m.ObResponsePayloadSizes(processData.Method, processData.ResponseBodySize)
+		responseBodySize := len(c.Response.Body())
+		if shouldRecordResponsePayloadSize(statusCode, processData, responseBodySize) {
+			m.ObResponsePayloadSizes(processData.Method, responseBodySize)
 		}
 
 		// cache statistics
@@ -397,6 +398,13 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		}
 		return ctx, c, processData
 	}
+}
+
+func shouldRecordResponsePayloadSize(statusCode int, processData *types.RequestContext, responseBodySize int) bool {
+	if processData == nil || processData.Error != nil || responseBodySize <= 0 {
+		return false
+	}
+	return statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices
 }
 
 func failureNodeAddr(processData *types.RequestContext) string {
