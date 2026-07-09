@@ -78,7 +78,7 @@ func (ls *methodLimiter) UpdateLimit(method jsonrpc.RPCMethod, rps int) bool {
 
 func (ls *methodLimiter) getMethod(method jsonrpc.RPCMethod) (*rate.Limiter, bool) {
 	ls.RLock()
-	ls.RUnlock()
+	defer ls.RUnlock()
 	limiter, exists := ls.limiters[method]
 	return limiter, exists
 }
