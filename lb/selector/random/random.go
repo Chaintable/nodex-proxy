@@ -109,50 +109,14 @@ func (r *Random) UpsertNode(_ context.Context, chainId string, role discovery.No
 	defer r.lock.Unlock()
 
 	if node.Source() == "native" {
-		nodes, exists := r.nativeNodes[chainId]
-		if !exists {
-			r.nativeNodes[chainId] = []*lbnode.Node{node}
-			return nil
-		}
-		for i, existingNode := range nodes {
-			if existingNode.Key() == node.Key() {
-				nodes[i] = node
-				return nil
-			}
-		}
-		r.nativeNodes[chainId] = append(nodes, node)
+		r.nativeNodes[chainId] = lbnode.UpsertInto(r.nativeNodes[chainId], node)
 		return nil
 	}
 
 	if role == discovery.NodeTypeArchive {
-		nodes, exists := r.archiveNodes[chainId]
-		if !exists {
-			r.archiveNodes[chainId] = []*lbnode.Node{node}
-			return nil
-		}
-
-		for i, existingNode := range nodes {
-			if existingNode.Key() == node.Key() {
-				// 更新现有节点
-				nodes[i] = node
-				return nil
-			}
-		}
-
-		r.archiveNodes[chainId] = append(nodes, node)
+		r.archiveNodes[chainId] = lbnode.UpsertInto(r.archiveNodes[chainId], node)
 	} else {
-		nodes, exists := r.stateNodes[chainId]
-		if !exists {
-			r.stateNodes[chainId] = []*lbnode.Node{node}
-			return nil
-		}
-		for i, existingNode := range nodes {
-			if existingNode.Key() == node.Key() {
-				nodes[i] = node
-				return nil
-			}
-		}
-		r.stateNodes[chainId] = append(nodes, node)
+		r.stateNodes[chainId] = lbnode.UpsertInto(r.stateNodes[chainId], node)
 	}
 	return nil
 }

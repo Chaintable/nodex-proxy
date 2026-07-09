@@ -50,7 +50,10 @@ var defaultConfig = Config{
 	OfficialNodeURL:        "",
 	BlockReaderCacheTTL:    1,
 	DefaultRPCTimeout:      5000,
-	ConnectionPoolSize:     2000,
+	ConnectionPoolSize:     512,
+	ConnMaxIdleDuration:    90000,
+	ConnMaxWaitTimeout:     1000,
+	ConnDialTimeout:        3000,
 	RPCMethodTimeoutConfig: map[string]int{},
 	Processor: ProcessorConfig{
 		ObservabilityLog: ObservabilityLogProcessorConfig{
@@ -172,7 +175,10 @@ type Config struct {
 	OfficialNodeURL        string              `yaml:"official_node_url"`
 	BlockReaderCacheTTL    int                 `yaml:"block_reader_cache_ttl"`
 	ChainId                string              `yaml:"chain_id"`
-	ConnectionPoolSize     int                 `yaml:"connection_pool_size"`
+	ConnectionPoolSize     int                 `yaml:"connection_pool_size"`   // max upstream connections per backend host
+	ConnMaxIdleDuration    int                 `yaml:"conn_max_idle_duration"` // in milliseconds; keep below the backend keep-alive idle timeout
+	ConnMaxWaitTimeout     int                 `yaml:"conn_max_wait_timeout"`  // in milliseconds; how long a request waits for a free connection before failing
+	ConnDialTimeout        int                 `yaml:"conn_dial_timeout"`      // in milliseconds
 	Processor              ProcessorConfig     `yaml:"processor"`
 	Observability          ObservabilityConfig `yaml:"observability"`
 	NodeSelectStrategy     string              `yaml:"node_select_strategy"`
@@ -246,6 +252,15 @@ func FillWithDefaultConfig(cfg *Config) {
 	}
 	if cfg.ConnectionPoolSize == 0 {
 		cfg.ConnectionPoolSize = defaultConfig.ConnectionPoolSize
+	}
+	if cfg.ConnMaxIdleDuration == 0 {
+		cfg.ConnMaxIdleDuration = defaultConfig.ConnMaxIdleDuration
+	}
+	if cfg.ConnMaxWaitTimeout == 0 {
+		cfg.ConnMaxWaitTimeout = defaultConfig.ConnMaxWaitTimeout
+	}
+	if cfg.ConnDialTimeout == 0 {
+		cfg.ConnDialTimeout = defaultConfig.ConnDialTimeout
 	}
 	if cfg.RPCMethodTimeoutConfig == nil {
 		cfg.RPCMethodTimeoutConfig = map[string]int{}

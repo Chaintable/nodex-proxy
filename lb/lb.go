@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,6 +27,8 @@ import (
 	"github.com/Chaintable/nodex-proxy/utils"
 	"github.com/bytedance/sonic"
 	"github.com/cloudwego/hertz/pkg/app"
+	hzclient "github.com/cloudwego/hertz/pkg/app/client"
+	hzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -35,26 +36,24 @@ import (
 )
 
 type LoadBalancer struct {
-	ctx                   context.Context
-	nodeRefresherMap      map[string]*etcd.Discover
-	Config                types.Config
-	Limiter               jsonrpc.Limiter
-	HeightMap             jsonrpc.HeightMap
-	GatewayStrategy       jsonrpc.GatewayStrategy
-	MirrorMap             jsonrpc.MirrorMap
-	MirrorLimiter         jsonrpc.MirrorLimiter
-	NodeSelector          selector.Strategy
-	nodeChannel           <-chan *discovery.TargetNode
-	heightChannel         <-chan *discovery.ChainHeight
-	gatewayChannel        <-chan *discovery.Gateway
-	mirrorChannel         <-chan *discovery.MirrorTarget
-	versionChannel        <-chan *discovery.ChainVersion
-	rpcMethodTransportMap map[ejrpc.RPCMethod]*http.Transport
-	preProcessorsHertz    types.PreProcessorProcessorsHertz
-	postProcessorsHertz   types.PostProcessorProcessorsHertz
-	defaultHttpTransport  *http.Transport
-	healthChecker         *NodeHealthChecker
-	chainVersionRouter    *ChainVersionRouter
+	ctx                 context.Context
+	nodeRefresherMap    map[string]*etcd.Discover
+	Config              types.Config
+	Limiter             jsonrpc.Limiter
+	HeightMap           jsonrpc.HeightMap
+	GatewayStrategy     jsonrpc.GatewayStrategy
+	MirrorMap           jsonrpc.MirrorMap
+	MirrorLimiter       jsonrpc.MirrorLimiter
+	NodeSelector        selector.Strategy
+	nodeChannel         <-chan *discovery.TargetNode
+	heightChannel       <-chan *discovery.ChainHeight
+	gatewayChannel      <-chan *discovery.Gateway
+	mirrorChannel       <-chan *discovery.MirrorTarget
+	versionChannel      <-chan *discovery.ChainVersion
+	preProcessorsHertz  types.PreProcessorProcessorsHertz
+	postProcessorsHertz types.PostProcessorProcessorsHertz
+	healthChecker       *NodeHealthChecker
+	chainVersionRouter  *ChainVersionRouter
 }
 
 type jrpcxContextKeyType int
@@ -86,12 +85,17 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 	case "random":
 		nodeSelector = random.New(utils.PickNodes, gatewayStrategy)
 	}
-	rpcMethodTransportMap := map[ejrpc.RPCMethod]*http.Transport{}
-	for m, t := range config.RPCMethodTimeoutConfig {
-		if t <= 0 {
-			t = config.DefaultRPCTimeout
-		}
-		rpcMethodTransportMap[ejrpc.RPCMethod(m)] = NewHttpTransportWithTimeout(time.Duration(t)*time.Millisecond, config.ConnectionPoolSize)
+	// All node reverse proxies share one upstream client; its per-host pools
+	// survive node upserts so etcd refreshes no longer trigger reconnect storms.
+	if err := lbnode.InitSharedClient(
+		hzclient.WithMaxConnsPerHost(config.ConnectionPoolSize),
+		hzclient.WithMaxIdleConnDuration(time.Duration(config.ConnMaxIdleDuration)*time.Millisecond),
+		hzclient.WithMaxConnWaitTimeout(time.Duration(config.ConnMaxWaitTimeout)*time.Millisecond),
+		hzclient.WithDialTimeout(time.Duration(config.ConnDialTimeout)*time.Millisecond),
+		hzclient.WithClientReadTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond),
+		hzclient.WithKeepAlive(true),
+	); err != nil {
+		log.Error("failed to init shared upstream client, falling back to defaults", err)
 	}
 	// Create health checker with default timeout values
 	healthCheckTimeout := 5 * time.Second
@@ -104,26 +108,24 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 	}
 
 	return &LoadBalancer{
-		ctx:                   ctx,
-		nodeRefresherMap:      nodeRefresherMap,
-		Config:                config,
-		Limiter:               limiter,
-		HeightMap:             heightMap,
-		GatewayStrategy:       gatewayStrategy,
-		MirrorMap:             mirrorMap,
-		MirrorLimiter:         mirrorLimiter,
-		NodeSelector:          nodeSelector,
-		nodeChannel:           nodeChannel,
-		heightChannel:         heightChannel,
-		gatewayChannel:        gatewayChannel,
-		mirrorChannel:         mirrorChannel,
-		versionChannel:        versionChannel,
-		rpcMethodTransportMap: rpcMethodTransportMap,
-		preProcessorsHertz:    jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter, mirrorMap, mirrorLimiter),
-		postProcessorsHertz:   jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
-		defaultHttpTransport:  NewHttpTransportWithTimeout(time.Duration(config.DefaultRPCTimeout)*time.Millisecond, config.ConnectionPoolSize),
-		healthChecker:         NewNodeHealthChecker(healthCheckTimeout, maxWaitTime),
-		chainVersionRouter:    NewChainVersionRouter(),
+		ctx:                 ctx,
+		nodeRefresherMap:    nodeRefresherMap,
+		Config:              config,
+		Limiter:             limiter,
+		HeightMap:           heightMap,
+		GatewayStrategy:     gatewayStrategy,
+		MirrorMap:           mirrorMap,
+		MirrorLimiter:       mirrorLimiter,
+		NodeSelector:        nodeSelector,
+		nodeChannel:         nodeChannel,
+		heightChannel:       heightChannel,
+		gatewayChannel:      gatewayChannel,
+		mirrorChannel:       mirrorChannel,
+		versionChannel:      versionChannel,
+		preProcessorsHertz:  jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter, mirrorMap, mirrorLimiter),
+		postProcessorsHertz: jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
+		healthChecker:       NewNodeHealthChecker(healthCheckTimeout, maxWaitTime),
+		chainVersionRouter:  NewChainVersionRouter(),
 	}
 }
 
@@ -445,10 +447,28 @@ func (lb *LoadBalancer) chooseTargetNode(requestContext *types.RequestContext, r
 	return targetNode, nil
 }
 
+// upstreamReadTimeout resolves the per-method upstream timeout, falling back
+// to the default RPC timeout. Batch requests use the default.
+func (lb *LoadBalancer) upstreamReadTimeout(method ejrpc.RPCMethod) time.Duration {
+	if t, ok := lb.Config.RPCMethodTimeoutConfig[string(method)]; ok && t > 0 {
+		return time.Duration(t) * time.Millisecond
+	}
+	return time.Duration(lb.Config.DefaultRPCTimeout) * time.Millisecond
+}
+
 func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, requestContext *types.RequestContext, targetNode *lbnode.Node) {
 	if requestContext != nil && requestContext.Native {
 		c.Request.URI().SetPath("/")
 	}
+
+	// Without a read timeout a hung backend pins its connection forever and
+	// eventually exhausts the pool; the request-level option overrides the
+	// shared client's default.
+	var method ejrpc.RPCMethod
+	if requestContext != nil {
+		method = requestContext.Method
+	}
+	c.Request.SetOptions(hzconfig.WithReadTimeout(lb.upstreamReadTimeout(method)))
 
 	props := otel.GetTextMapPropagator()
 	httpHeaders := http.Header{}
@@ -686,21 +706,4 @@ func (lb *LoadBalancer) GetMirrorMap() jsonrpc.MirrorMap {
 
 func (lb *LoadBalancer) GetMirrorLimiter() jsonrpc.MirrorLimiter {
 	return lb.MirrorLimiter
-}
-
-func NewHttpTransportWithTimeout(timeout time.Duration, connectionPoolSize int) *http.Transport {
-	return &http.Transport{
-		Proxy: nil,
-		DialContext: (&net.Dialer{
-			Timeout:   timeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          20 * connectionPoolSize,
-		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: time.Second,
-		ResponseHeaderTimeout: timeout,
-		MaxIdleConnsPerHost:   connectionPoolSize,
-	}
 }
