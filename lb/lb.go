@@ -366,11 +366,13 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 
 	// First attempt with state node
 	lb.attemptRequest(ctx, c, requestContext, targetNode)
-	// log codde and response body
-	log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body", string(c.Response.Body())))
+	responseBody := c.Response.Body()
+	log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body_size", len(responseBody)))
+
+	responseErrorCodes := lb.parseRPCErrorCodes(responseBody)
 
 	// Check if response contains error code -39006
-	if lb.shouldRetryWithArchive(c, requestContext) {
+	if lb.shouldRetryWithArchive(requestContext, responseErrorCodes) {
 		log.Info("Received error code -39006(StateBlockNotFound), retrying with archive node")
 
 		// Reset response body for retry
@@ -399,10 +401,11 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		}
 		log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
 		lb.attemptRequest(ctx, c, requestContext, targetNode)
+		responseErrorCodes = lb.parseRPCErrorCodes(c.Response.Body())
 	}
 
 	// Retry to nativeNodes when CosmosPrecompile
-	if lb.shouldRetryWithNative(c, requestContext) {
+	if lb.shouldRetryWithNative(requestContext, responseErrorCodes) {
 		log.Info("Received error code -39008(CosmosPrecompile), retrying with native node")
 		c.Response.Reset()
 		requestContext.Native = true
@@ -497,19 +500,19 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 	}
 }
 
-func (lb *LoadBalancer) shouldRetryWithArchive(c *app.RequestContext, requestContext *types.RequestContext) bool {
+func (lb *LoadBalancer) shouldRetryWithArchive(requestContext *types.RequestContext, responseErrorCodes rpcErrorCodes) bool {
 	// If already using archive node, do not retry
-	if requestContext.Archive {
+	if requestContext == nil || requestContext.Archive {
 		return false
 	}
-	return lb.hasRPCErrorCode(c.Response.Body(), types.StateBlockNotFound)
+	return responseErrorCodes.Has(types.StateBlockNotFound)
 }
 
-func (lb *LoadBalancer) shouldRetryWithNative(c *app.RequestContext, requestContext *types.RequestContext) bool {
-	if requestContext.Native {
+func (lb *LoadBalancer) shouldRetryWithNative(requestContext *types.RequestContext, responseErrorCodes rpcErrorCodes) bool {
+	if requestContext == nil || requestContext.Native {
 		return false
 	}
-	return lb.hasRPCErrorCode(c.Response.Body(), types.CosmosPrecompile)
+	return responseErrorCodes.Has(types.CosmosPrecompile)
 }
 
 func (lb *LoadBalancer) rewriteMethodForNativeRetry(c *app.RequestContext, requestContext *types.RequestContext) {
@@ -560,42 +563,53 @@ func (lb *LoadBalancer) rewriteMethodForNativeRetry(c *app.RequestContext, reque
 	c.Request.SetBody(newBody)
 }
 
-func (lb *LoadBalancer) hasRPCErrorCode(responseBody []byte, code int) bool {
+type rpcErrorCodes map[int]struct{}
+
+func (codes rpcErrorCodes) Has(code int) bool {
+	_, ok := codes[code]
+	return ok
+}
+
+func (lb *LoadBalancer) parseRPCErrorCodes(responseBody []byte) rpcErrorCodes {
 	trimmed := bytes.TrimSpace(responseBody)
 	if len(trimmed) == 0 {
-		return false
+		return nil
 	}
 
-	log.Debug("Response received", log.Any("response", string(trimmed)))
+	log.Debug("Response received", log.Any("body_size", len(trimmed)))
 
 	type rpcResponse struct {
 		Error *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
+			Code int `json:"code"`
 		} `json:"error"`
 	}
+
+	codes := rpcErrorCodes{}
 
 	// batch response
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var resps []rpcResponse
 		if err := sonic.Unmarshal(trimmed, &resps); err != nil {
 			log.Error("failed to unmarshal batch response, err ", err)
-			return false
+			return nil
 		}
 		for _, r := range resps {
-			if r.Error != nil && r.Error.Code == code {
-				return true
+			if r.Error != nil {
+				codes[r.Error.Code] = struct{}{}
 			}
 		}
-		return false
+		return codes
 	}
 
 	var resp rpcResponse
 	if err := sonic.Unmarshal(trimmed, &resp); err != nil {
 		log.Error("failed to unmarshal response, err ", err)
-		return false
+		return nil
 	}
-	return resp.Error != nil && resp.Error.Code == code
+	if resp.Error != nil {
+		codes[resp.Error.Code] = struct{}{}
+	}
+	return codes
 }
 
 func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *protocol.Request) *types.RequestContext {
@@ -628,7 +642,7 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			log.Error("failed to unmarshal params", err)
 			continue
 		}
-		log.Debug("ParseBlockContext", log.Any("params", arr), log.Any("method", value.Method))
+		log.Debug("ParseBlockContext", log.Any("method", value.Method), log.Any("params_count", len(arr)))
 		if len(arr) <= 0 {
 			continue
 		}

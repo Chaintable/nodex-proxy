@@ -226,7 +226,7 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 				return ctx, c, processData
 			}
 			c.Request.SetBody(rawBytes)
-			log.Info("getLatestBlock", log.Any("request", string(rawBytes)))
+			log.Debug("getLatestBlock request rewritten", log.Any("request_body_size", len(rawBytes)))
 
 		} else {
 			var respObj *jsonrpc.ResponseObject
