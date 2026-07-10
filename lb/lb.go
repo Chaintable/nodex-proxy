@@ -366,10 +366,10 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 
 	// First attempt with state node
 	lb.attemptRequest(ctx, c, requestContext, targetNode)
-	// log codde and response body
-	log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body", string(c.Response.Body())))
+	responseBody := c.Response.Body()
+	log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body_size", len(responseBody)))
 
-	responseErrorCodes := lb.parseRPCErrorCodes(c.Response.Body())
+	responseErrorCodes := lb.parseRPCErrorCodes(responseBody)
 
 	// Check if response contains error code -39006
 	if lb.shouldRetryWithArchive(requestContext, responseErrorCodes) {
@@ -642,7 +642,7 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			log.Error("failed to unmarshal params", err)
 			continue
 		}
-		log.Debug("ParseBlockContext", log.Any("params", arr), log.Any("method", value.Method))
+		log.Debug("ParseBlockContext", log.Any("method", value.Method), log.Any("params_count", len(arr)))
 		if len(arr) <= 0 {
 			continue
 		}
