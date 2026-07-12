@@ -54,6 +54,7 @@ type LoadBalancer struct {
 	postProcessorsHertz types.PostProcessorProcessorsHertz
 	healthChecker       *NodeHealthChecker
 	chainVersionRouter  *ChainVersionRouter
+	nodeGens            *nodeGenerations
 }
 
 type jrpcxContextKeyType int
@@ -126,6 +127,7 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		postProcessorsHertz: jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
 		healthChecker:       NewNodeHealthChecker(healthCheckTimeout, maxWaitTime),
 		chainVersionRouter:  NewChainVersionRouter(),
+		nodeGens:            newNodeGenerations(),
 	}
 }
 
@@ -141,8 +143,12 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 
 			switch changeType {
 			case etcd.EVENT_PUT:
+				// Each discovery event bumps the node's generation; the
+				// health check below only publishes its result if no newer
+				// PUT/DELETE arrived while it ran.
+				gen := lb.nodeGens.Bump(chainId, tempNode.NodeKey, nil)
 				// Perform health check in background goroutine
-				go func(chainId string, role discovery.NodeType, node *discovery.TargetNode) {
+				go func(chainId string, role discovery.NodeType, node *discovery.TargetNode, gen uint64) {
 					log.Info("performing health check for new node",
 						log.Any("node_key", node.NodeKey),
 						log.Any("address", fmt.Sprintf("%s:%d", node.Address, node.Port)),
@@ -158,13 +164,22 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 						return
 					}
 
-					log.Info("node health check passed, adding to pool",
+					added := lb.nodeGens.ApplyIfCurrent(chainId, node.NodeKey, gen, func() {
+						_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
+					})
+					if !added {
+						log.Info("discarding stale health check result, node was updated or removed during check",
+							log.Any("node_key", node.NodeKey),
+							log.Any("address", targetNode.Addr()),
+							log.Any("chain_id", chainId))
+						return
+					}
+
+					log.Info("node health check passed, added to pool",
 						log.Any("node_key", node.NodeKey),
 						log.Any("address", targetNode.Addr()),
 						log.Any("chain_id", chainId))
-
-					_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
-				}(chainId, role, tempNode)
+				}(chainId, role, tempNode, gen)
 
 			case etcd.EVENT_DELETE:
 				log.Info("removing node from pool",
@@ -177,7 +192,12 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 					continue
 				}
 				targetNode.SetState(tempNode.StateType)
-				_ = lb.NodeSelector.RemoveNode(lb.ctx, chainId, role, targetNode)
+				// Bump inside the same lock as the removal so an in-flight
+				// health check can neither re-add the node just before nor
+				// just after this delete is applied.
+				lb.nodeGens.Bump(chainId, tempNode.NodeKey, func() {
+					_ = lb.NodeSelector.RemoveNode(lb.ctx, chainId, role, targetNode)
+				})
 			}
 
 		case chainHeight := <-lb.heightChannel:

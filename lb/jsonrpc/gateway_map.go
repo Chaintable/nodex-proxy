@@ -43,11 +43,14 @@ func (g *gatewayStrategy) GetWeightForChain(chainId string) (map[string]int, boo
 	defer g.RUnlock()
 
 	nodes, exists := g.weightMap[chainId]
-	if !exists {
-		// return empty map if not exists
-		nodes = make(map[string]int)
+	// Always return a copy: callers (e.g. selectors on the request hot path)
+	// must never share the internal map, or concurrent reads/writes crash the
+	// process with a fatal concurrent map error.
+	copied := make(map[string]int, len(nodes))
+	for k, v := range nodes {
+		copied[k] = v
 	}
-	return nodes, exists
+	return copied, exists
 }
 
 func (g *gatewayStrategy) GetWeightForNode(chainId string, nodeId string) (int, bool) {

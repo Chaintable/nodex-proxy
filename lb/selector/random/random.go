@@ -69,17 +69,19 @@ func (r *Random) GetNode(ctx *types.RequestContext, requestKey string) (*lbnode.
 	if r.GatewayStrategy != nil {
 		weights, _ = r.GatewayStrategy.GetWeightForChain(chainId)
 	}
+	// Read-only lookup with a default: the weights map must never be written
+	// here — request handlers run concurrently and a shared map would crash
+	// the process on concurrent writes.
+	nodeWeight := func(key string) int {
+		if weight, exists := weights[key]; exists {
+			return weight
+		}
+		return types.DefaultWeight
+	}
 
 	weightSum := 0
 	for _, node := range nodes {
-		weight, exists := weights[node.Key()]
-		if !exists {
-			// if not exists in gateway, set default weight
-			weights[node.Key()] = types.DefaultWeight
-			weightSum += types.DefaultWeight
-		} else {
-			weightSum += weight
-		}
+		weightSum += nodeWeight(node.Key())
 	}
 
 	if weightSum == 0 {
@@ -91,7 +93,7 @@ func (r *Random) GetNode(ctx *types.RequestContext, requestKey string) (*lbnode.
 	targetWeight := utils.RangeRandom(0, int64(weightSum))
 	curWeight := 0
 	for _, node := range nodes {
-		curWeight += weights[node.Key()]
+		curWeight += nodeWeight(node.Key())
 		if int64(curWeight) >= targetWeight {
 			finalNode := node.Clone()
 			return finalNode, nil

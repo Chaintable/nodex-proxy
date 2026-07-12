@@ -3,6 +3,8 @@ package etcd
 import (
 	"testing"
 
+	"github.com/Chaintable/nodex-proxy/discovery"
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -352,4 +354,65 @@ func TestNormalizeMultiVersionChainID_Integration(t *testing.T) {
 			assert.Equal(t, tt.normalizedID, normalized)
 		})
 	}
+}
+
+func newTestDiscover() *Discover {
+	log.InitLogger("error")
+	return &Discover{
+		quit:           make(chan struct{}),
+		keyPrefix:      "",
+		knownKeys:      make(map[string][]byte),
+		nodeChannel:    make(chan *discovery.TargetNode, 16),
+		heightChan:     make(chan *discovery.ChainHeight, 16),
+		gatewayChannel: make(chan *discovery.Gateway, 16),
+		mirrorChannel:  make(chan *discovery.MirrorTarget, 16),
+		versionChannel: make(chan *discovery.ChainVersion, 16),
+	}
+}
+
+func TestDispatchPutRecordsKnownKeys(t *testing.T) {
+	r := newTestDiscover()
+
+	r.dispatchPut("1/nodes/n1", []byte(`{"address":"10.0.0.1","port":8545,"nodeType":2,"stateType":1}`))
+
+	node := <-r.nodeChannel
+	assert.Equal(t, "1", node.ChainId)
+	assert.Equal(t, "n1", node.NodeKey)
+	assert.Equal(t, EVENT_PUT, node.ChangeType)
+	assert.Contains(t, r.knownKeys, "1/nodes/n1")
+
+	// Unparseable payloads are not delivered and must not be tracked.
+	r.dispatchPut("1/nodes/bad", []byte(`{not json`))
+	assert.NotContains(t, r.knownKeys, "1/nodes/bad")
+	assert.Empty(t, r.nodeChannel)
+}
+
+// A DELETE without PrevKV must fall back to the last value seen for the key
+// so consumers still learn the node's type and source.
+func TestDispatchDeletePrevValueFallback(t *testing.T) {
+	r := newTestDiscover()
+
+	r.dispatchPut("1/nodes/n1", []byte(`{"address":"10.0.0.1","port":8545,"nodeType":2,"stateType":1}`))
+	<-r.nodeChannel
+
+	r.dispatchDelete("1/nodes/n1", nil)
+
+	node := <-r.nodeChannel
+	assert.Equal(t, EVENT_DELETE, node.ChangeType)
+	assert.Equal(t, discovery.NodeType(2), node.NodeType)
+	assert.Equal(t, "10.0.0.1", node.Address)
+	assert.NotContains(t, r.knownKeys, "1/nodes/n1")
+}
+
+func TestDispatchDeleteNativeNode(t *testing.T) {
+	r := newTestDiscover()
+
+	r.dispatchPut("1/nativeNodes/n1", []byte(`{"address":"10.0.0.2","port":8545,"nodeType":1,"stateType":1}`))
+	put := <-r.nodeChannel
+	assert.Equal(t, "native", put.Source)
+
+	r.dispatchDelete("1/nativeNodes/n1", nil)
+	del := <-r.nodeChannel
+	assert.Equal(t, EVENT_DELETE, del.ChangeType)
+	assert.Equal(t, "native", del.Source)
 }
