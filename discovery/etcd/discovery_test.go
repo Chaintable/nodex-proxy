@@ -1,11 +1,16 @@
 package etcd
 
 import (
+	"context"
+	"sync"
 	"testing"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/stretchr/testify/assert"
+	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func TestNormalizeMultiVersionChainID(t *testing.T) {
@@ -415,4 +420,134 @@ func TestDispatchDeleteNativeNode(t *testing.T) {
 	del := <-r.nodeChannel
 	assert.Equal(t, EVENT_DELETE, del.ChangeType)
 	assert.Equal(t, "native", del.Source)
+}
+
+// ---- fakes for watch/resync tests ----
+
+type fakeKV struct {
+	clientv3.KV
+	resp  *clientv3.GetResponse
+	err   error
+	calls int
+}
+
+func (f *fakeKV) Get(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+	f.calls++
+	return f.resp, f.err
+}
+
+// fakeWatcher records the start revision of each Watch call and hands out
+// the prepared channels in order; once they are exhausted it closes quit so
+// watchConfig exits.
+type fakeWatcher struct {
+	clientv3.Watcher
+	d     *Discover
+	once  sync.Once
+	revs  []int64
+	chans []clientv3.WatchChan
+}
+
+func (f *fakeWatcher) Watch(ctx context.Context, key string, opts ...clientv3.OpOption) clientv3.WatchChan {
+	op := clientv3.OpGet(key, opts...)
+	f.revs = append(f.revs, op.Rev())
+	i := len(f.revs) - 1
+	if i >= len(f.chans) {
+		f.once.Do(func() { close(f.d.quit) })
+		return make(chan clientv3.WatchResponse)
+	}
+	return f.chans[i]
+}
+
+// A transient watch error must resume from lastProcessed+1 (etcd replays
+// missed events) and must NOT consult the KV to jump to a newer revision.
+func TestWatchResumesFromLastProcessedPlusOne(t *testing.T) {
+	r := newTestDiscover()
+	r.watchRevision = 10
+
+	ch1 := make(chan clientv3.WatchResponse, 1)
+	ch1 <- clientv3.WatchResponse{
+		Header: pb.ResponseHeader{Revision: 12},
+		Events: []*clientv3.Event{{
+			Type: clientv3.EventTypePut,
+			Kv:   &mvccpb.KeyValue{Key: []byte("1/nodes/n1"), Value: []byte(`{"address":"10.0.0.1","port":8545,"nodeType":1,"stateType":1}`)},
+		}},
+	}
+	close(ch1) // transient disconnect after one delivered batch
+
+	kv := &fakeKV{}
+	fw := &fakeWatcher{d: r, chans: []clientv3.WatchChan{ch1}}
+	r.kv = kv
+	r.watcher = fw
+
+	r.watchConfig(context.Background())
+
+	// First watch from 11; after processing the batch at revision 12 the
+	// reconnect must start at 13.
+	assert.Equal(t, []int64{11, 13}, fw.revs)
+	assert.Equal(t, 0, kv.calls, "plain disconnects must not trigger a snapshot Get")
+
+	node := <-r.nodeChannel
+	assert.Equal(t, "n1", node.NodeKey)
+	assert.Equal(t, EVENT_PUT, node.ChangeType)
+}
+
+// Compaction cannot be replayed: it must trigger a full snapshot resync that
+// synthesizes DELETEs for vanished keys, re-dispatches changed keys, skips
+// unchanged keys, and resumes watching from snapshotRevision+1.
+func TestWatchResyncAfterCompaction(t *testing.T) {
+	r := newTestDiscover()
+	r.watchRevision = 10
+	unchanged := []byte(`{"address":"10.0.0.1","port":8545,"nodeType":2,"stateType":1}`)
+	r.knownKeys["1/nodes/n1"] = unchanged
+	r.knownKeys["1/nodes/n2"] = []byte(`{"address":"10.0.0.2","port":8545,"nodeType":1,"stateType":1}`)
+
+	ch1 := make(chan clientv3.WatchResponse, 1)
+	ch1 <- clientv3.WatchResponse{CompactRevision: 42}
+
+	// Snapshot after the outage: n1 unchanged, n2 vanished, n3 new.
+	kv := &fakeKV{resp: &clientv3.GetResponse{
+		Header: &pb.ResponseHeader{Revision: 50},
+		Kvs: []*mvccpb.KeyValue{
+			{Key: []byte("1/nodes/n1"), Value: unchanged},
+			{Key: []byte("1/nodes/n3"), Value: []byte(`{"address":"10.0.0.3","port":8545,"nodeType":1,"stateType":1}`)},
+		},
+	}}
+	fw := &fakeWatcher{d: r, chans: []clientv3.WatchChan{ch1}}
+	r.kv = kv
+	r.watcher = fw
+
+	r.watchConfig(context.Background())
+
+	assert.Equal(t, []int64{11, 51}, fw.revs, "must resume from snapshotRevision+1 after resync")
+	assert.Equal(t, 1, kv.calls)
+
+	got := map[string]int{}
+	for len(r.nodeChannel) > 0 {
+		n := <-r.nodeChannel
+		got[n.NodeKey] = n.ChangeType
+	}
+	assert.Equal(t, map[string]int{"n2": EVENT_DELETE, "n3": EVENT_PUT}, got,
+		"n2 deleted, n3 added, unchanged n1 not re-dispatched")
+	assert.NotContains(t, r.knownKeys, "1/nodes/n2")
+	assert.Contains(t, r.knownKeys, "1/nodes/n3")
+}
+
+// A failed resync Get must keep the old revision and retry instead of
+// losing state.
+func TestWatchResyncGetFailureKeepsRevision(t *testing.T) {
+	r := newTestDiscover()
+	r.watchRevision = 10
+
+	ch1 := make(chan clientv3.WatchResponse, 1)
+	ch1 <- clientv3.WatchResponse{CompactRevision: 42}
+	kv := &fakeKV{err: assert.AnError}
+	fw := &fakeWatcher{d: r, chans: []clientv3.WatchChan{ch1}}
+	r.kv = kv
+	r.watcher = fw
+
+	r.watchConfig(context.Background())
+
+	// Resync failed, so the next watch still resumes from the old revision.
+	assert.Equal(t, []int64{11, 11}, fw.revs)
+	assert.Equal(t, int64(10), r.watchRevision)
 }

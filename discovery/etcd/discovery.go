@@ -1,6 +1,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,11 @@ import (
 type Discover struct {
 	etcdClient  *clientv3.Client
 	watchCancel context.CancelFunc
+
+	// kv and watcher default to etcdClient; they are interfaces so tests can
+	// inject fakes for the watch/resync logic.
+	kv      clientv3.KV
+	watcher clientv3.Watcher
 
 	quit chan struct{}
 
@@ -65,6 +71,8 @@ func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discov
 	refresher := &Discover{
 		etcdClient:  etcdCli,
 		watchCancel: cancel,
+		kv:          etcdCli,
+		watcher:     etcdCli,
 		quit:        make(chan struct{}),
 		keyPrefix:   keyPrefix,
 		knownKeys:   make(map[string][]byte),
@@ -90,7 +98,7 @@ func (r *Discover) Close() error {
 func (r *Discover) Init(ctx context.Context) (chan *discovery.TargetNode, <-chan *discovery.ChainHeight, <-chan *discovery.Gateway, <-chan *discovery.MirrorTarget, <-chan *discovery.ChainVersion, error) {
 	// Initial request to get the current value of the key
 
-	resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
+	resp, err := r.kv.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
 	log.Info("get key resp", log.Any("resp", resp), log.Any("key", r.keyPrefix))
 	if err != nil {
 		log.Error("failed to get initial value", err)
@@ -121,7 +129,7 @@ func (r *Discover) watchConfig(ctx context.Context) {
 		// Resume from the revision right after the last one we processed so
 		// etcd replays everything missed during a disconnect; skipping ahead
 		// to the latest revision would silently drop PUT/DELETE events.
-		watchChan := r.etcdClient.Watch(ctx, r.keyPrefix, clientv3.WithPrefix(), clientv3.WithPrevKV(), clientv3.WithRev(r.watchRevision+1))
+		watchChan := r.watcher.Watch(ctx, r.keyPrefix, clientv3.WithPrefix(), clientv3.WithPrevKV(), clientv3.WithRev(r.watchRevision+1))
 		err := r.processWatchEvents(ctx, watchChan)
 		if err == nil {
 			return // quit 信号触发时退出
@@ -150,9 +158,11 @@ var errWatchCompacted = errors.New("watch revision compacted")
 
 // resync reconciles local state with a fresh snapshot: it synthesizes
 // DELETE events for known keys that disappeared while the watch was broken
-// and re-dispatches every live key as a PUT (consumers upsert idempotently).
+// and re-dispatches keys whose value changed. Unchanged keys are skipped so
+// a resync does not flood consumers (every replayed node PUT would trigger
+// a fresh health check).
 func (r *Discover) resync(ctx context.Context) error {
-	resp, err := r.etcdClient.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
+	resp, err := r.kv.Get(ctx, r.keyPrefix, clientv3.WithPrefix())
 	if err != nil {
 		return err
 	}
@@ -168,7 +178,11 @@ func (r *Discover) resync(ctx context.Context) error {
 		}
 	}
 	for _, kv := range resp.Kvs {
-		r.dispatchPut(string(kv.Key), kv.Value)
+		key := string(kv.Key)
+		if lastValue, ok := r.knownKeys[key]; ok && bytes.Equal(lastValue, kv.Value) {
+			continue
+		}
+		r.dispatchPut(key, kv.Value)
 	}
 
 	r.watchRevision = resp.Header.Revision
