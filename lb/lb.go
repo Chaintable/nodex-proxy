@@ -54,6 +54,7 @@ type LoadBalancer struct {
 	postProcessorsHertz types.PostProcessorProcessorsHertz
 	healthChecker       *NodeHealthChecker
 	chainVersionRouter  *ChainVersionRouter
+	nodeGens            *nodeGenerations
 }
 
 type jrpcxContextKeyType int
@@ -126,6 +127,7 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		postProcessorsHertz: jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
 		healthChecker:       NewNodeHealthChecker(healthCheckTimeout, maxWaitTime),
 		chainVersionRouter:  NewChainVersionRouter(),
+		nodeGens:            newNodeGenerations(),
 	}
 }
 
@@ -139,10 +141,20 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 			role := tempNode.NodeType
 			changeType := tempNode.ChangeType
 
+			nodeId := nodeIdentity{
+				chainId: chainId,
+				nodeKey: tempNode.NodeKey,
+				native:  tempNode.Source == "native",
+			}
+
 			switch changeType {
 			case etcd.EVENT_PUT:
+				// Each discovery event bumps the node's generation; the
+				// health check below only publishes its result if no newer
+				// PUT/DELETE arrived while it ran.
+				gen := lb.nodeGens.Bump(nodeId)
 				// Perform health check in background goroutine
-				go func(chainId string, role discovery.NodeType, node *discovery.TargetNode) {
+				go func(nodeId nodeIdentity, chainId string, role discovery.NodeType, node *discovery.TargetNode, gen uint64) {
 					log.Info("performing health check for new node",
 						log.Any("node_key", node.NodeKey),
 						log.Any("address", fmt.Sprintf("%s:%d", node.Address, node.Port)),
@@ -158,19 +170,33 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 						return
 					}
 
-					log.Info("node health check passed, adding to pool",
+					added := lb.nodeGens.ApplyIfCurrent(nodeId, gen, func() {
+						_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
+					})
+					if !added {
+						log.Info("discarding stale health check result, node was updated or removed during check",
+							log.Any("node_key", node.NodeKey),
+							log.Any("address", targetNode.Addr()),
+							log.Any("chain_id", chainId))
+						return
+					}
+
+					log.Info("node health check passed, added to pool",
 						log.Any("node_key", node.NodeKey),
 						log.Any("address", targetNode.Addr()),
 						log.Any("chain_id", chainId))
-
-					_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, targetNode)
-				}(chainId, role, tempNode)
+				}(nodeId, chainId, role, tempNode, gen)
 
 			case etcd.EVENT_DELETE:
 				log.Info("removing node from pool",
 					log.Any("node_key", tempNode.NodeKey),
 					log.Any("address", fmt.Sprintf("%s:%d", tempNode.Address, tempNode.Port)),
 					log.Any("chain_id", chainId))
+				// Invalidate before anything below can fail: once forgotten,
+				// no in-flight health check can re-add the node, and the only
+				// path that could re-insert it is a later PUT, which this
+				// serial event loop processes after the removal.
+				lb.nodeGens.Forget(nodeId)
 				targetNode, err := lbnode.New(tempNode.NodeKey, tempNode.Address, tempNode.Port, types.DefaultWeight, role, lbnode.WithSource(tempNode.Source))
 				if err != nil {
 					log.Error("failed to create node", err)

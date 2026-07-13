@@ -142,21 +142,13 @@ func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig,
 			IdleConnTimeout:     90 * time.Second,
 		},
 	}
-	doMirrorRequest := func(c *app.RequestContext, processData *types.RequestContext, target string) {
-		mirrorRequest, err := http.NewRequest(string(c.Method()), target, bytes.NewReader(processData.RawRequestBody))
+	doMirrorRequest := func(method string, header http.Header, body []byte, target string) {
+		mirrorRequest, err := http.NewRequest(method, target, bytes.NewReader(body))
 		if err != nil {
 			log.Error("mirror request creation error", err, log.Any("target", target))
 			return
 		}
-		mirrorRequest.Header = make(http.Header)
-		c.Request.Header.VisitAll(func(key, value []byte) {
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, key)
-			valueCopy := make([]byte, len(value))
-			copy(valueCopy, value)
-
-			mirrorRequest.Header[string(keyCopy)] = []string{string(valueCopy)}
-		})
+		mirrorRequest.Header = header.Clone()
 		mirrorRequest.Host = types.MirrorRequestHost
 
 		resp, err := httpClient.Do(mirrorRequest)
@@ -170,12 +162,28 @@ func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig,
 	}
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
 		mirrorURLs := mirrorMap.GetMirrorURLs(processData.ChainId)
+		if len(mirrorURLs) == 0 {
+			return ctx, c, processData
+		}
+
+		// Snapshot method/headers/body on the handler goroutine: c and
+		// processData.RawRequestBody alias pooled hertz buffers that are
+		// recycled for the next request once the handler returns, so the
+		// async mirror goroutines must only ever see independent copies.
+		method := string(c.Method())
+		header := make(http.Header)
+		c.Request.Header.VisitAll(func(key, value []byte) {
+			header.Add(string(key), string(value))
+		})
+		body := make([]byte, len(processData.RawRequestBody))
+		copy(body, processData.RawRequestBody)
+		chainId := processData.ChainId
 
 		for _, url := range mirrorURLs {
-			if !mirrorLimiter.Allow(processData.ChainId, url) {
+			if !mirrorLimiter.Allow(chainId, url) {
 				continue
 			}
-			go doMirrorRequest(c, processData, url)
+			go doMirrorRequest(method, header, body, url)
 		}
 
 		return ctx, c, processData
