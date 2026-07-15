@@ -126,6 +126,11 @@ etcd_endpoints:
   - "http://127.0.0.1:2379"
 log_level: "info"
 
+# 可选；空列表表示关闭用量上报。
+usage:
+  kafka_brokers:
+    - "kafka-1:9092"
+
 proxy_config:
   service_name: "jrpcx"
   native_node_url: "http://127.0.0.1:8545"
@@ -134,6 +139,12 @@ proxy_config:
   node_select_strategy: "random"       # "random" 或 "round_robin"
   etcd_prefix: ""
 ```
+
+开启后，RPC 请求耗时会在本地按 `client-id` 和基础 chain ID 聚合，每 30 秒写入固定的
+Kafka Topic `leafage-usage`。缺失或空白的 `client-id` 统一记为 `unknown`。发送采用
+best-effort 语义：优雅退出时会发送最后一批内存数据，但进程崩溃或 Kafka 异常时允许丢失。
+为限制不可信 Header 占用的内存，超过 256 字节的客户端 ID，以及单个窗口中超过
+100,000 个聚合键后出现的新键会被丢弃，并通过 Prometheus 指标计数。
 
 ### 处理流水线
 

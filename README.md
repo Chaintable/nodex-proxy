@@ -127,6 +127,11 @@ etcd_endpoints:
   - "http://127.0.0.1:2379"
 log_level: "info"
 
+# Optional; an empty list disables usage reporting.
+usage:
+  kafka_brokers:
+    - "kafka-1:9092"
+
 proxy_config:
   service_name: "jrpcx"
   native_node_url: "http://127.0.0.1:8545"
@@ -135,6 +140,14 @@ proxy_config:
   node_select_strategy: "random"       # "random" or "round_robin"
   etcd_prefix: ""
 ```
+
+When enabled, RPC duration is aggregated in memory by `client-id` and base
+chain ID and written to the fixed `leafage-usage` Kafka topic every 30 seconds.
+A missing or blank `client-id` is reported as `unknown`. Delivery is
+best-effort: the final in-memory batch is sent during graceful shutdown, but
+data can be lost on process crashes or Kafka failures. To bound memory exposed
+to untrusted headers, client IDs over 256 bytes and new aggregation keys beyond
+100,000 in one window are discarded and counted in Prometheus metrics.
 
 ### Processor Pipeline
 

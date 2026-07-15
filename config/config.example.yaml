@@ -10,6 +10,15 @@ etcd_endpoints:
   - "http://127.0.0.1:2379"
 log_level: "info"  # debug, info, warn, error
 
+# Optional usage reporting. Leave kafka_brokers empty to disable it. When
+# enabled, usage is aggregated by client-id and base chain ID and sent to the
+# fixed leafage-usage topic at least every 30 seconds.
+usage:
+  kafka_brokers: []
+  # kafka_brokers:
+  #   - "kafka-1:9092"
+  #   - "kafka-2:9092"
+
 proxy_config:
   service_name: "jrpcx"
   enable_pprof: false

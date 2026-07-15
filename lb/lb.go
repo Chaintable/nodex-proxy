@@ -309,6 +309,22 @@ func splitChainIdentifier(chainID string) (string, string, string) {
 	return normalizeChainID(base), uuid, trimmed
 }
 
+// ParseBaseChainID returns the numeric base chain ID used by process-wide
+// consumers such as usage reporting. Version suffixes are discarded and hex
+// chain IDs are normalized in the same way as RPC routing.
+func ParseBaseChainID(chainID string) (int64, bool) {
+	baseChainID, _, _ := splitChainIdentifier(chainID)
+	if baseChainID == "" {
+		return 0, false
+	}
+
+	numericChainID, err := strconv.ParseInt(baseChainID, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return numericChainID, true
+}
+
 // func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request, chainID string) {
 func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, chainID string) {
 	requestContext := lb.generateRequestContext(ctx, &c.Request)
