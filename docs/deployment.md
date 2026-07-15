@@ -52,12 +52,13 @@ proxy_config:                  # proxy configuration (see config.example.yaml)
 ```
 
 When `usage.kafka_brokers` is non-empty, RPC duration is aggregated in memory
-by `client-id` and base chain ID, then written every 30 seconds to the fixed
-`leafage-usage` topic. Missing or blank client IDs are reported as `unknown`.
-Usage delivery is best-effort; graceful shutdown sends the final batch, while
-process crashes and Kafka failures may lose data. The topic must already exist.
-Client IDs over 256 bytes and new aggregation keys beyond 100,000 per window
-are discarded to bound memory use; see `jrpcx_usage_discarded_requests_total`.
+by `client-id` and base chain ID, then written to the fixed `leafage-usage`
+topic when 10,000 aggregation keys accumulate or after at most 30 seconds.
+Missing or blank client IDs are reported as `unknown`.
+`jrpcx_usage_aggregation_keys` exposes the current in-memory key count,
+including batches being written. Usage
+delivery is best-effort; graceful shutdown sends the final batch, while process
+crashes and Kafka failures may lose data. The topic must already exist.
 
 ### CLI Flags
 

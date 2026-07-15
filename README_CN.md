@@ -140,11 +140,11 @@ proxy_config:
   etcd_prefix: ""
 ```
 
-开启后，RPC 请求耗时会在本地按 `client-id` 和基础 chain ID 聚合，每 30 秒写入固定的
-Kafka Topic `leafage-usage`。缺失或空白的 `client-id` 统一记为 `unknown`。发送采用
-best-effort 语义：优雅退出时会发送最后一批内存数据，但进程崩溃或 Kafka 异常时允许丢失。
-为限制不可信 Header 占用的内存，超过 256 字节的客户端 ID，以及单个窗口中超过
-100,000 个聚合键后出现的新键会被丢弃，并通过 Prometheus 指标计数。
+开启后，RPC 请求耗时会在本地按 `client-id` 和基础 chain ID 聚合，达到 10,000 个聚合键
+时立即写入固定的 Kafka Topic `leafage-usage`，最长刷出间隔为 30 秒。缺失或空白的
+`client-id` 统一记为 `unknown`。`jrpcx_usage_aggregation_keys` 指标记录当前内存中的
+聚合键数量，包括正在写入 Kafka 的批次。发送采用 best-effort 语义：优雅退出时会发送
+最后一批内存数据，但进程崩溃或 Kafka 异常时允许丢失。
 
 ### 处理流水线
 

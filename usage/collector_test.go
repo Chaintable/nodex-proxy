@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/lib/log"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,19 +22,28 @@ type fakeProducer struct {
 	batches   [][]Record
 	writeErr  error
 	writeCall chan struct{}
+	writeWait chan struct{}
 	closed    bool
 }
 
-func (p *fakeProducer) Write(_ context.Context, records []Record) error {
+func (p *fakeProducer) Write(ctx context.Context, records []Record) error {
 	p.mu.Lock()
 	copyOfRecords := append([]Record(nil), records...)
 	p.batches = append(p.batches, copyOfRecords)
 	err := p.writeErr
+	wait := p.writeWait
 	p.mu.Unlock()
 	if p.writeCall != nil {
 		select {
 		case p.writeCall <- struct{}{}:
 		default:
+		}
+	}
+	if wait != nil {
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	return err
@@ -59,10 +69,9 @@ func (p *fakeProducer) snapshot() ([][]Record, bool) {
 func testCollector(producer Producer, interval time.Duration) *Collector {
 	var nextID atomic.Int64
 	return newCollector(producer, collectorOptions{
-		interval:         interval,
-		timeout:          time.Second,
-		maxClientIDBytes: MaxClientIDBytes,
-		maxKeys:          MaxAggregationKeys,
+		interval:       interval,
+		timeout:        time.Second,
+		flushThreshold: aggregationFlushThreshold,
 		now: func() time.Time {
 			return time.UnixMilli(1783568373000)
 		},
@@ -184,35 +193,70 @@ func TestCollectorConcurrentRecord(t *testing.T) {
 	require.Equal(t, int64(requestCount), total)
 }
 
-func TestCollectorBoundsUntrustedClientCardinality(t *testing.T) {
-	producer := &fakeProducer{}
+func TestCollectorFlushesEarlyAtAggregationThreshold(t *testing.T) {
+	releaseWrite := make(chan struct{})
+	producer := &fakeProducer{
+		writeCall: make(chan struct{}, 1),
+		writeWait: releaseWrite,
+	}
 	collector := newCollector(producer, collectorOptions{
-		interval:         time.Hour,
-		timeout:          time.Second,
-		maxClientIDBytes: 8,
-		maxKeys:          2,
-		now:              time.Now,
-		newID:            func() string { return "id" },
+		interval:       time.Hour,
+		timeout:        time.Second,
+		flushThreshold: 2,
+		now:            time.Now,
+		newID:          func() string { return "id" },
 	})
-	t.Cleanup(func() { _ = collector.Close(context.Background()) })
-
-	collector.Record("too-long-client", 1, time.Millisecond)
 	collector.Record("a", 1, time.Millisecond)
 	collector.Record("b", 1, time.Millisecond)
+
+	select {
+	case <-producer.writeCall:
+	case <-time.After(time.Second):
+		t.Fatal("usage was not flushed after reaching the aggregation threshold")
+	}
+	require.Equal(t, float64(2), testutil.ToFloat64(aggregationKeys),
+		"an in-flight snapshot must remain included in the in-memory key count")
+
+	// The first Kafka write is still blocked. New keys must accumulate in the
+	// next snapshot and trigger another flush instead of being discarded.
 	collector.Record("c", 1, time.Millisecond)
-	collector.Record("a", 1, time.Millisecond)
-	require.NoError(t, collector.flush(context.Background()))
+	collector.Record("d", 1, time.Millisecond)
+	collector.Record("e", 1, time.Millisecond)
+	require.Equal(t, float64(5), testutil.ToFloat64(aggregationKeys))
+	close(releaseWrite)
+
+	select {
+	case <-producer.writeCall:
+	case <-time.After(time.Second):
+		t.Fatal("usage accumulated during a Kafka write was not flushed")
+	}
+
+	require.NoError(t, collector.Close(context.Background()))
+	require.Zero(t, testutil.ToFloat64(aggregationKeys))
 
 	batches, _ := producer.snapshot()
-	require.Len(t, batches, 1)
-	require.Len(t, batches[0], 2)
-	for _, record := range batches[0] {
-		if record.ClientID == "a" {
-			require.Equal(t, int64(2), record.TimeMS)
+	require.Len(t, batches, 2)
+	var clients []string
+	for _, batch := range batches {
+		for _, record := range batch {
+			clients = append(clients, record.ClientID)
 		}
-		require.NotEqual(t, "too-long-client", record.ClientID)
-		require.NotEqual(t, "c", record.ClientID)
 	}
+	require.ElementsMatch(t, []string{"a", "b", "c", "d", "e"}, clients)
+}
+
+func TestCollectorReportsAggregationKeyCount(t *testing.T) {
+	producer := &fakeProducer{}
+	collector := testCollector(producer, time.Hour)
+	t.Cleanup(func() { _ = collector.Close(context.Background()) })
+
+	collector.Record("a", 1, time.Millisecond)
+	collector.Record("a", 1, time.Millisecond)
+	collector.Record("b", 1, time.Millisecond)
+	require.Equal(t, float64(2), testutil.ToFloat64(aggregationKeys))
+
+	require.NoError(t, collector.flush(context.Background()))
+	require.Zero(t, testutil.ToFloat64(aggregationKeys))
 }
 
 type blockingCloseProducer struct {

@@ -12,10 +12,9 @@ import (
 )
 
 const (
-	FlushInterval      = 30 * time.Second
-	MaxClientIDBytes   = 256
-	MaxAggregationKeys = 100_000
-	flushTimeout       = 5 * time.Second
+	FlushInterval             = 30 * time.Second
+	aggregationFlushThreshold = 10_000
+	flushTimeout              = 5 * time.Second
 )
 
 // Producer writes aggregated records to the configured destination.
@@ -30,12 +29,11 @@ type aggregateKey struct {
 }
 
 type collectorOptions struct {
-	interval         time.Duration
-	timeout          time.Duration
-	maxClientIDBytes int
-	maxKeys          int
-	now              func() time.Time
-	newID            func() string
+	interval       time.Duration
+	timeout        time.Duration
+	flushThreshold int
+	now            func() time.Time
+	newID          func() string
 }
 
 // Collector accumulates request duration by client ID and base chain ID. A
@@ -49,6 +47,7 @@ type Collector struct {
 	active   map[aggregateKey]time.Duration
 	closed   bool
 	stop     chan struct{}
+	flushNow chan struct{}
 	loopDone chan struct{}
 
 	closeOnce sync.Once
@@ -58,12 +57,11 @@ type Collector struct {
 // NewCollector starts a usage collector with the production flush settings.
 func NewCollector(producer Producer) *Collector {
 	return newCollector(producer, collectorOptions{
-		interval:         FlushInterval,
-		timeout:          flushTimeout,
-		maxClientIDBytes: MaxClientIDBytes,
-		maxKeys:          MaxAggregationKeys,
-		now:              time.Now,
-		newID:            uuid.NewString,
+		interval:       FlushInterval,
+		timeout:        flushTimeout,
+		flushThreshold: aggregationFlushThreshold,
+		now:            time.Now,
+		newID:          uuid.NewString,
 	})
 }
 
@@ -77,11 +75,8 @@ func newCollector(producer Producer, options collectorOptions) *Collector {
 	if options.timeout <= 0 {
 		options.timeout = flushTimeout
 	}
-	if options.maxClientIDBytes <= 0 {
-		options.maxClientIDBytes = MaxClientIDBytes
-	}
-	if options.maxKeys <= 0 {
-		options.maxKeys = MaxAggregationKeys
+	if options.flushThreshold <= 0 {
+		options.flushThreshold = aggregationFlushThreshold
 	}
 	if options.now == nil {
 		options.now = time.Now
@@ -95,6 +90,7 @@ func newCollector(producer Producer, options collectorOptions) *Collector {
 		options:  options,
 		active:   make(map[aggregateKey]time.Duration),
 		stop:     make(chan struct{}),
+		flushNow: make(chan struct{}, 1),
 		loopDone: make(chan struct{}),
 	}
 	go c.run()
@@ -106,34 +102,39 @@ func (c *Collector) Record(clientID string, chainID int64, duration time.Duratio
 	if duration < 0 {
 		return
 	}
-	clientID = strings.TrimSpace(clientID)
+	rawClientID := clientID
+	clientID = strings.TrimSpace(rawClientID)
 	if clientID == "" {
 		clientID = UnknownClientID
-	} else if len(clientID) > c.options.maxClientIDBytes {
-		discardedRequestsTotal.WithLabelValues("client_id_too_long").Inc()
-		return
-	} else {
-		// TrimSpace may return a small substring backed by the entire original
-		// header. Clone it so an accepted map key retains at most the configured
-		// number of bytes.
+	} else if len(clientID) != len(rawClientID) {
+		// TrimSpace may retain the original header's backing storage. Clone the
+		// trimmed value so the map only owns the actual client ID bytes.
 		clientID = strings.Clone(clientID)
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
 		return
 	}
 	key := aggregateKey{clientID: clientID, chainID: chainID}
 	if accumulated, ok := c.active[key]; ok {
 		c.active[key] = accumulated + duration
-		return
-	}
-	if len(c.active) >= c.options.maxKeys {
-		discardedRequestsTotal.WithLabelValues("aggregation_limit").Inc()
+		c.mu.Unlock()
 		return
 	}
 	c.active[key] = duration
+	keyCount := len(c.active)
+	aggregationKeys.Inc()
+	shouldFlush := keyCount >= c.options.flushThreshold
+	c.mu.Unlock()
+
+	if shouldFlush {
+		select {
+		case c.flushNow <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (c *Collector) run() {
@@ -144,6 +145,10 @@ func (c *Collector) run() {
 	for {
 		select {
 		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), c.options.timeout)
+			_ = c.flush(ctx)
+			cancel()
+		case <-c.flushNow:
 			ctx, cancel := context.WithTimeout(context.Background(), c.options.timeout)
 			_ = c.flush(ctx)
 			cancel()
@@ -175,6 +180,7 @@ func (c *Collector) writeSnapshot(ctx context.Context, snapshot map[aggregateKey
 	if len(snapshot) == 0 {
 		return nil
 	}
+	defer aggregationKeys.Sub(float64(len(snapshot)))
 
 	timestamp := c.options.now().UnixMilli()
 	records := make([]Record, 0, len(snapshot))

@@ -15,14 +15,14 @@ var (
 		Name:      "records_total",
 		Help:      "Number of aggregated usage records by delivery result.",
 	}, []string{"status"})
-	discardedRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	aggregationKeys = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "jrpcx",
 		Subsystem: "usage",
-		Name:      "discarded_requests_total",
-		Help:      "Number of request usage samples discarded before aggregation.",
-	}, []string{"reason"})
+		Name:      "aggregation_keys",
+		Help:      "Current number of client ID and chain ID aggregation keys held in memory, including batches being written.",
+	})
 )
 
 func init() {
-	prometheus.MustRegister(flushTotal, recordsTotal, discardedRequestsTotal)
+	prometheus.MustRegister(flushTotal, recordsTotal, aggregationKeys)
 }

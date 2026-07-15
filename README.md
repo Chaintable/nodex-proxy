@@ -142,12 +142,13 @@ proxy_config:
 ```
 
 When enabled, RPC duration is aggregated in memory by `client-id` and base
-chain ID and written to the fixed `leafage-usage` Kafka topic every 30 seconds.
-A missing or blank `client-id` is reported as `unknown`. Delivery is
-best-effort: the final in-memory batch is sent during graceful shutdown, but
-data can be lost on process crashes or Kafka failures. To bound memory exposed
-to untrusted headers, client IDs over 256 bytes and new aggregation keys beyond
-100,000 in one window are discarded and counted in Prometheus metrics.
+chain ID and written to the fixed `leafage-usage` Kafka topic. A batch is
+flushed as soon as it reaches 10,000 aggregation keys, with a maximum interval
+of 30 seconds. A missing or blank `client-id` is reported as `unknown`.
+`jrpcx_usage_aggregation_keys` reports the current number of aggregation keys
+held in memory, including batches being written. Delivery is best-effort: the
+final in-memory batch is sent during graceful shutdown, but data can be lost on
+process crashes or Kafka failures.
 
 ### Processor Pipeline
 
