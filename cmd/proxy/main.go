@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/Chaintable/nodex-proxy/config"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
@@ -13,6 +14,8 @@ import (
 	"github.com/Chaintable/nodex-proxy/lb"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
+	"github.com/Chaintable/nodex-proxy/types"
+	"github.com/Chaintable/nodex-proxy/usage"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/go-chi/chi/v5"
@@ -21,6 +24,70 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
+
+const (
+	maxUpstreamAttempts   = 3
+	shutdownRequestBuffer = 5 * time.Second
+	maxExitWait           = time.Duration(1<<63 - 1)
+)
+
+type rpcRequestHandler interface {
+	ServeHTTP(context.Context, *app.RequestContext, string)
+}
+
+type usageRecorder interface {
+	Record(string, int64, time.Duration)
+}
+
+func newRPCRequestHandler(handler rpcRequestHandler, recorder usageRecorder) app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		chainID := c.Param("chainId")
+		if recorder == nil {
+			handler.ServeHTTP(ctx, c, chainID)
+			return
+		}
+
+		start := time.Now()
+		clientID := c.Request.Header.Get("client-id")
+		baseChainID, collectUsage := lb.ParseBaseChainID(chainID)
+		defer func() {
+			if collectUsage {
+				recorder.Record(clientID, baseChainID, time.Since(start))
+			}
+		}()
+		handler.ServeHTTP(ctx, c, chainID)
+	}
+}
+
+func gracefulExitWait(proxyConfig *types.Config) time.Duration {
+	if proxyConfig == nil {
+		return shutdownRequestBuffer
+	}
+	maxTimeoutMS := proxyConfig.DefaultRPCTimeout
+	for _, timeoutMS := range proxyConfig.RPCMethodTimeoutConfig {
+		if timeoutMS > maxTimeoutMS {
+			maxTimeoutMS = timeoutMS
+		}
+	}
+	if maxTimeoutMS <= 0 {
+		return shutdownRequestBuffer
+	}
+	maxPerAttemptMS := int64((maxExitWait - shutdownRequestBuffer) / time.Millisecond / maxUpstreamAttempts)
+	perAttemptMS := int64(maxTimeoutMS)
+	for _, overheadMS := range []int{proxyConfig.ConnDialTimeout, proxyConfig.ConnMaxWaitTimeout} {
+		if overheadMS <= 0 {
+			continue
+		}
+		if int64(overheadMS) > maxPerAttemptMS-perAttemptMS {
+			return maxExitWait
+		}
+		perAttemptMS += int64(overheadMS)
+	}
+	if perAttemptMS > maxPerAttemptMS {
+		return maxExitWait
+	}
+	return time.Duration(maxUpstreamAttempts*perAttemptMS)*time.Millisecond + shutdownRequestBuffer
+}
 
 func parseCmdlineAndLoadConfig() config.Config {
 	cmdlineConfig := config.Config{}
@@ -47,6 +114,16 @@ func main() {
 	log.InitLogger(cmdlineAndLoadConfig.LogLevel)
 
 	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
+
+	var usageCollector *usage.Collector
+	if len(cmdlineAndLoadConfig.Usage.KafkaBrokers) > 0 {
+		usageProducer, err := usage.NewKafkaProducer(cmdlineAndLoadConfig.Usage.KafkaBrokers)
+		if err != nil {
+			log.Fatal("failed to initialize usage Kafka producer", err)
+		}
+		usageCollector = usage.NewCollector(usageProducer)
+		log.Info("usage collection enabled", log.Any("topic", usage.Topic))
+	}
 
 	nodeRefresherMap := make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,7 +170,10 @@ func main() {
 		}
 	}()
 
-	h := server.Default(server.WithHostPorts(fmt.Sprintf("0.0.0.0:%s", cmdlineAndLoadConfig.Listen)))
+	h := server.Default(
+		server.WithHostPorts(fmt.Sprintf("0.0.0.0:%s", cmdlineAndLoadConfig.Listen)),
+		server.WithExitWaitTime(gracefulExitWait(cmdlineAndLoadConfig.ProxyConfig)),
+	)
 
 	pprof.Register(h)
 
@@ -142,12 +222,21 @@ func main() {
 	h.GET("/:chainId/getMirrors", handler.GetMirrors)
 	h.GET("/getAllMirrors", handler.GetAllMirrors)
 
-	h.Any("/:chainId", func(ctx context.Context, c *app.RequestContext) {
-		chainId := c.Param("chainId")
-		loadBalancer.ServeHTTP(ctx, c, chainId)
-	})
+	var recorder usageRecorder
+	if usageCollector != nil {
+		recorder = usageCollector
+	}
+	h.Any("/:chainId", newRPCRequestHandler(loadBalancer, recorder))
 
 	h.Spin()
+
+	if usageCollector != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := usageCollector.Close(shutdownCtx); err != nil {
+			log.Error("failed to flush usage records during shutdown", err)
+		}
+		shutdownCancel()
+	}
 
 	for _, refresher := range nodeRefresherMap {
 		refresher.Close()

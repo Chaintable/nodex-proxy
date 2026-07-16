@@ -44,9 +44,18 @@ etcd_endpoints:                # etcd 集群端点
   - "http://etcd2:2379"
   - "http://etcd3:2379"
 log_level: "info"              # debug, info, warn, error
+usage:                         # 可选的用量上报配置
+  kafka_brokers:               # 不配置或留空表示关闭
+    - "kafka-1:9092"
 proxy_config:                  # 代理配置（详见 config.example.yaml）
   ...
 ```
+
+当 `usage.kafka_brokers` 非空时，RPC 请求耗时会在内存中按 `client-id` 和基础 chain ID
+聚合，达到 10,000 个聚合键时立即写入固定的 `leafage-usage` Topic，最长刷出间隔为
+30 秒。缺失或空白的客户端 ID 记为 `unknown`。`jrpcx_usage_aggregation_keys` 指标记录
+当前内存聚合键数量，包括正在写入 Kafka 的批次。用量发送采用 best-effort 语义：优雅退出时会发送最后一批数据，但
+进程崩溃或 Kafka 异常时允许丢失。Topic 需要提前创建。
 
 ### CLI 参数
 

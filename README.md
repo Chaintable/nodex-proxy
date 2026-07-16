@@ -127,6 +127,11 @@ etcd_endpoints:
   - "http://127.0.0.1:2379"
 log_level: "info"
 
+# Optional; an empty list disables usage reporting.
+usage:
+  kafka_brokers:
+    - "kafka-1:9092"
+
 proxy_config:
   service_name: "jrpcx"
   native_node_url: "http://127.0.0.1:8545"
@@ -135,6 +140,15 @@ proxy_config:
   node_select_strategy: "random"       # "random" or "round_robin"
   etcd_prefix: ""
 ```
+
+When enabled, RPC duration is aggregated in memory by `client-id` and base
+chain ID and written to the fixed `leafage-usage` Kafka topic. A batch is
+flushed as soon as it reaches 10,000 aggregation keys, with a maximum interval
+of 30 seconds. A missing or blank `client-id` is reported as `unknown`.
+`jrpcx_usage_aggregation_keys` reports the current number of aggregation keys
+held in memory, including batches being written. Delivery is best-effort: the
+final in-memory batch is sent during graceful shutdown, but data can be lost on
+process crashes or Kafka failures.
 
 ### Processor Pipeline
 

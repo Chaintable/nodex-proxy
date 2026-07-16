@@ -124,6 +124,31 @@ func TestBeforeProcessNodeTypeArchiveHeader(t *testing.T) {
 	}
 }
 
+func TestParseBaseChainID(t *testing.T) {
+	tests := []struct {
+		name      string
+		chainID   string
+		want      int64
+		wantValid bool
+	}{
+		{name: "decimal", chainID: "1", want: 1, wantValid: true},
+		{name: "hex", chainID: "0x38", want: 56, wantValid: true},
+		{name: "versioned", chainID: "1-version-id", want: 1, wantValid: true},
+		{name: "versioned hex", chainID: "0x1-version-id", want: 1, wantValid: true},
+		{name: "spaces", chainID: " 56 ", want: 56, wantValid: true},
+		{name: "non numeric", chainID: "ethereum", wantValid: false},
+		{name: "empty", chainID: "", wantValid: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, valid := ParseBaseChainID(tt.chainID)
+			require.Equal(t, tt.wantValid, valid)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func BenchmarkMarshal(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		var params ejrpc.RequestObject

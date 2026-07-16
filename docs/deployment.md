@@ -44,9 +44,21 @@ etcd_endpoints:                # etcd cluster endpoints
   - "http://etcd2:2379"
   - "http://etcd3:2379"
 log_level: "info"              # debug, info, warn, error
+usage:                         # optional usage reporting
+  kafka_brokers:               # omit or leave empty to disable
+    - "kafka-1:9092"
 proxy_config:                  # proxy configuration (see config.example.yaml)
   ...
 ```
+
+When `usage.kafka_brokers` is non-empty, RPC duration is aggregated in memory
+by `client-id` and base chain ID, then written to the fixed `leafage-usage`
+topic when 10,000 aggregation keys accumulate or after at most 30 seconds.
+Missing or blank client IDs are reported as `unknown`.
+`jrpcx_usage_aggregation_keys` exposes the current in-memory key count,
+including batches being written. Usage
+delivery is best-effort; graceful shutdown sends the final batch, while process
+crashes and Kafka failures may lose data. The topic must already exist.
 
 ### CLI Flags
 
