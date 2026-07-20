@@ -72,13 +72,13 @@ type RequestContext struct {
 	BlockContext     *BlockContext            `json:"block_context"`
 	blockContextFn   func() *BlockContext
 	blockContextDone bool
-	Cached           bool                     `json:"cached"`
-	BaseChainId      string                   `json:"base_chain_id"`
-	ChainUUID        string                   `json:"chain_uuid"`
-	ChainId          string                   `json:"chain_id"`
-	TargetNodeAddr   string                   `json:"target_node_addr"`
-	Archive          bool                     `json:"archive"`
-	Native           bool                     `json:"native"`
+	Cached           bool   `json:"cached"`
+	BaseChainId      string `json:"base_chain_id"`
+	ChainUUID        string `json:"chain_uuid"`
+	ChainId          string `json:"chain_id"`
+	TargetNodeAddr   string `json:"target_node_addr"`
+	Archive          bool   `json:"archive"`
+	Native           bool   `json:"native"`
 }
 
 // SetBlockContextFn installs a lazy block-context parser. Parsing the params
