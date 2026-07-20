@@ -22,6 +22,7 @@ import (
 	"github.com/hertz-contrib/pprof"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/automaxprocs/maxprocs"
 	"go.uber.org/zap"
 )
 
@@ -112,6 +113,14 @@ func parseCmdlineAndLoadConfig() config.Config {
 func main() {
 	cmdlineAndLoadConfig := parseCmdlineAndLoadConfig()
 	log.InitLogger(cmdlineAndLoadConfig.LogLevel)
+
+	// Align GOMAXPROCS with the container CPU quota: on a 1-core cgroup the
+	// default (host core count) makes the scheduler and GC fight the quota.
+	if _, err := maxprocs.Set(maxprocs.Logger(func(format string, args ...interface{}) {
+		log.Info(fmt.Sprintf(format, args...))
+	})); err != nil {
+		log.Error("failed to set GOMAXPROCS from CPU quota", err)
+	}
 
 	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
 

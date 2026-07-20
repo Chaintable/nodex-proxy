@@ -6,8 +6,8 @@ import (
 
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/types"
-	"github.com/go-kit/kit/metrics/prometheus"
 	stdprome "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 const (
@@ -27,168 +27,174 @@ var (
 	methodSourceDappCommonLabelNames = newLabelNames(methodCommonLabelNames, "sourcedapp")
 )
 
+// CommonLabelMetrics carries the per-request common label values. Metrics are
+// recorded through prometheus *Vec.WithLabelValues directly: label values must
+// be passed in the exact order the vector was declared with (common labels
+// first, extra labels after), which avoids the per-call label-map allocation
+// and sort that a name/value API needs.
 type CommonLabelMetrics struct {
-	labelValues []string
+	host         string
+	target       string
+	chainID      string
+	chainVersion string
 }
 
 func NewCommonLabelMetrics(host types.ProcessorHost, target types.ProcessorTarget, chainID, chainVersion string) CommonLabelMetrics {
 	return CommonLabelMetrics{
-		labelValues: []string{
-			"host", string(host),
-			"target", string(target),
-			"chain_id", chainID,
-			"chain_version", chainVersion,
-		},
+		host:         string(host),
+		target:       string(target),
+		chainID:      chainID,
+		chainVersion: chainVersion,
 	}
 }
 
 func (m CommonLabelMetrics) IncrCallsStarted(method jsonrpc.RPCMethod, sourcedapp string) {
-	callsStarted.With(m.labelValues...).With("method", string(method), "sourcedapp", sourcedapp).Add(1)
+	callsStarted.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method), sourcedapp).Inc()
 }
 
 func (m CommonLabelMetrics) IncrCallsFinished(method jsonrpc.RPCMethod) {
-	callsFinished.With(m.labelValues...).With("method", string(method)).Add(1)
+	callsFinished.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Inc()
 }
 
 func (m CommonLabelMetrics) IncrBatchCallsFinished() {
-	batchCallsFinished.With(m.labelValues...).Add(1)
+	batchCallsFinished.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion).Inc()
 }
 
 func (m CommonLabelMetrics) IncrTotalJRPCRequest() {
-	totalJRPCRequest.With(m.labelValues...).Add(1)
+	totalJRPCRequest.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion).Inc()
 }
 
 func (m CommonLabelMetrics) IncrCallsFailed(code jsonrpc.ErrorCode, method jsonrpc.RPCMethod, upstreamRelated bool, reason string, nodeAddr string) {
-	callsFailed.With(m.labelValues...).With(
-		"status_code", strconv.FormatInt(int64(code), 10),
-		"method", string(method),
-		"upstream_related", strconv.FormatBool(upstreamRelated),
-		"reason", reason,
-		"node_addr", nodeAddr,
-	).Add(1)
+	callsFailed.WithLabelValues(
+		m.host, m.target, m.chainID, m.chainVersion,
+		string(method),
+		strconv.FormatInt(int64(code), 10),
+		strconv.FormatBool(upstreamRelated),
+		reason,
+		nodeAddr,
+	).Inc()
 }
 
 func (m CommonLabelMetrics) IncrCallsCacheHits(method jsonrpc.RPCMethod) {
-	callsCacheHits.With(m.labelValues...).With("method", string(method)).Add(1)
+	callsCacheHits.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Inc()
 }
 
 // ObCallsTime observe time cost in milliseconds for a single rpc call.
 func (m CommonLabelMetrics) ObCallsTime(method jsonrpc.RPCMethod, duration time.Duration) {
-	callsTime.With(m.labelValues...).With("method", string(method)).Observe(float64(duration.Milliseconds()))
+	callsTime.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Observe(float64(duration.Milliseconds()))
 }
 
 // ObBatchCallsTime observe time cost in milliseconds for a single rpc call.
 func (m CommonLabelMetrics) ObBatchCallsTime(duration time.Duration) {
-	batchCallsTime.With(m.labelValues...).Observe(float64(duration.Milliseconds()))
+	batchCallsTime.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion).Observe(float64(duration.Milliseconds()))
 }
 
 // ObRequestPayloadSizes observe payload size for a single rpc call.
 func (m CommonLabelMetrics) ObRequestPayloadSizes(method jsonrpc.RPCMethod, size int) {
-	requestPayloadSizes.With(m.labelValues...).With("method", string(method)).Observe(float64(size))
+	requestPayloadSizes.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Observe(float64(size))
 }
 
 // ObResponsePayloadSizes observe payload size for a single rpc call.
 func (m CommonLabelMetrics) ObResponsePayloadSizes(method jsonrpc.RPCMethod, size int) {
-	responsePayloadSizes.With(m.labelValues...).With("method", string(method)).Observe(float64(size))
+	responsePayloadSizes.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Observe(float64(size))
 }
 
 func (m CommonLabelMetrics) IncrInternalFailedRequest() {
-	internalFailedRequest.With(m.labelValues...).Add(1)
+	internalFailedRequest.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion).Inc()
 }
 
 // IncrHTTPStatusCode increments the HTTP status code counter
 func (m CommonLabelMetrics) IncrHTTPStatusCode(statusCode int, method jsonrpc.RPCMethod) {
-	if method != "" {
-		httpStatusCode.With(m.labelValues...).With("method", string(method), "status_code", strconv.Itoa(statusCode)).Add(1)
-	} else {
-		httpStatusCode.With(m.labelValues...).With("method", "batch", "status_code", strconv.Itoa(statusCode)).Add(1)
+	if method == "" {
+		method = "batch"
 	}
+	httpStatusCode.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method), strconv.Itoa(statusCode)).Inc()
 }
 
 var (
-	callsStarted = prometheus.NewCounterFrom(stdprome.CounterOpts{
+	callsStarted = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "calls_started",
 		Help:      "Number of received RPC calls (unique un-batched requests)",
 	}, methodSourceDappCommonLabelNames)
-	callsFinished = prometheus.NewCounterFrom(stdprome.CounterOpts{
+	callsFinished = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "calls_finished",
 		Help:      "Number of processed RPC calls (unique un-batched requests)",
 	}, methodCommonLabelNames)
-	callsCacheHits = prometheus.NewCounterFrom(stdprome.CounterOpts{
+	callsCacheHits = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "calls_cache_hits",
 		Help:      "Number of hit the cache RPC calls (unique un-batched requests)",
 	}, methodCommonLabelNames)
-	callsFailed = prometheus.NewCounterFrom(stdprome.CounterOpts{
+	callsFailed = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "calls_failed",
 		Help:      "Number of failure RPC calls (unique un-batched requests)",
 	}, newLabelNames(methodCommonLabelNames, "status_code", "upstream_related", "reason", "node_addr"))
-	batchCallsFinished = prometheus.NewCounterFrom(stdprome.CounterOpts{
+	batchCallsFinished = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "batch_calls_finished",
 		Help:      "Number of processed RPC batch calls",
 	}, commonLabelNames)
-	callsTime = prometheus.NewHistogramFrom(stdprome.HistogramOpts{
+	callsTime = promauto.NewHistogramVec(stdprome.HistogramOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "calls_time",
 		Help:      "Request duration in milliseconds of RPC calls",
 		Buckets:   []float64{1, 5, 10, 25, 50, 100, 300, 500, 1000, 3000, 5000, 10000},
 	}, methodCommonLabelNames)
-	batchCallsTime = prometheus.NewHistogramFrom(stdprome.HistogramOpts{
+	batchCallsTime = promauto.NewHistogramVec(stdprome.HistogramOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "batch_calls_time",
 		Help:      "Request duration in milliseconds of RPC batch calls",
 		Buckets:   []float64{1, 5, 10, 25, 50, 100, 300, 500, 1000, 3000, 5000, 10000},
 	}, commonLabelNames)
-	totalJRPCRequest = prometheus.NewCounterFrom(stdprome.CounterOpts{
+	totalJRPCRequest = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "request",
 		Help:      "Total request count",
 	}, commonLabelNames)
-	requestPayloadSizes = prometheus.NewHistogramFrom(stdprome.HistogramOpts{
+	requestPayloadSizes = promauto.NewHistogramVec(stdprome.HistogramOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "request_payload_sizes",
 		Help:      "Histogram of RPC request payload sizes",
 		Buckets:   []float64{10, 50, 100, 500, 1_000, 5_000, 10_000, 100_000, 1_000_000},
 	}, methodCommonLabelNames)
-	responsePayloadSizes = prometheus.NewHistogramFrom(stdprome.HistogramOpts{
+	responsePayloadSizes = promauto.NewHistogramVec(stdprome.HistogramOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "response_payload_sizes",
 		Help:      "Histogram of RPC response payload sizes",
 		Buckets:   []float64{10, 50, 100, 500, 1_000, 5_000, 10_000, 100_000, 1_000_000},
 	}, methodCommonLabelNames)
-	internalFailedRequest = prometheus.NewCounterFrom(stdprome.CounterOpts{
+	internalFailedRequest = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "internal_failed_request",
 		Help:      "Number of failed internal requests",
 	}, commonLabelNames)
-	httpStatusCode = prometheus.NewCounterFrom(stdprome.CounterOpts{
+	httpStatusCode = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "http_status_code",
 		Help:      "HTTP status code counter",
 	}, newLabelNames(commonLabelNames, "method", "status_code"))
-	nodeHealthCheckTotal = prometheus.NewCounterFrom(stdprome.CounterOpts{
+	nodeHealthCheckTotal = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "health_check_total",
 		Help:      "Total number of node health checks performed",
 	}, []string{"chain_id", "node_key", "status"})
-	nodeHealthCheckDuration = prometheus.NewHistogramFrom(stdprome.HistogramOpts{
+	nodeHealthCheckDuration = promauto.NewHistogramVec(stdprome.HistogramOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
 		Name:      "health_check_duration_ms",
@@ -199,10 +205,10 @@ var (
 
 // IncrNodeHealthCheckTotal increments the node health check counter
 func IncrNodeHealthCheckTotal(chainID, nodeKey, status string) {
-	nodeHealthCheckTotal.With("chain_id", chainID, "node_key", nodeKey, "status", status).Add(1)
+	nodeHealthCheckTotal.WithLabelValues(chainID, nodeKey, status).Inc()
 }
 
 // ObserveNodeHealthCheckDuration observes the duration of a node health check
 func ObserveNodeHealthCheckDuration(chainID, nodeKey, status string, duration time.Duration) {
-	nodeHealthCheckDuration.With("chain_id", chainID, "node_key", nodeKey, "status", status).Observe(float64(duration.Milliseconds()))
+	nodeHealthCheckDuration.WithLabelValues(chainID, nodeKey, status).Observe(float64(duration.Milliseconds()))
 }

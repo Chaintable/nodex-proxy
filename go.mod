@@ -3,7 +3,6 @@ module github.com/Chaintable/nodex-proxy
 go 1.22.9
 
 require (
-	github.com/andybalholm/brotli v1.1.1
 	github.com/bytedance/sonic v1.12.10
 	github.com/cloudwego/hertz v0.9.6
 	github.com/ethereum/go-ethereum v1.14.11
@@ -23,6 +22,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.32.0
 	go.opentelemetry.io/otel/trace v1.32.0
 	go.uber.org/atomic v1.7.0
+	go.uber.org/automaxprocs v1.5.2
 	go.uber.org/zap v1.19.1
 	golang.org/x/time v0.5.0
 	google.golang.org/grpc v1.67.1

@@ -40,7 +40,7 @@ func (r *RoundRobin) GetNode(ctx *types.RequestContext, requestKey string) (*lbn
 	var best *lbnode.Node
 	total := 0
 	forceNative := requestKey == "native"
-	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId], r.nativeNodes[ctx.ChainId], ctx.Archive, forceNative)
+	nodes := r.pickNodeFunc(ctx.GetBlockContext, r.chainHeight[ctx.ChainId], r.archiveNodes[ctx.ChainId], r.stateNodes[ctx.ChainId], r.nativeNodes[ctx.ChainId], ctx.Archive, forceNative)
 
 	// Log detailed information when no nodes are available after node selection
 	if len(nodes) == 0 {

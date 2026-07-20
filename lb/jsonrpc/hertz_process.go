@@ -250,43 +250,46 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 
 func parseJRPCResponseBodyHertz() types.ProcessorFuncHertz {
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		if c.Response.Body() == nil {
-			if !strings.Contains(c.Response.Header.Get("Content-Type"), "application/json") ||
-				strings.Contains(c.Response.Header.Get("Transfer-Encoding"), "chunked") {
-				return ctx, c, processData
-			}
-			var (
-				body []byte
+		body := c.Response.Body()
+		if len(body) == 0 {
+			return ctx, c, processData
+		}
+		// Media types are case-insensitive (RFC 9110 §8.3.1); ToLower is
+		// alloc-free for the all-lowercase values every known upstream sends.
+		if !strings.Contains(strings.ToLower(c.Response.Header.Get("Content-Type")), "application/json") ||
+			strings.Contains(strings.ToLower(c.Response.Header.Get("Transfer-Encoding")), "chunked") {
+			return ctx, c, processData
+		}
+		processData.ResponseBodySize = len(body)
+		// skip batch jrpc response
+		if jsonrpc.IsBatch(body) {
+			return ctx, c, processData
+		}
+		// A success response carries no "error" member; skip the unmarshal
+		// entirely so the common path stays parse-free.
+		if !jsonrpc.ContainsErrorKey(body) {
+			return ctx, c, processData
+		}
+
+		rawBody := &jsonrpc.RawResponseObject{}
+		if processData.Error = nJson.Unmarshal(body, rawBody); processData.Error != nil {
+			log.Error(
+				"parseJRPCResponseBody error",
+				processData.Error,
+				log.Any("body", body),
+				log.Any("request header", string(c.Response.Header.Header())),
 			)
-			body = c.Response.Body()
-			if len(body) == 0 {
-				return ctx, c, processData
-			}
-			// skip batch jrpc response
-			if jsonrpc.IsBatch(body) {
-				return ctx, c, processData
-			}
+			return ctx, c, processData
+		}
 
-			rawBody := &jsonrpc.RawResponseObject{}
-			if processData.Error = nJson.Unmarshal(body, rawBody); processData.Error != nil {
-				log.Error(
-					"parseJRPCResponseBody error",
-					processData.Error,
-					log.Any("body", body),
-					log.Any("request header", string(c.Response.Header.Header())),
-				)
-			}
-			processData.ResponseBodySize = len(body)
-
-			processData.ResponseBody = &jsonrpc.ResponseObject{
-				Jsonrpc: rawBody.Jsonrpc,
-				Error:   rawBody.Error,
-				Result:  rawBody.Result,
-				ID:      rawBody.ID,
-			}
-			if processData.ResponseBody.Error != nil {
-				processData.Error = processData.ResponseBody.Error
-			}
+		processData.ResponseBody = &jsonrpc.ResponseObject{
+			Jsonrpc: rawBody.Jsonrpc,
+			Error:   rawBody.Error,
+			Result:  rawBody.Result,
+			ID:      rawBody.ID,
+		}
+		if processData.ResponseBody.Error != nil {
+			processData.Error = processData.ResponseBody.Error
 		}
 		return ctx, c, processData
 	}
@@ -294,13 +297,15 @@ func parseJRPCResponseBodyHertz() types.ProcessorFuncHertz {
 
 func logResponseHertz() types.ProcessorFuncHertz {
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		log.Debug("logResponseHertz called",
-			log.Any("method", processData.Method),
-			log.Any("chain_id", processData.ChainId),
-			log.Any("duration_ms", time.Since(processData.Start).Milliseconds()),
-			log.Any("status", c.Response.StatusCode()),
-			log.Any("has_error", processData.ResponseBody != nil && processData.ResponseBody.Error != nil),
-		)
+		if log.DebugEnabled() {
+			log.Debug("logResponseHertz called",
+				log.Any("method", processData.Method),
+				log.Any("chain_id", processData.ChainId),
+				log.Any("duration_ms", time.Since(processData.Start).Milliseconds()),
+				log.Any("status", c.Response.StatusCode()),
+				log.Any("has_error", processData.ResponseBody != nil && processData.ResponseBody.Error != nil),
+			)
+		}
 		if types.DebugInfo.DebugModeEnable() {
 			attributes := append(processData.LogAttributes(), log.MillisDurationAttribute("duration", time.Since(processData.Start)))
 			log.Observe("RPC Call Complete", ctx, attributes...)

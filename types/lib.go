@@ -70,13 +70,39 @@ type RequestContext struct {
 	RequestBodySize  int                      `json:"request_body_size"`
 	ResponseBodySize int                      `json:"response_body_size"`
 	BlockContext     *BlockContext            `json:"block_context"`
-	Cached           bool                     `json:"cached"`
-	BaseChainId      string                   `json:"base_chain_id"`
-	ChainUUID        string                   `json:"chain_uuid"`
-	ChainId          string                   `json:"chain_id"`
-	TargetNodeAddr   string                   `json:"target_node_addr"`
-	Archive          bool                     `json:"archive"`
-	Native           bool                     `json:"native"`
+	blockContextFn   func() *BlockContext
+	blockContextDone bool
+	Cached           bool   `json:"cached"`
+	BaseChainId      string `json:"base_chain_id"`
+	ChainUUID        string `json:"chain_uuid"`
+	ChainId          string `json:"chain_id"`
+	TargetNodeAddr   string `json:"target_node_addr"`
+	Archive          bool   `json:"archive"`
+	Native           bool   `json:"native"`
+}
+
+// SetBlockContextFn installs a lazy block-context parser. Parsing the params
+// is only needed when a node selector actually consults the block context, so
+// the work is deferred until GetBlockContext and memoized.
+func (p *RequestContext) SetBlockContextFn(fn func() *BlockContext) {
+	if p == nil {
+		return
+	}
+	p.blockContextFn = fn
+}
+
+// GetBlockContext returns the block context, invoking the lazy parser at most
+// once. A directly assigned BlockContext takes precedence. Not safe for
+// concurrent use; callers run on the request goroutine.
+func (p *RequestContext) GetBlockContext() *BlockContext {
+	if p == nil {
+		return nil
+	}
+	if p.BlockContext == nil && !p.blockContextDone && p.blockContextFn != nil {
+		p.BlockContext = p.blockContextFn()
+		p.blockContextDone = true
+	}
+	return p.BlockContext
 }
 
 func (p *RequestContext) SetTargetNode(addr string) {

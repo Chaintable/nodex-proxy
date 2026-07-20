@@ -121,6 +121,12 @@ func Debug(msg string, fields ...zap.Field) {
 	logger.Debug(msg, fields...)
 }
 
+// DebugEnabled reports whether debug logs are emitted. Hot paths should guard
+// log.Debug calls with it so field construction is skipped entirely.
+func DebugEnabled() bool {
+	return logger.Core().Enabled(zap.DebugLevel)
+}
+
 // Fatal ...
 func Fatal(msg string, err error, fields ...zap.Field) {
 	fields = append(fields, zap.Error(err))
