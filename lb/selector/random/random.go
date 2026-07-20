@@ -46,7 +46,7 @@ func (r *Random) GetNode(ctx *types.RequestContext, requestKey string) (*lbnode.
 	nativeNodes := r.nativeNodes[chainId]
 	forceNative := requestKey == "native"
 
-	nodes := r.pickNodeFunc(ctx.BlockContext, r.chainHeight[chainId], archiveNodes, stateNodes, nativeNodes, ctx.Archive, forceNative)
+	nodes := r.pickNodeFunc(ctx.GetBlockContext, r.chainHeight[chainId], archiveNodes, stateNodes, nativeNodes, ctx.Archive, forceNative)
 	if len(nodes) == 0 {
 		log.Warn(fmt.Sprintf("No nodes available after picking for chain %s: archive_nodes=%d, state_nodes=%d, archive_mode=%v, chain_height=%v",
 			chainId, len(archiveNodes), len(stateNodes), ctx.Archive, r.chainHeight[chainId]))

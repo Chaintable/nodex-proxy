@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TempPickNodes(blockContext *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, forceArchive bool, forceNative bool) []*lbnode.Node {
+func TempPickNodes(getBlockContext func() *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, forceArchive bool, forceNative bool) []*lbnode.Node {
 	return append(stateNodes, archiveNodes...)
 }
 

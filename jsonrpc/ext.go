@@ -21,6 +21,7 @@
 package jsonrpc
 
 import (
+	"bytes"
 	"errors"
 
 	"github.com/bytedance/sonic"
@@ -110,4 +111,18 @@ func IsBatch(msg []byte) bool {
 		return c == '['
 	}
 	return false
+}
+
+var (
+	errorKeyLower = []byte(`"error"`)
+	errorKeyUpper = []byte(`"Error"`)
+)
+
+// ContainsErrorKey is a cheap pre-filter for response bodies: a JSON-RPC
+// response without an "error"/"Error" key token cannot carry an error object,
+// so callers can skip unmarshalling entirely. Keys with unicode-escaped names
+// (e.g. "err\u006fr") are deliberately not recognized — no real node
+// software emits them, and a false negative only skips retry/error accounting.
+func ContainsErrorKey(msg []byte) bool {
+	return bytes.Contains(msg, errorKeyLower) || bytes.Contains(msg, errorKeyUpper)
 }

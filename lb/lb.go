@@ -5,14 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
@@ -399,7 +397,9 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		return
 	}
 
-	log.Debug("Selected target node", log.Any("node", targetNode.Addr()), log.Any("type", targetNode.NodeType), log.Any("chain_id", requestContext.ChainId))
+	if log.DebugEnabled() {
+		log.Debug("Selected target node", log.Any("node", targetNode.Addr()), log.Any("type", targetNode.NodeType), log.Any("chain_id", requestContext.ChainId))
+	}
 
 	// If target node is archive, set archive flag
 	if targetNode.NodeType == discovery.NodeTypeArchive {
@@ -409,7 +409,9 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	// First attempt with state node
 	lb.attemptRequest(ctx, c, requestContext, targetNode)
 	responseBody := c.Response.Body()
-	log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body_size", len(responseBody)))
+	if log.DebugEnabled() {
+		log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body_size", len(responseBody)))
+	}
 
 	responseErrorCodes := lb.parseRPCErrorCodes(responseBody)
 
@@ -441,7 +443,9 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			c.JSON(consts.StatusOK, object)
 			return
 		}
-		log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
+		if log.DebugEnabled() {
+			log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
+		}
 		lb.attemptRequest(ctx, c, requestContext, targetNode)
 		responseErrorCodes = lb.parseRPCErrorCodes(c.Response.Body())
 	}
@@ -469,7 +473,9 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			c.JSON(consts.StatusOK, object)
 			return
 		}
-		log.Debug("Selected native target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
+		if log.DebugEnabled() {
+			log.Debug("Selected native target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
+		}
 		lb.attemptRequest(ctx, c, requestContext, targetNode)
 	}
 }
@@ -515,17 +521,10 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 	}
 	c.Request.SetOptions(hzconfig.WithReadTimeout(lb.upstreamReadTimeout(method)))
 
-	props := otel.GetTextMapPropagator()
-	httpHeaders := http.Header{}
-	c.Request.Header.VisitAll(func(key, value []byte) {
-		keyCopy := make([]byte, len(key))
-		copy(keyCopy, key)
-		valueCopy := make([]byte, len(value))
-		copy(valueCopy, value)
-		httpHeaders.Set(string(keyCopy), string(valueCopy))
-	})
-
-	props.Inject(ctx, propagation.HeaderCarrier(httpHeaders))
+	// Inject trace context straight into the outgoing hertz headers; copying
+	// them into an http.Header first both allocated per request and dropped
+	// the injected values on the floor.
+	otel.GetTextMapPropagator().Inject(ctx, hertzHeaderCarrier{&c.Request.Header})
 	targetNode.ReverseProxy.ServeHTTP(ctx, c)
 
 	if c.Response.StatusCode() == consts.StatusGatewayTimeout {
@@ -605,6 +604,24 @@ func (lb *LoadBalancer) rewriteMethodForNativeRetry(c *app.RequestContext, reque
 	c.Request.SetBody(newBody)
 }
 
+// hertzHeaderCarrier adapts hertz request headers to otel's TextMapCarrier so
+// propagators can read and write them in place.
+type hertzHeaderCarrier struct {
+	header *protocol.RequestHeader
+}
+
+func (c hertzHeaderCarrier) Get(key string) string { return c.header.Get(key) }
+
+func (c hertzHeaderCarrier) Set(key, value string) { c.header.Set(key, value) }
+
+func (c hertzHeaderCarrier) Keys() []string {
+	keys := make([]string, 0, 16)
+	c.header.VisitAll(func(key, _ []byte) {
+		keys = append(keys, string(key))
+	})
+	return keys
+}
+
 type rpcErrorCodes map[int]struct{}
 
 func (codes rpcErrorCodes) Has(code int) bool {
@@ -618,7 +635,11 @@ func (lb *LoadBalancer) parseRPCErrorCodes(responseBody []byte) rpcErrorCodes {
 		return nil
 	}
 
-	log.Debug("Response received", log.Any("body_size", len(trimmed)))
+	// Retry decisions only care about JSON-RPC error codes; a response
+	// without an "error" member cannot carry one, so skip the full parse.
+	if !ejrpc.ContainsErrorKey(trimmed) {
+		return nil
+	}
 
 	type rpcResponse struct {
 		Error *struct {
@@ -672,7 +693,13 @@ func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *pro
 		}
 	}
 
-	requestContext.BlockContext = lb.ParseBlockContext(requestContext.RequestBody)
+	// Defer params parsing until a node selector actually needs the block
+	// context; requests that short-circuit in preprocessors or hit chains
+	// without a state/archive split skip it entirely.
+	requestBody := requestContext.RequestBody
+	requestContext.SetBlockContextFn(func() *types.BlockContext {
+		return lb.ParseBlockContext(requestBody)
+	})
 	return requestContext
 }
 
@@ -684,7 +711,9 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			log.Error("failed to unmarshal params", err)
 			continue
 		}
-		log.Debug("ParseBlockContext", log.Any("method", value.Method), log.Any("params_count", len(arr)))
+		if log.DebugEnabled() {
+			log.Debug("ParseBlockContext", log.Any("method", value.Method), log.Any("params_count", len(arr)))
+		}
 		if len(arr) <= 0 {
 			continue
 		}
@@ -712,8 +741,10 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 }
 
 func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Request) *types.RequestContext {
-	span := trace.SpanFromContext(ctx)
-	traceID := span.SpanContext().TraceID().String()
+	var traceID string
+	if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
+		traceID = sc.TraceID().String()
+	}
 
 	sourceBiz := request.Header.Get(DBKBiz)
 	sourceHost := request.Header.Get(DBKSourceHost)
