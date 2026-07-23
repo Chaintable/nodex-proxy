@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/config"
@@ -37,7 +38,7 @@ type rpcRequestHandler interface {
 }
 
 type usageRecorder interface {
-	Record(string, int64, time.Duration)
+	Record(string, time.Duration)
 }
 
 func newRPCRequestHandler(handler rpcRequestHandler, recorder usageRecorder) app.HandlerFunc {
@@ -50,10 +51,10 @@ func newRPCRequestHandler(handler rpcRequestHandler, recorder usageRecorder) app
 
 		start := time.Now()
 		clientID := c.Request.Header.Get("client-id")
-		baseChainID, collectUsage := lb.ParseBaseChainID(chainID)
+		_, collectUsage := lb.ParseBaseChainID(chainID)
 		defer func() {
 			if collectUsage {
-				recorder.Record(clientID, baseChainID, time.Since(start))
+				recorder.Record(clientID, time.Since(start))
 			}
 		}()
 		handler.ServeHTTP(ctx, c, chainID)
@@ -125,13 +126,22 @@ func main() {
 	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
 
 	var usageCollector *usage.Collector
-	if len(cmdlineAndLoadConfig.Usage.KafkaBrokers) > 0 {
-		usageProducer, err := usage.NewKafkaProducer(cmdlineAndLoadConfig.Usage.KafkaBrokers)
+	if cmdlineAndLoadConfig.Usage.Enabled() {
+		if err := cmdlineAndLoadConfig.Usage.Validate(); err != nil {
+			log.Fatal("invalid usage configuration", err)
+		}
+		usageTopic := strings.TrimSpace(cmdlineAndLoadConfig.Usage.KafkaTopic)
+		usageProducer, err := usage.NewKafkaProducer(
+			cmdlineAndLoadConfig.Usage.KafkaBrokers,
+			usageTopic,
+		)
 		if err != nil {
 			log.Fatal("failed to initialize usage Kafka producer", err)
 		}
-		usageCollector = usage.NewCollector(usageProducer)
-		log.Info("usage collection enabled", log.Any("topic", usage.Topic))
+		usageCollector = usage.NewCollector(usageProducer, cmdlineAndLoadConfig.Usage.ReportInterval)
+		log.Info("usage collection enabled",
+			log.Any("topic", usageTopic),
+			log.Any("report_interval", cmdlineAndLoadConfig.Usage.ReportInterval))
 	}
 
 	nodeRefresherMap := make(map[string]*etcd.Discover)

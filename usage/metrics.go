@@ -19,7 +19,7 @@ var (
 		Namespace: "jrpcx",
 		Subsystem: "usage",
 		Name:      "aggregation_keys",
-		Help:      "Current number of client ID and chain ID aggregation keys held in memory, including batches being written.",
+		Help:      "Current number of client ID aggregation keys held in memory, including batches being written.",
 	})
 )
 

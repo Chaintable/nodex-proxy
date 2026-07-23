@@ -12,7 +12,6 @@ import (
 )
 
 const (
-	FlushInterval             = 30 * time.Second
 	aggregationFlushThreshold = 10_000
 	flushTimeout              = 5 * time.Second
 )
@@ -23,11 +22,6 @@ type Producer interface {
 	Close() error
 }
 
-type aggregateKey struct {
-	clientID string
-	chainID  int64
-}
-
 type collectorOptions struct {
 	interval       time.Duration
 	timeout        time.Duration
@@ -36,15 +30,15 @@ type collectorOptions struct {
 	newID          func() string
 }
 
-// Collector accumulates request duration by client ID and base chain ID. A
-// snapshot is swapped out before every Kafka write, so a slow producer never
-// blocks RPC request accounting.
+// Collector accumulates leafage read duration by client ID. A snapshot is
+// swapped out before every Kafka write, so a slow producer never blocks RPC
+// request accounting.
 type Collector struct {
 	producer Producer
 	options  collectorOptions
 
 	mu       sync.Mutex
-	active   map[aggregateKey]time.Duration
+	active   map[string]time.Duration
 	closed   bool
 	stop     chan struct{}
 	flushNow chan struct{}
@@ -54,10 +48,10 @@ type Collector struct {
 	closeErr  error
 }
 
-// NewCollector starts a usage collector with the production flush settings.
-func NewCollector(producer Producer) *Collector {
+// NewCollector starts a usage collector with the configured report interval.
+func NewCollector(producer Producer, reportInterval time.Duration) *Collector {
 	return newCollector(producer, collectorOptions{
-		interval:       FlushInterval,
+		interval:       reportInterval,
 		timeout:        flushTimeout,
 		flushThreshold: aggregationFlushThreshold,
 		now:            time.Now,
@@ -70,7 +64,7 @@ func newCollector(producer Producer, options collectorOptions) *Collector {
 		panic("usage: nil producer")
 	}
 	if options.interval <= 0 {
-		options.interval = FlushInterval
+		panic("usage: report interval must be positive")
 	}
 	if options.timeout <= 0 {
 		options.timeout = flushTimeout
@@ -88,7 +82,7 @@ func newCollector(producer Producer, options collectorOptions) *Collector {
 	c := &Collector{
 		producer: producer,
 		options:  options,
-		active:   make(map[aggregateKey]time.Duration),
+		active:   make(map[string]time.Duration),
 		stop:     make(chan struct{}),
 		flushNow: make(chan struct{}, 1),
 		loopDone: make(chan struct{}),
@@ -98,7 +92,7 @@ func newCollector(producer Producer, options collectorOptions) *Collector {
 }
 
 // Record adds one completed RPC request to the current aggregation window.
-func (c *Collector) Record(clientID string, chainID int64, duration time.Duration) {
+func (c *Collector) Record(clientID string, duration time.Duration) {
 	if duration < 0 {
 		return
 	}
@@ -117,13 +111,12 @@ func (c *Collector) Record(clientID string, chainID int64, duration time.Duratio
 		c.mu.Unlock()
 		return
 	}
-	key := aggregateKey{clientID: clientID, chainID: chainID}
-	if accumulated, ok := c.active[key]; ok {
-		c.active[key] = accumulated + duration
+	if accumulated, ok := c.active[clientID]; ok {
+		c.active[clientID] = accumulated + duration
 		c.mu.Unlock()
 		return
 	}
-	c.active[key] = duration
+	c.active[clientID] = duration
 	keyCount := len(c.active)
 	aggregationKeys.Inc()
 	shouldFlush := keyCount >= c.options.flushThreshold
@@ -158,7 +151,7 @@ func (c *Collector) run() {
 	}
 }
 
-func (c *Collector) snapshot(closeCollector bool) map[aggregateKey]time.Duration {
+func (c *Collector) snapshot(closeCollector bool) map[string]time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if closeCollector {
@@ -168,7 +161,7 @@ func (c *Collector) snapshot(closeCollector bool) map[aggregateKey]time.Duration
 		return nil
 	}
 	snapshot := c.active
-	c.active = make(map[aggregateKey]time.Duration)
+	c.active = make(map[string]time.Duration)
 	return snapshot
 }
 
@@ -176,7 +169,7 @@ func (c *Collector) flush(ctx context.Context) error {
 	return c.writeSnapshot(ctx, c.snapshot(false))
 }
 
-func (c *Collector) writeSnapshot(ctx context.Context, snapshot map[aggregateKey]time.Duration) error {
+func (c *Collector) writeSnapshot(ctx context.Context, snapshot map[string]time.Duration) error {
 	if len(snapshot) == 0 {
 		return nil
 	}
@@ -184,13 +177,18 @@ func (c *Collector) writeSnapshot(ctx context.Context, snapshot map[aggregateKey
 
 	timestamp := c.options.now().UnixMilli()
 	records := make([]Record, 0, len(snapshot))
-	for key, duration := range snapshot {
+	for clientID, duration := range snapshot {
+		usage := duration.Milliseconds()
+		if usage < 1 {
+			usage = 1
+		}
 		records = append(records, Record{
-			ID:        c.options.newID(),
-			ClientID:  key.clientID,
-			TimeMS:    duration.Milliseconds(),
-			ChainID:   key.chainID,
-			Timestamp: timestamp,
+			ID:           c.options.newID(),
+			ClientID:     clientID,
+			Service:      ServiceLeafage,
+			ResourceType: ResourceTypeRead,
+			Usage:        usage,
+			Timestamp:    timestamp,
 		})
 	}
 

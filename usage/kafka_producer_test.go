@@ -27,11 +27,12 @@ func TestKafkaProducerSerializesRecords(t *testing.T) {
 	writer := &fakeMessageWriter{}
 	producer := &KafkaProducer{writer: writer}
 	record := Record{
-		ID:        "5f0e8c2a-9b3d-4c71-a6e4-1d2f3a4b5c6d",
-		ClientID:  "instance:019f45e26c307c86bd45ab350bb52ca8",
-		TimeMS:    420,
-		ChainID:   1,
-		Timestamp: 1783568373000,
+		ID:           "5f0e8c2a-9b3d-4c71-a6e4-1d2f3a4b5c6d",
+		ClientID:     "instance:019f45e26c307c86bd45ab350bb52ca8",
+		Service:      ServiceLeafage,
+		ResourceType: ResourceTypeRead,
+		Usage:        420,
+		Timestamp:    1783568373000,
 	}
 
 	require.NoError(t, producer.Write(context.Background(), []Record{record}))
@@ -40,20 +41,24 @@ func TestKafkaProducerSerializesRecords(t *testing.T) {
 	require.JSONEq(t, `{
 		"id":"5f0e8c2a-9b3d-4c71-a6e4-1d2f3a4b5c6d",
 		"client_id":"instance:019f45e26c307c86bd45ab350bb52ca8",
-		"time_ms":420,
-		"chain_id":1,
+		"service":"leafage",
+		"resource_type":"read",
+		"usage":420,
 		"timestamp":1783568373000
 	}`, string(writer.messages[0].Value))
 }
 
 func TestKafkaProducerConfiguration(t *testing.T) {
-	producer, err := NewKafkaProducer([]string{" kafka-1:9092 ", "kafka-2:9092"})
+	producer, err := NewKafkaProducer(
+		[]string{" kafka-1:9092 ", "kafka-2:9092"},
+		" custom-usage-topic ",
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = producer.Close() })
 
 	writer, ok := producer.writer.(*kafka.Writer)
 	require.True(t, ok)
-	require.Equal(t, Topic, writer.Topic)
+	require.Equal(t, "custom-usage-topic", writer.Topic)
 	require.Equal(t, kafka.RequireAll, writer.RequiredAcks)
 	require.False(t, writer.Async)
 	require.False(t, writer.AllowAutoTopicCreation)
@@ -63,8 +68,10 @@ func TestKafkaProducerConfiguration(t *testing.T) {
 }
 
 func TestNewKafkaProducerRejectsInvalidBrokers(t *testing.T) {
-	_, err := NewKafkaProducer(nil)
+	_, err := NewKafkaProducer(nil, "topic")
 	require.Error(t, err)
-	_, err = NewKafkaProducer([]string{" "})
+	_, err = NewKafkaProducer([]string{" "}, "topic")
+	require.Error(t, err)
+	_, err = NewKafkaProducer([]string{"kafka:9092"}, " ")
 	require.Error(t, err)
 }

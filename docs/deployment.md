@@ -47,14 +47,18 @@ log_level: "info"              # debug, info, warn, error
 usage:                         # optional usage reporting
   kafka_brokers:               # omit or leave empty to disable
     - "kafka-1:9092"
+  kafka_topic: "leafage-usage"
+  report_interval: 5s
 proxy_config:                  # proxy configuration (see config.example.yaml)
   ...
 ```
 
 When `usage.kafka_brokers` is non-empty, RPC duration is aggregated in memory
-by `client-id` and base chain ID, then written to the fixed `leafage-usage`
-topic when 10,000 aggregation keys accumulate or after at most 30 seconds.
-Missing or blank client IDs are reported as `unknown`.
+by `client-id` for service `leafage` and resource type `read`, then written to
+`usage.kafka_topic`. A batch is flushed when 10,000 aggregation keys accumulate
+or `usage.report_interval` elapses (default `5s`). Missing or blank client IDs
+are reported as `unknown`; `usage` is the aggregated duration in milliseconds
+with a minimum value of `1`.
 `jrpcx_usage_aggregation_keys` exposes the current in-memory key count,
 including batches being written. Usage
 delivery is best-effort; graceful shutdown sends the final batch, while process

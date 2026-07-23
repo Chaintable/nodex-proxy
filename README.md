@@ -131,6 +131,8 @@ log_level: "info"
 usage:
   kafka_brokers:
     - "kafka-1:9092"
+  kafka_topic: "leafage-usage"
+  report_interval: 5s
 
 proxy_config:
   service_name: "jrpcx"
@@ -141,14 +143,27 @@ proxy_config:
   etcd_prefix: ""
 ```
 
-When enabled, RPC duration is aggregated in memory by `client-id` and base
-chain ID and written to the fixed `leafage-usage` Kafka topic. A batch is
-flushed as soon as it reaches 10,000 aggregation keys, with a maximum interval
-of 30 seconds. A missing or blank `client-id` is reported as `unknown`.
+When enabled, RPC duration is aggregated in memory by `client-id` for service
+`leafage` and resource type `read`, then written to the configured Kafka topic.
+A batch is flushed as soon as it reaches 10,000 aggregation keys or the
+configured `report_interval` elapses (default `5s`). A missing or blank
+`client-id` is reported as `unknown`. `usage` is the aggregated duration in
+milliseconds and is reported as at least `1`.
 `jrpcx_usage_aggregation_keys` reports the current number of aggregation keys
 held in memory, including batches being written. Delivery is best-effort: the
 final in-memory batch is sent during graceful shutdown, but data can be lost on
 process crashes or Kafka failures.
+
+```json
+{
+  "id": "3c9d1b7e-52aa-4f0e-8d21-77b4e0c9a1f2",
+  "client_id": "instance:019f45e26c307c86bd45ab350bb52ca8",
+  "service": "leafage",
+  "resource_type": "read",
+  "usage": 123,
+  "timestamp": 1783568373000
+}
+```
 
 ### Processor Pipeline
 
