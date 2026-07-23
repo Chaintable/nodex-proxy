@@ -130,6 +130,8 @@ log_level: "info"
 usage:
   kafka_brokers:
     - "kafka-1:9092"
+  kafka_topic: "leafage-usage"
+  report_interval: 5s
 
 proxy_config:
   service_name: "jrpcx"
@@ -140,11 +142,24 @@ proxy_config:
   etcd_prefix: ""
 ```
 
-开启后，RPC 请求耗时会在本地按 `client-id` 和基础 chain ID 聚合，达到 10,000 个聚合键
-时立即写入固定的 Kafka Topic `leafage-usage`，最长刷出间隔为 30 秒。缺失或空白的
-`client-id` 统一记为 `unknown`。`jrpcx_usage_aggregation_keys` 指标记录当前内存中的
-聚合键数量，包括正在写入 Kafka 的批次。发送采用 best-effort 语义：优雅退出时会发送
-最后一批内存数据，但进程崩溃或 Kafka 异常时允许丢失。
+开启后，RPC 请求耗时会在本地按 `client-id` 聚合，`service` 固定为 `leafage`，
+`resource_type` 固定为 `read`。达到 10,000 个聚合键或经过配置的
+`report_interval`（默认 `5s`）时写入配置的 Kafka Topic。缺失或空白的 `client-id`
+统一记为 `unknown`。`usage` 是聚合耗时的毫秒数，最小为 `1`。
+`jrpcx_usage_aggregation_keys` 指标记录当前内存中的聚合键数量，包括正在写入 Kafka
+的批次。发送采用 best-effort 语义：优雅退出时会发送最后一批内存数据，但进程崩溃或
+Kafka 异常时允许丢失。
+
+```json
+{
+  "id": "3c9d1b7e-52aa-4f0e-8d21-77b4e0c9a1f2",
+  "client_id": "instance:019f45e26c307c86bd45ab350bb52ca8",
+  "service": "leafage",
+  "resource_type": "read",
+  "usage": 123,
+  "timestamp": 1783568373000
+}
+```
 
 ### 处理流水线
 

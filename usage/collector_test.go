@@ -81,43 +81,48 @@ func testCollector(producer Producer, interval time.Duration) *Collector {
 	})
 }
 
-func TestCollectorAggregatesByClientAndChain(t *testing.T) {
+func TestCollectorAggregatesByClient(t *testing.T) {
 	producer := &fakeProducer{}
 	collector := testCollector(producer, time.Hour)
 	t.Cleanup(func() { _ = collector.Close(context.Background()) })
 
-	collector.Record("instance:1", 1, 100*time.Millisecond)
-	collector.Record("instance:1", 1, 320*time.Millisecond)
-	collector.Record("instance:1", 56, 180*time.Millisecond)
-	collector.Record("  ", 1, 50*time.Millisecond)
+	collector.Record("instance:1", 100*time.Millisecond)
+	collector.Record("instance:1", 320*time.Millisecond)
+	collector.Record("instance:1", 180*time.Millisecond)
+	collector.Record("  ", 50*time.Millisecond)
 
 	require.NoError(t, collector.flush(context.Background()))
 	batches, _ := producer.snapshot()
 	require.Len(t, batches, 1)
-	require.Len(t, batches[0], 3)
+	require.Len(t, batches[0], 2)
 
-	records := make(map[aggregateKey]Record, len(batches[0]))
+	records := make(map[string]Record, len(batches[0]))
 	for _, record := range batches[0] {
-		records[aggregateKey{clientID: record.ClientID, chainID: record.ChainID}] = record
+		records[record.ClientID] = record
 		require.NotEmpty(t, record.ID)
 		require.Equal(t, int64(1783568373000), record.Timestamp)
+		require.Equal(t, ServiceLeafage, record.Service)
+		require.Equal(t, ResourceTypeRead, record.ResourceType)
 	}
-	require.Equal(t, int64(50), records[aggregateKey{clientID: UnknownClientID, chainID: 1}].TimeMS)
-	require.Equal(t, int64(420), records[aggregateKey{clientID: "instance:1", chainID: 1}].TimeMS)
-	require.Equal(t, int64(180), records[aggregateKey{clientID: "instance:1", chainID: 56}].TimeMS)
+	require.Equal(t, int64(50), records[UnknownClientID].Usage)
+	require.Equal(t, int64(600), records["instance:1"].Usage)
 }
 
-func TestCollectorAccumulatesBeforeConvertingToMilliseconds(t *testing.T) {
+func TestCollectorUsesAtLeastOneMillisecond(t *testing.T) {
 	producer := &fakeProducer{}
 	collector := testCollector(producer, time.Hour)
 	t.Cleanup(func() { _ = collector.Close(context.Background()) })
 
-	collector.Record("client", 1, 600*time.Microsecond)
-	collector.Record("client", 1, 600*time.Microsecond)
+	collector.Record("sub-millisecond", 600*time.Microsecond)
+	collector.Record("zero", 0)
 	require.NoError(t, collector.flush(context.Background()))
 
 	batches, _ := producer.snapshot()
-	require.Equal(t, int64(1), batches[0][0].TimeMS)
+	require.Len(t, batches, 1)
+	require.Len(t, batches[0], 2)
+	for _, record := range batches[0] {
+		require.Equal(t, int64(1), record.Usage)
+	}
 }
 
 func TestCollectorDropsFailedSnapshot(t *testing.T) {
@@ -125,7 +130,7 @@ func TestCollectorDropsFailedSnapshot(t *testing.T) {
 	collector := testCollector(producer, time.Hour)
 	t.Cleanup(func() { _ = collector.Close(context.Background()) })
 
-	collector.Record("client", 1, time.Second)
+	collector.Record("client", time.Second)
 	require.Error(t, collector.flush(context.Background()))
 
 	producer.mu.Lock()
@@ -140,7 +145,7 @@ func TestCollectorPeriodicFlush(t *testing.T) {
 	producer := &fakeProducer{writeCall: make(chan struct{}, 1)}
 	collector := testCollector(producer, 10*time.Millisecond)
 	t.Cleanup(func() { _ = collector.Close(context.Background()) })
-	collector.Record("client", 1, time.Second)
+	collector.Record("client", time.Second)
 
 	select {
 	case <-producer.writeCall:
@@ -155,10 +160,10 @@ func TestCollectorPeriodicFlush(t *testing.T) {
 func TestCollectorCloseFlushesAndRejectsNewRecords(t *testing.T) {
 	producer := &fakeProducer{}
 	collector := testCollector(producer, time.Hour)
-	collector.Record("client", 1, time.Second)
+	collector.Record("client", time.Second)
 
 	require.NoError(t, collector.Close(context.Background()))
-	collector.Record("client", 1, time.Second)
+	collector.Record("client", time.Second)
 	require.NoError(t, collector.Close(context.Background()))
 
 	batches, closed := producer.snapshot()
@@ -177,7 +182,7 @@ func TestCollectorConcurrentRecord(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			collector.Record("client", 1, time.Millisecond)
+			collector.Record("client", time.Millisecond)
 		}()
 	}
 	wg.Wait()
@@ -187,7 +192,7 @@ func TestCollectorConcurrentRecord(t *testing.T) {
 	var total int64
 	for _, batch := range batches {
 		for _, record := range batch {
-			total += record.TimeMS
+			total += record.Usage
 		}
 	}
 	require.Equal(t, int64(requestCount), total)
@@ -206,8 +211,8 @@ func TestCollectorFlushesEarlyAtAggregationThreshold(t *testing.T) {
 		now:            time.Now,
 		newID:          func() string { return "id" },
 	})
-	collector.Record("a", 1, time.Millisecond)
-	collector.Record("b", 1, time.Millisecond)
+	collector.Record("a", time.Millisecond)
+	collector.Record("b", time.Millisecond)
 
 	select {
 	case <-producer.writeCall:
@@ -219,9 +224,9 @@ func TestCollectorFlushesEarlyAtAggregationThreshold(t *testing.T) {
 
 	// The first Kafka write is still blocked. New keys must accumulate in the
 	// next snapshot and trigger another flush instead of being discarded.
-	collector.Record("c", 1, time.Millisecond)
-	collector.Record("d", 1, time.Millisecond)
-	collector.Record("e", 1, time.Millisecond)
+	collector.Record("c", time.Millisecond)
+	collector.Record("d", time.Millisecond)
+	collector.Record("e", time.Millisecond)
 	require.Equal(t, float64(5), testutil.ToFloat64(aggregationKeys))
 	close(releaseWrite)
 
@@ -250,9 +255,9 @@ func TestCollectorReportsAggregationKeyCount(t *testing.T) {
 	collector := testCollector(producer, time.Hour)
 	t.Cleanup(func() { _ = collector.Close(context.Background()) })
 
-	collector.Record("a", 1, time.Millisecond)
-	collector.Record("a", 1, time.Millisecond)
-	collector.Record("b", 1, time.Millisecond)
+	collector.Record("a", time.Millisecond)
+	collector.Record("a", time.Millisecond)
+	collector.Record("b", time.Millisecond)
 	require.Equal(t, float64(2), testutil.ToFloat64(aggregationKeys))
 
 	require.NoError(t, collector.flush(context.Background()))

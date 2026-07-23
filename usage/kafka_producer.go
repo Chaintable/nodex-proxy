@@ -18,15 +18,19 @@ type messageWriter interface {
 	Close() error
 }
 
-// KafkaProducer serializes usage records and writes them to leafage-usage.
+// KafkaProducer serializes usage records and writes them to Kafka.
 type KafkaProducer struct {
 	writer messageWriter
 }
 
 // NewKafkaProducer constructs a synchronous, best-effort Kafka producer.
-func NewKafkaProducer(brokers []string) (*KafkaProducer, error) {
+func NewKafkaProducer(brokers []string, topic string) (*KafkaProducer, error) {
 	if len(brokers) == 0 {
 		return nil, errors.New("usage: at least one Kafka broker is required")
+	}
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return nil, errors.New("usage: Kafka topic cannot be blank")
 	}
 
 	cleaned := make([]string, 0, len(brokers))
@@ -40,7 +44,7 @@ func NewKafkaProducer(brokers []string) (*KafkaProducer, error) {
 
 	return &KafkaProducer{writer: &kafka.Writer{
 		Addr:                   kafka.TCP(cleaned...),
-		Topic:                  Topic,
+		Topic:                  topic,
 		Balancer:               &kafka.Hash{},
 		MaxAttempts:            3,
 		BatchTimeout:           kafkaBatchTimeout,

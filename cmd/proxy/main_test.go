@@ -42,33 +42,30 @@ func (p *capturingUsageProducer) snapshot() []usage.Record {
 	return append([]usage.Record(nil), p.records...)
 }
 
-func TestRPCRequestHandlerCollectsHeaderChainAndDuration(t *testing.T) {
+func TestRPCRequestHandlerCollectsHeaderAndDuration(t *testing.T) {
 	tests := []struct {
-		name         string
-		clientID     string
-		expectedID   string
-		pathChainID  string
-		expectedBase int64
+		name        string
+		clientID    string
+		expectedID  string
+		pathChainID string
 	}{
 		{
-			name:         "missing client id",
-			expectedID:   usage.UnknownClientID,
-			pathChainID:  "0x1-version-id",
-			expectedBase: 1,
+			name:        "missing client id",
+			expectedID:  usage.UnknownClientID,
+			pathChainID: "0x1-version-id",
 		},
 		{
-			name:         "provided client id",
-			clientID:     "instance:123",
-			expectedID:   "instance:123",
-			pathChainID:  "56",
-			expectedBase: 56,
+			name:        "provided client id",
+			clientID:    "instance:123",
+			expectedID:  "instance:123",
+			pathChainID: "56",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			producer := &capturingUsageProducer{}
-			collector := usage.NewCollector(producer)
+			collector := usage.NewCollector(producer, time.Hour)
 			rpcHandler := &fakeRPCRequestHandler{}
 			handler := newRPCRequestHandler(rpcHandler, collector)
 			requestContext := app.NewContext(1)
@@ -84,8 +81,9 @@ func TestRPCRequestHandlerCollectsHeaderChainAndDuration(t *testing.T) {
 			require.Equal(t, tt.pathChainID, rpcHandler.chainID)
 			require.Len(t, records, 1)
 			require.Equal(t, tt.expectedID, records[0].ClientID)
-			require.Equal(t, tt.expectedBase, records[0].ChainID)
-			require.GreaterOrEqual(t, records[0].TimeMS, int64(2))
+			require.Equal(t, usage.ServiceLeafage, records[0].Service)
+			require.Equal(t, usage.ResourceTypeRead, records[0].ResourceType)
+			require.GreaterOrEqual(t, records[0].Usage, int64(2))
 		})
 	}
 }
@@ -98,6 +96,21 @@ func TestRPCRequestHandlerDisabled(t *testing.T) {
 
 	handler(context.Background(), requestContext)
 	require.Equal(t, "1", rpcHandler.chainID)
+}
+
+func TestRPCRequestHandlerSkipsUsageForInvalidChain(t *testing.T) {
+	producer := &capturingUsageProducer{}
+	collector := usage.NewCollector(producer, time.Hour)
+	rpcHandler := &fakeRPCRequestHandler{}
+	handler := newRPCRequestHandler(rpcHandler, collector)
+	requestContext := app.NewContext(1)
+	requestContext.Params = param.Params{{Key: "chainId", Value: "not-a-chain"}}
+
+	handler(context.Background(), requestContext)
+	require.NoError(t, collector.Close(context.Background()))
+
+	require.Equal(t, "not-a-chain", rpcHandler.chainID)
+	require.Empty(t, producer.snapshot())
 }
 
 func TestGracefulExitWaitCoversAllUpstreamAttempts(t *testing.T) {
