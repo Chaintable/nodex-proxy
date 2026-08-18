@@ -245,8 +245,8 @@ proxy_config:
 
 当通过 etcd 发现新节点时：
 
-1. 发送 `eth_blockNumber` RPC 调用以验证节点可达性
-2. 如果失败，每 **5 秒** 重试一次，最多等待可配置的最大时间（默认：**300 秒**）
+1. 发送区块高度 RPC 调用验证节点可达性：state/archive 节点用 `getLatestBlock`，native 节点用 `eth_blockNumber`
+2. 单次检查受 `node_health_check_timeout` 限制（默认 **5 秒**）。失败后每 **5 秒** 重试一次，最多等待 `node_health_check_max_wait`（默认 **300 秒**）
 3. 只有通过健康检查后，节点才会被加入负载均衡池
 
 ## 指标
