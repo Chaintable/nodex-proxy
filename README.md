@@ -249,8 +249,8 @@ The proxy watches for etcd `PUT` and `DELETE` events to dynamically add/remove n
 
 When a new node is discovered via etcd:
 
-1. An `eth_blockNumber` RPC call is sent to verify the node is reachable
-2. On failure, retries every **5 seconds** up to a configurable max wait time (default: **300s**)
+1. A block-height RPC call is sent to verify the node is reachable: `getLatestBlock` for state/archive nodes, `eth_blockNumber` for native nodes
+2. Each attempt is bounded by `node_health_check_timeout` (default: **5s**). On failure, retries every **5 seconds** up to `node_health_check_max_wait` (default: **300s**)
 3. Only after a successful health check is the node added to the load balancer pool
 
 ## Metrics
