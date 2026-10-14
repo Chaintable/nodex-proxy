@@ -199,6 +199,7 @@ proxy_config:
 - 健康检查按配置间隔重试，直到 `node_health_check_max_wait`。
 - 没有可用节点时返回 JSON-RPC bad gateway 风格响应。
 - 上游 HTTP `502` 和 `504` 会转换成 JSON-RPC error response，并被指标统计。
+- 上游请求本身失败时：读超时（RPC 超时内没有收到完整响应）返回 `504`，错误码 `-41002`；连不上节点（建连失败、连接被关闭、连接池耗尽）返回 `502`，错误码 `-32603`。两种情况都不重试。
 - request mirror 是异步行为，不影响主请求响应。
 - batch 请求会被解析和代理，但 random selector 会跳过方法路由过滤，batch 响应不会按单个 JSON-RPC response object 解析。
 

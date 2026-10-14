@@ -111,6 +111,7 @@ func New(key, ip string, port, weight int, nodeType discovery.NodeType, opts ...
 		return node, err
 	}
 	proxy.SetClient(cli)
+	proxy.SetErrorHandler(upstreamErrorHandler)
 	node.ReverseProxy = proxy
 	return node, nil
 }

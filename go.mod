@@ -5,6 +5,7 @@ go 1.22.9
 require (
 	github.com/bytedance/sonic v1.15.2
 	github.com/cloudwego/hertz v0.10.5
+	github.com/cloudwego/netpoll v0.7.4
 	github.com/ethereum/go-ethereum v1.14.11
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/go-kit/kit v0.9.0
@@ -41,7 +42,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cloudwego/gopkg v0.2.0 // indirect
-	github.com/cloudwego/netpoll v0.7.4 // indirect
 	github.com/consensys/bavard v0.1.22 // indirect
 	github.com/consensys/gnark-crypto v0.14.0 // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect
