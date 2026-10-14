@@ -199,6 +199,7 @@ proxy_config:
 - Health checks retry on a configured interval until `node_health_check_max_wait`.
 - No available node returns a JSON-RPC bad gateway style response.
 - Upstream HTTP `502` and `504` responses are converted into JSON-RPC error responses and counted by metrics.
+- When the upstream request itself fails, a read timeout (no complete response within the RPC timeout) answers `504` with error code `-41002`; failing to reach the node (dial error, closed connection, exhausted connection pool) answers `502` with `-32603`. Neither case is retried.
 - Request mirroring is asynchronous and does not affect the primary response.
 - Batch requests are parsed and proxied, but method route filtering is skipped for random selection and batch responses are not parsed as single JSON-RPC response objects.
 
