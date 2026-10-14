@@ -29,10 +29,10 @@ func upstreamErrorHandler(c *app.RequestContext, err error) {
 }
 
 // IsUpstreamReadTimeout reports whether err is the upstream read timeout.
-// hertz normalizes a timeout while waiting for the first response byte to
-// errs.ErrTimeout, but a timeout while reading the headers or body surfaces as
-// the raw netpoll errno, so both are checked. Dial timeouts are excluded: they
-// mean the backend could not be reached.
+// Depending on where the read stops, hertz returns either its normalized
+// errs.ErrTimeout or the raw netpoll errno (for example inside a Content-Length
+// body), so both are checked. Dial timeouts are excluded: they mean the backend
+// could not be reached.
 func IsUpstreamReadTimeout(err error) bool {
 	return errors.Is(err, errs.ErrTimeout) || errors.Is(err, netpoll.ErrReadTimeout)
 }
