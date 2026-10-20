@@ -10,7 +10,7 @@ We welcome contributions, whether it's improving documentation, fixing bugs, or 
 
 ### Requirements
 
-- Go (>= 1.22), see `go.mod`
+- Go (>= 1.26), see `go.mod`
 - Docker (optional, for local deployment)
 - Make (optional, for CI)
 - GolangCI-Lint (for code linting)

@@ -22,7 +22,7 @@
 
 | 组件 | 版本 | 适用场景 |
 |------|------|----------|
-| Go | 1.22+ | 仅裸机部署 |
+| Go | 1.26+ | 仅裸机部署 |
 | Docker | 20.10+ | Docker / Compose / K8s |
 | docker-compose | v2+ | 仅 Compose 部署 |
 | kubectl | 1.24+ | 仅 K8s 部署 |
@@ -135,7 +135,7 @@ journalctl -u nodex-proxy -f
 
 #### 构建镜像
 
-Dockerfile 使用两阶段构建（golang:1.23-bookworm → ubuntu:24.04）：
+Dockerfile 使用两阶段构建（golang:1.26-bookworm → ubuntu:24.04）：
 
 ```bash
 docker build -t nodex-proxy:latest .

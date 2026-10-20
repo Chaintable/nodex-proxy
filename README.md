@@ -78,7 +78,7 @@ For component boundaries, request lifecycle, dynamic configuration, and operatio
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.26+
 - etcd v3 cluster (for service discovery)
 
 ### Build

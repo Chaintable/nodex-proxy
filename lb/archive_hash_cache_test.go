@@ -16,36 +16,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHashSetAddContainsAndBoundedSize(t *testing.T) {
-	s := newHashSet(64)
-	hashes := make([]common.Hash, 1000)
-	for i := range hashes {
-		hashes[i] = crypto.Keccak256Hash([]byte{byte(i), byte(i >> 8)})
+func TestArchiveHashCacheBoundedPerChain(t *testing.T) {
+	cache := newArchiveHashCache(64)
+	for i := 0; i < 1000; i++ {
+		cache.Add("1", crypto.Keccak256Hash([]byte{byte(i), byte(i >> 8)}))
 	}
-
-	s.Add(hashes[0])
-	s.Add(hashes[0]) // duplicates are not stored twice
-	require.True(t, s.Contains(hashes[0]))
-	require.Equal(t, 1, s.Len())
-
-	for _, h := range hashes {
-		s.Add(h)
-	}
-	require.LessOrEqual(t, s.Len(), 64)
-	// The most recent insert is always present: Add writes it last.
-	require.True(t, s.Contains(hashes[len(hashes)-1]))
-	require.False(t, s.Contains(crypto.Keccak256Hash([]byte("never added"))))
+	chain := cache.chain("1")
+	chain.CleanUp()
+	require.LessOrEqual(t, chain.EstimatedSize(), 64)
+	require.Nil(t, cache.chain("56"))
 }
 
-func TestHashSetCapacityRoundsUpToBuckets(t *testing.T) {
-	require.Len(t, newHashSet(1).buckets, 1)
-	require.Len(t, newHashSet(8).buckets, 1)
-	require.Len(t, newHashSet(9).buckets, 2)
-	require.Len(t, newHashSet(1024).buckets, 128)
-}
-
-func TestHashSetConcurrentAccess(t *testing.T) {
-	s := newHashSet(128)
+func TestArchiveHashCacheConcurrentAccess(t *testing.T) {
+	cache := newArchiveHashCache(128)
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
 		wg.Add(1)
@@ -53,13 +36,15 @@ func TestHashSetConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 2000; i++ {
 				h := crypto.Keccak256Hash([]byte{byte(g), byte(i), byte(i >> 8)})
-				s.Add(h)
-				s.Contains(h)
+				cache.Add("1", h)
+				cache.Contains("1", h)
 			}
 		}(g)
 	}
 	wg.Wait()
-	require.LessOrEqual(t, s.Len(), 128)
+	chain := cache.chain("1")
+	chain.CleanUp()
+	require.LessOrEqual(t, chain.EstimatedSize(), 128)
 }
 
 func TestArchiveHashCachePerChainAndDisabled(t *testing.T) {
