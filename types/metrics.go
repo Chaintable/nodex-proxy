@@ -27,7 +27,7 @@ func init() {
 
 func initMetrics(t reflect.Type, v reflect.Value, prefix string) {
 	switch t.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		initMetrics(t.Elem(), v.Elem(), prefix)
 	case reflect.Struct:
 		for i := 0; i < t.NumField(); i++ {
