@@ -194,6 +194,12 @@ var (
 		Name:      "health_check_total",
 		Help:      "Total number of node health checks performed",
 	}, []string{"chain_id", "node_key", "status"})
+	archiveHashCacheTotal = promauto.NewCounterVec(stdprome.CounterOpts{
+		Namespace: promNamespace,
+		Subsystem: promSubsystem,
+		Name:      "archive_hash_cache_total",
+		Help:      "Archive block-hash cache events: hit routes straight to archive, add records a hash after a state miss",
+	}, []string{"chain_id", "event"})
 	nodeHealthCheckDuration = promauto.NewHistogramVec(stdprome.HistogramOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,
@@ -211,4 +217,9 @@ func IncrNodeHealthCheckTotal(chainID, nodeKey, status string) {
 // ObserveNodeHealthCheckDuration observes the duration of a node health check
 func ObserveNodeHealthCheckDuration(chainID, nodeKey, status string, duration time.Duration) {
 	nodeHealthCheckDuration.WithLabelValues(chainID, nodeKey, status).Observe(float64(duration.Milliseconds()))
+}
+
+// IncrArchiveHashCache counts archive block-hash cache events (hit/add).
+func IncrArchiveHashCache(chainID, event string) {
+	archiveHashCacheTotal.WithLabelValues(chainID, event).Inc()
 }

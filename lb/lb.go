@@ -16,6 +16,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
+	"github.com/Chaintable/nodex-proxy/lb/jsonrpc/metrics"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/lb/selector"
 	"github.com/Chaintable/nodex-proxy/lb/selector/random"
@@ -53,6 +54,7 @@ type LoadBalancer struct {
 	healthChecker       *NodeHealthChecker
 	chainVersionRouter  *ChainVersionRouter
 	nodeGens            *nodeGenerations
+	archiveHashCache    *archiveHashCache
 }
 
 type jrpcxContextKeyType int
@@ -126,6 +128,7 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 		healthChecker:       NewNodeHealthChecker(healthCheckTimeout, maxWaitTime),
 		chainVersionRouter:  NewChainVersionRouter(),
 		nodeGens:            newNodeGenerations(),
+		archiveHashCache:    newArchiveHashCache(config.ArchiveHashCacheSize),
 	}
 }
 
@@ -378,6 +381,9 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	// Mark as upstream related request
 	requestContext.UpstreamRelated = true
 
+	// Hashes that previously needed archive skip the doomed state attempt.
+	lb.routeCachedArchiveHash(requestContext)
+
 	targetNode, err := lb.chooseTargetNode(requestContext, "")
 	if err != nil {
 		log.Error("failed to get node, err ", err)
@@ -448,6 +454,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		}
 		lb.attemptRequest(ctx, c, requestContext, targetNode)
 		responseErrorCodes = lb.parseRPCErrorCodes(c.Response.Body())
+		lb.rememberArchiveHash(c, requestContext, responseErrorCodes)
 	}
 
 	// Retry to nativeNodes when CosmosPrecompile
@@ -547,6 +554,55 @@ func (lb *LoadBalancer) shouldRetryWithArchive(requestContext *types.RequestCont
 		return false
 	}
 	return responseErrorCodes.Has(types.StateBlockNotFound)
+}
+
+// routeCachedArchiveHash forces the request onto archive nodes when its block
+// hash is one that state nodes recently failed to serve on this chain.
+func (lb *LoadBalancer) routeCachedArchiveHash(requestContext *types.RequestContext) bool {
+	if requestContext == nil || requestContext.Archive || requestContext.Native {
+		return false
+	}
+	chainId := requestContext.ChainId
+	// Checked before parsing so chains without archive traffic pay nothing.
+	if !lb.archiveHashCache.HasChain(chainId) {
+		return false
+	}
+	if archiveNodes, _ := lb.NodeSelector.GetArchiveNodes(chainId); len(archiveNodes) == 0 {
+		return false
+	}
+	hash, ok := requestBlockHash(requestContext)
+	if !ok || !lb.archiveHashCache.Contains(chainId, hash) {
+		return false
+	}
+	requestContext.Archive = true
+	metrics.IncrArchiveHashCache(chainId, "hit")
+	if log.DebugEnabled() {
+		log.Debug("block hash cached as archive-only, routing to archive",
+			log.Any("chain_id", chainId), log.Any("block_hash", hash.Hex()))
+	}
+	return true
+}
+
+// rememberArchiveHash caches the request's block hash after a state node
+// returned -39006 and the archive retry served it. Only hashes archive has
+// proven it can serve are cached, so a lagging archive never gets pinned.
+// Batches are skipped: the parsed block context comes from a single item and
+// may not be the one that triggered -39006.
+func (lb *LoadBalancer) rememberArchiveHash(c *app.RequestContext, requestContext *types.RequestContext, responseErrorCodes rpcErrorCodes) {
+	if lb.archiveHashCache == nil || requestContext == nil || requestContext.IsBatch {
+		return
+	}
+	if c.Response.StatusCode() != consts.StatusOK ||
+		responseErrorCodes.Has(types.StateBlockNotFound) ||
+		responseErrorCodes.Has(types.InvalidBlockID) {
+		return
+	}
+	hash, ok := requestBlockHash(requestContext)
+	if !ok {
+		return
+	}
+	lb.archiveHashCache.Add(requestContext.ChainId, hash)
+	metrics.IncrArchiveHashCache(requestContext.ChainId, "add")
 }
 
 func (lb *LoadBalancer) shouldRetryWithNative(requestContext *types.RequestContext, responseErrorCodes rpcErrorCodes) bool {

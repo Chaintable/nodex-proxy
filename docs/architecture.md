@@ -115,6 +115,8 @@ If a selected pool is empty, state and archive pools fall back to each other. Ea
 | `StateBlockNotFound` (`-39006`) | Archive node | Only when the first attempt was not already archive. |
 | `CosmosPrecompile` (`-39008`) | Native node | Native retry changes the upstream path to `/`. |
 
+When a non-batch request pinned to a block hash gets `-39006` from state and the archive retry serves it (HTTP 200, no `-39006`/`-39007`), the hash is remembered in a per-chain LRU (`archive_hash_cache_size`, default `1024`, negative disables). Later requests with that hash on the same chain go straight to archive, skipping the state attempt. Hits and inserts are counted by `archive_hash_cache_total{chain_id,event}`.
+
 10. Post-processors run in order:
 
 ```text
