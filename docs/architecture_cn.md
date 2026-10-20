@@ -115,7 +115,7 @@ request mirror
 | `StateBlockNotFound` (`-39006`) | Archive 节点 | 仅当第一次请求不是 archive 请求时触发。 |
 | `CosmosPrecompile` (`-39008`) | Native 节点 | Native retry 会把上游 path 改为 `/`。 |
 
-非 batch 且按区块 hash 指定的请求，若 state 返回 `-39006`、archive 重试成功（HTTP 200 且无 `-39006`/`-39007`），该 hash 会记入按链区分的有界缓存（[otter](https://github.com/maypok86/otter)，W-TinyLFU 淘汰；`archive_hash_cache_size`，默认 `1024`，负数关闭）。之后同链同 hash 的请求直接发往 archive，跳过 state。命中和写入由 `archive_hash_cache_total{chain_id,event}` 统计。
+非 batch 且按区块 hash 指定（`"type":"Equals"`）的请求，若 state 返回 `-39006`、archive 重试成功（HTTP 200 且无 `-39006`/`-39007`），该 hash 会记入按链区分的有界缓存（[otter](https://github.com/maypok86/otter)，W-TinyLFU 淘汰；`archive_hash_cache_size`，默认 `1024`，负数关闭）。之后同链同 hash 的非 batch `Equals` 请求直接发往 archive，跳过 state。命中和写入由 `archive_hash_cache_total{chain_id,event}` 统计。
 
 10. 后处理器按如下顺序运行：
 

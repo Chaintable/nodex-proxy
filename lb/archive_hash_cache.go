@@ -72,9 +72,13 @@ func (c *archiveHashCache) chain(chainId string) *otter.Cache[common.Hash, struc
 }
 
 // requestBlockHash returns the block hash the request is pinned to, if any.
+// Only "Equals" contexts count: leafage serves "Contains" from the node's own
+// latest state regardless of the hash, so routing those to archive would read
+// archive's (possibly lagging) head instead of state's.
 func requestBlockHash(requestContext *types.RequestContext) (common.Hash, bool) {
 	blockContext := requestContext.GetBlockContext()
-	if blockContext == nil || blockContext.BlockId == nil || blockContext.BlockId.BlockHash == nil {
+	if blockContext == nil || blockContext.Type != "Equals" ||
+		blockContext.BlockId == nil || blockContext.BlockId.BlockHash == nil {
 		return common.Hash{}, false
 	}
 	return *blockContext.BlockId.BlockHash, true

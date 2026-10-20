@@ -69,7 +69,11 @@ func TestArchiveHashCachePerChainAndDisabled(t *testing.T) {
 const archiveTestHash = "0x1111111111111111111111111111111111111111111111111111111111111111"
 
 func blockHashRequest(hash string) string {
-	return fmt.Sprintf(`{"jsonrpc":"2.0","method":"debank_getBalance","params":["0x01",{"block_id":%q,"type":"Equals"}],"id":1}`, hash)
+	return blockCtxRequest(hash, "Equals")
+}
+
+func blockCtxRequest(hash, blockType string) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","method":"debank_getBalance","params":["0x01",{"block_id":%q,"type":%q}],"id":1}`, hash, blockType)
 }
 
 func newArchiveCacheTestLB(t *testing.T, archiveBody string) (*LoadBalancer, *retryTestSelector) {
@@ -164,4 +168,26 @@ func TestServeHTTPCachedArchiveFallsBackWhenNoArchiveNode(t *testing.T) {
 	sel.calls = nil
 	serveTestRequest(lb, "1", blockHashRequest(archiveTestHash))
 	require.Equal(t, []string{"archive", "state", "archive"}, sel.calls)
+}
+
+func TestServeHTTPContainsContextIgnoresArchiveHashCache(t *testing.T) {
+	lb, sel := newArchiveCacheTestLB(t, `{"jsonrpc":"2.0","result":"0x1","id":1}`)
+	serveTestRequest(lb, "1", blockHashRequest(archiveTestHash))
+	require.True(t, lb.archiveHashCache.Contains("1", common.HexToHash(archiveTestHash)))
+
+	// "Contains" is served from the node's latest state, so it must keep
+	// going to state even when the same hash is cached as archive-only.
+	sel.calls = nil
+	serveTestRequest(lb, "1", blockCtxRequest(archiveTestHash, "Contains"))
+	require.Equal(t, "state", sel.calls[0])
+}
+
+func TestServeHTTPBatchIgnoresArchiveHashCache(t *testing.T) {
+	lb, sel := newArchiveCacheTestLB(t, `{"jsonrpc":"2.0","result":"0x1","id":1}`)
+	serveTestRequest(lb, "1", blockHashRequest(archiveTestHash))
+
+	sel.calls = nil
+	single := blockHashRequest(archiveTestHash)
+	serveTestRequest(lb, "1", "["+single+","+single+"]")
+	require.Equal(t, "state", sel.calls[0])
 }

@@ -563,8 +563,11 @@ func (lb *LoadBalancer) shouldRetryWithArchive(requestContext *types.RequestCont
 
 // routeCachedArchiveHash forces the request onto archive nodes when its block
 // hash is one that state nodes recently failed to serve on this chain.
+//
+// Batches are left alone: their other items (e.g. "latest") would then be
+// served from archive's head instead of state's.
 func (lb *LoadBalancer) routeCachedArchiveHash(requestContext *types.RequestContext) bool {
-	if requestContext == nil || requestContext.Archive || requestContext.Native {
+	if requestContext == nil || requestContext.Archive || requestContext.Native || requestContext.IsBatch {
 		return false
 	}
 	chainId := requestContext.ChainId
