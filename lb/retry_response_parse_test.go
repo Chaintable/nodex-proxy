@@ -2,6 +2,7 @@ package lb
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -144,6 +145,9 @@ func (s *retryTestSelector) GetNode(ctx *types.RequestContext, requestKey string
 		return s.native, nil
 	case ctx != nil && ctx.Archive:
 		s.calls = append(s.calls, "archive")
+		if s.archive == nil {
+			return nil, errors.New("no archive node")
+		}
 		return s.archive, nil
 	default:
 		s.calls = append(s.calls, "state")

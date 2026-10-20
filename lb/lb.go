@@ -382,9 +382,14 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	requestContext.UpstreamRelated = true
 
 	// Hashes that previously needed archive skip the doomed state attempt.
-	lb.routeCachedArchiveHash(requestContext)
+	cachedArchive := lb.routeCachedArchiveHash(requestContext)
 
 	targetNode, err := lb.chooseTargetNode(requestContext, "")
+	if err != nil && cachedArchive {
+		// No usable archive node right now: fall back to the normal path.
+		requestContext.Archive = false
+		targetNode, err = lb.chooseTargetNode(requestContext, "")
+	}
 	if err != nil {
 		log.Error("failed to get node, err ", err)
 		_, object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
@@ -565,9 +570,6 @@ func (lb *LoadBalancer) routeCachedArchiveHash(requestContext *types.RequestCont
 	chainId := requestContext.ChainId
 	// Checked before parsing so chains without archive traffic pay nothing.
 	if !lb.archiveHashCache.HasChain(chainId) {
-		return false
-	}
-	if archiveNodes, _ := lb.NodeSelector.GetArchiveNodes(chainId); len(archiveNodes) == 0 {
 		return false
 	}
 	hash, ok := requestBlockHash(requestContext)

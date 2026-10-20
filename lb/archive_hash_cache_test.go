@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
@@ -11,25 +12,54 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
 )
 
-func TestHashLRUEvictsLeastRecentlyUsed(t *testing.T) {
-	l := newHashLRU(2)
-	a, b, c := common.HexToHash("0xa"), common.HexToHash("0xb"), common.HexToHash("0xc")
+func TestHashSetAddContainsAndBoundedSize(t *testing.T) {
+	s := newHashSet(64)
+	hashes := make([]common.Hash, 1000)
+	for i := range hashes {
+		hashes[i] = crypto.Keccak256Hash([]byte{byte(i), byte(i >> 8)})
+	}
 
-	l.Add(a)
-	l.Add(b)
-	require.True(t, l.Get(a)) // a becomes most recent, b is now oldest
-	l.Add(c)
+	s.Add(hashes[0])
+	s.Add(hashes[0]) // duplicates are not stored twice
+	require.True(t, s.Contains(hashes[0]))
+	require.Equal(t, 1, s.Len())
 
-	require.Equal(t, 2, l.Len())
-	require.True(t, l.Get(a))
-	require.False(t, l.Get(b))
-	require.True(t, l.Get(c))
+	for _, h := range hashes {
+		s.Add(h)
+	}
+	require.LessOrEqual(t, s.Len(), 64)
+	// The most recent insert is always present: Add writes it last.
+	require.True(t, s.Contains(hashes[len(hashes)-1]))
+	require.False(t, s.Contains(crypto.Keccak256Hash([]byte("never added"))))
+}
 
-	l.Add(c) // re-adding an existing hash must not grow the set
-	require.Equal(t, 2, l.Len())
+func TestHashSetCapacityRoundsUpToBuckets(t *testing.T) {
+	require.Len(t, newHashSet(1).buckets, 1)
+	require.Len(t, newHashSet(8).buckets, 1)
+	require.Len(t, newHashSet(9).buckets, 2)
+	require.Len(t, newHashSet(1024).buckets, 128)
+}
+
+func TestHashSetConcurrentAccess(t *testing.T) {
+	s := newHashSet(128)
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 2000; i++ {
+				h := crypto.Keccak256Hash([]byte{byte(g), byte(i), byte(i >> 8)})
+				s.Add(h)
+				s.Contains(h)
+			}
+		}(g)
+	}
+	wg.Wait()
+	require.LessOrEqual(t, s.Len(), 128)
 }
 
 func TestArchiveHashCachePerChainAndDisabled(t *testing.T) {
@@ -138,4 +168,15 @@ func TestServeHTTPArchiveHashCacheDisabled(t *testing.T) {
 	sel.calls = nil
 	serveTestRequest(lb, "1", blockHashRequest(archiveTestHash))
 	require.Equal(t, []string{"state", "archive"}, sel.calls)
+}
+
+func TestServeHTTPCachedArchiveFallsBackWhenNoArchiveNode(t *testing.T) {
+	const ok = `{"jsonrpc":"2.0","result":"0x1","id":1}`
+	lb, sel := newArchiveCacheTestLB(t, ok)
+	serveTestRequest(lb, "1", blockHashRequest(archiveTestHash))
+
+	sel.archive = nil // archive pool drained after the hash was cached
+	sel.calls = nil
+	serveTestRequest(lb, "1", blockHashRequest(archiveTestHash))
+	require.Equal(t, []string{"archive", "state", "archive"}, sel.calls)
 }
