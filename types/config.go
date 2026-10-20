@@ -55,6 +55,7 @@ var defaultConfig = Config{
 	ConnMaxWaitTimeout:     1000,
 	ConnDialTimeout:        3000,
 	RPCMethodTimeoutConfig: map[string]int{},
+	ArchiveHashCacheSize:   1024,
 	Processor: ProcessorConfig{
 		ObservabilityLog: ObservabilityLogProcessorConfig{
 			Enable: false,
@@ -185,6 +186,11 @@ type Config struct {
 	EtcdPrefix             string              `yaml:"etcd_prefix"`
 	NodeHealthCheckTimeout int                 `yaml:"node_health_check_timeout"`  // in seconds
 	NodeHealthCheckMaxWait int                 `yaml:"node_health_check_max_wait"` // in seconds
+	// ArchiveHashCacheSize is how many block hashes per chain are remembered as
+	// archive-only (state returned -39006, archive served it). Requests on a
+	// remembered hash go straight to archive. 0 uses the default; negative
+	// disables the cache.
+	ArchiveHashCacheSize int `yaml:"archive_hash_cache_size"`
 }
 
 type RaftJoinConfig struct {
@@ -261,6 +267,9 @@ func FillWithDefaultConfig(cfg *Config) {
 	}
 	if cfg.ConnDialTimeout == 0 {
 		cfg.ConnDialTimeout = defaultConfig.ConnDialTimeout
+	}
+	if cfg.ArchiveHashCacheSize == 0 {
+		cfg.ArchiveHashCacheSize = defaultConfig.ArchiveHashCacheSize
 	}
 	if cfg.RPCMethodTimeoutConfig == nil {
 		cfg.RPCMethodTimeoutConfig = map[string]int{}

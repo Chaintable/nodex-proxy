@@ -33,6 +33,10 @@ proxy_config:
   etcd_prefix: ""
   node_health_check_timeout: 5     # in seconds
   node_health_check_max_wait: 300  # in seconds
+  # Per-chain count of block hashes remembered as archive-only (state node
+  # returned -39006 and archive served it); later requests on these hashes skip
+  # the state attempt. 0 = default (1024), negative = disabled.
+  archive_hash_cache_size: 1024
 
   # Processor configuration
   processor:

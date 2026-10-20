@@ -22,7 +22,7 @@ This guide covers deploying nodex-proxy in various environments: bare-metal, Doc
 
 | Component | Version | Required |
 |-----------|---------|----------|
-| Go | 1.22+ | Bare-metal only |
+| Go | 1.26+ | Bare-metal only |
 | Docker | 20.10+ | Docker / Compose / K8s |
 | docker-compose | v2+ | Compose only |
 | kubectl | 1.24+ | K8s only |
@@ -138,7 +138,7 @@ journalctl -u nodex-proxy -f
 
 #### Build Image
 
-The Dockerfile uses a two-stage build (golang:1.23-bookworm → ubuntu:24.04):
+The Dockerfile uses a two-stage build (golang:1.26-bookworm → ubuntu:24.04):
 
 ```bash
 docker build -t nodex-proxy:latest .
