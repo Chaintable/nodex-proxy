@@ -15,11 +15,22 @@ type methodMetricKey struct {
 	method jsonrpc.RPCMethod
 }
 
-// Like the underlying Prometheus vectors, handles live for the process lifetime.
-// One lookup per postprocessor replaces repeated hashing of the common labels.
-// Failure labels (including node addresses) and source-dapp labels stay on the
-// existing vectors and do not add dimensions to this cache.
-var methodMetrics sync.Map // methodMetricKey -> *MethodMetrics
+// Bound only the additional handle cache; Prometheus keeps its existing label
+// sets and accounting. Unusual labels and entries beyond the cap still record
+// metrics through request-local handles, without adding permanent cache entries.
+const (
+	maxMethodMetricEntries    = 16 * 1024
+	maxMethodMetricLabelBytes = 1024
+)
+
+type methodMetricCache struct {
+	entries sync.Map   // methodMetricKey -> *MethodMetrics
+	mu      sync.Mutex // serializes admission, never taken on cache hits
+	size    int
+	limit   int
+}
+
+var methodMetrics = methodMetricCache{limit: maxMethodMetricEntries}
 
 type metricHandle[T any] struct {
 	once   sync.Once
@@ -48,21 +59,40 @@ type MethodMetrics struct {
 }
 
 func (m CommonLabelMetrics) ForMethod(method jsonrpc.RPCMethod) *MethodMetrics {
-	key := methodMetricKey{CommonLabelMetrics: m, method: method}
-	if existing, ok := methodMetrics.Load(key); ok {
+	return methodMetrics.forMethod(methodMetricKey{CommonLabelMetrics: m, method: method})
+}
+
+func (cache *methodMetricCache) forMethod(key methodMetricKey) *MethodMetrics {
+	if len(key.host)+len(key.target)+len(key.chainID)+len(key.chainVersion)+len(key.method) > maxMethodMetricLabelBytes {
+		return newMethodMetrics(key)
+	}
+	if existing, ok := cache.entries.Load(key); ok {
 		return existing.(*MethodMetrics)
 	}
-	// A decoded method can be a substring of a large RPC body. Cache only
-	// owned label bytes, so the additional cache cannot pin request buffers.
-	key = methodMetricKey{
-		CommonLabelMetrics: CommonLabelMetrics{
-			host: strings.Clone(m.host), target: strings.Clone(m.target),
-			chainID: strings.Clone(m.chainID), chainVersion: strings.Clone(m.chainVersion),
-		},
-		method: jsonrpc.RPCMethod(strings.Clone(string(method))),
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	// A racing caller may have populated the tuple while we waited.
+	if existing, ok := cache.entries.Load(key); ok {
+		return existing.(*MethodMetrics)
 	}
-	bound, _ := methodMetrics.LoadOrStore(key, &MethodMetrics{key: key})
-	return bound.(*MethodMetrics)
+	bound := newMethodMetrics(key)
+	if cache.size < cache.limit {
+		cache.entries.Store(bound.key, bound)
+		cache.size++
+	}
+	return bound
+}
+
+func newMethodMetrics(key methodMetricKey) *MethodMetrics {
+	// Both cached and request-local handles must own their labels: a Prometheus
+	// vector can retain the supplied strings when creating a time series.
+	return &MethodMetrics{key: methodMetricKey{
+		CommonLabelMetrics: CommonLabelMetrics{
+			host: strings.Clone(key.host), target: strings.Clone(key.target),
+			chainID: strings.Clone(key.chainID), chainVersion: strings.Clone(key.chainVersion),
+		},
+		method: jsonrpc.RPCMethod(strings.Clone(string(key.method))),
+	}}
 }
 
 func (m *MethodMetrics) IncrTotalJRPCRequest() {

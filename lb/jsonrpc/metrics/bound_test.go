@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -131,4 +132,63 @@ func TestBoundMetricsConcurrentColdStart(t *testing.T) {
 		}
 		require.Equal(t, float64(workers*100), total, family.GetName())
 	}
+}
+
+func TestMethodMetricCacheAdmissionLimit(t *testing.T) {
+	cache := methodMetricCache{limit: 2}
+	common := NewCommonLabelMetrics(types.ProcessorHost(fmt.Sprintf("limited-%d", metricTestSequence.Add(1))), "native", "1", "v1")
+	key := func(method string) methodMetricKey {
+		return methodMetricKey{CommonLabelMetrics: common, method: jsonrpc.RPCMethod(method)}
+	}
+	hot := cache.forMethod(key("hot"))
+	require.Same(t, hot, cache.forMethod(key("hot")))
+	cache.forMethod(key("second"))
+	// Misses after the cap create no persistent entry but still report counters.
+	first := cache.forMethod(key("overflow"))
+	second := cache.forMethod(key("overflow"))
+	require.NotSame(t, first, second)
+	first.IncrCallsFinished()
+	second.IncrCallsFinished()
+	metric := &dto.Metric{}
+	require.NoError(t, callsFinished.WithLabelValues(common.host, common.target, common.chainID, common.chainVersion, "overflow").Write(metric))
+	require.Equal(t, float64(2), metric.Counter.GetValue())
+	require.Equal(t, 2, cache.size)
+	require.Same(t, hot, cache.forMethod(key("hot")), "hitting the cap must not evict hot handles")
+}
+
+func TestMethodMetricCacheConcurrentAdmission(t *testing.T) {
+	cache := methodMetricCache{limit: 4}
+	var wg sync.WaitGroup
+	for i := range 64 {
+		wg.Go(func() {
+			cache.forMethod(methodMetricKey{method: jsonrpc.RPCMethod(fmt.Sprint(i))})
+		})
+	}
+	wg.Wait()
+	entries := 0
+	cache.entries.Range(func(_, _ any) bool { entries++; return true })
+	require.Equal(t, 4, entries)
+	require.Equal(t, 4, cache.size)
+}
+
+func TestMethodMetricCacheRejectsOversizedKeys(t *testing.T) {
+	cache := methodMetricCache{limit: 2}
+	for field := range 5 {
+		key := methodMetricKey{}
+		long := strings.Repeat("x", maxMethodMetricLabelBytes+1)
+		switch field {
+		case 0:
+			key.host = long
+		case 1:
+			key.target = long
+		case 2:
+			key.chainID = long
+		case 3:
+			key.chainVersion = long
+		case 4:
+			key.method = jsonrpc.RPCMethod(long)
+		}
+		require.NotSame(t, cache.forMethod(key), cache.forMethod(key))
+	}
+	require.Zero(t, cache.size)
 }
