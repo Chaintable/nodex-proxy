@@ -84,11 +84,14 @@ type RequestContext struct {
 	responseHasErrorKey   bool
 }
 
-// ContainsResponseErrorKey memoizes the conservative response pre-filter for
-// the current attempt. Only the request goroutine may access it. Call
-// ResetResponseErrorKey before replacing a response (including retry failures).
+// CachedResponseContainsErrorKey returns the cached conservative pre-filter for
+// the current attempt, computing it from body only on the first call. Only the
+// request goroutine may access it. Attempts and response resets invalidate it.
 // A positive result still needs unmarshalling to find a top-level error.
-func (p *RequestContext) ContainsResponseErrorKey(body []byte) bool {
+func (p *RequestContext) CachedResponseContainsErrorKey(body []byte) bool {
+	if p == nil {
+		return jsonrpc.ContainsErrorKey(body)
+	}
 	if !p.responseErrorKeyKnown {
 		p.responseHasErrorKey = jsonrpc.ContainsErrorKey(body)
 		p.responseErrorKeyKnown = true
@@ -97,6 +100,9 @@ func (p *RequestContext) ContainsResponseErrorKey(body []byte) bool {
 }
 
 func (p *RequestContext) ResetResponseErrorKey() {
+	if p == nil {
+		return
+	}
 	p.responseErrorKeyKnown = false
 	p.responseHasErrorKey = false
 }

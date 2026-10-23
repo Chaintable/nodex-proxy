@@ -267,7 +267,7 @@ func parseJRPCResponseBodyHertz() types.ProcessorFuncHertz {
 		}
 		// A success response carries no "error" member; skip the unmarshal
 		// entirely so the common path stays parse-free.
-		if !processData.ContainsResponseErrorKey(body) {
+		if !processData.CachedResponseContainsErrorKey(body) {
 			return ctx, c, processData
 		}
 

@@ -69,6 +69,10 @@ func TestParseRPCErrorCodes(t *testing.T) {
 			codes := lb.parseRPCErrorCodes(tc.body, &types.RequestContext{})
 			require.Equal(t, tc.wantState, codes.Has(types.StateBlockNotFound))
 			require.Equal(t, tc.wantNative, codes.Has(types.CosmosPrecompile))
+			// A missing optional context skips memoization rather than panicking.
+			uncached := lb.parseRPCErrorCodes(tc.body, nil)
+			require.Equal(t, tc.wantState, uncached.Has(types.StateBlockNotFound))
+			require.Equal(t, tc.wantNative, uncached.Has(types.CosmosPrecompile))
 		})
 	}
 }
@@ -213,3 +217,42 @@ func (s *retryTestSelector) GetAllChainsIDs() []string {
 }
 
 var _ selector.Strategy = (*retryTestSelector)(nil)
+
+func TestAttemptRequestInvalidatesResponseFilter(t *testing.T) {
+	for _, upstreamError := range []bool{false, true} {
+		t.Run(strconv.FormatBool(upstreamError), func(t *testing.T) {
+			oldBody := `{"jsonrpc":"2.0","error":{"code":-39006},"id":1}`
+			newBody := `{"jsonrpc":"2.0","result":"0x1","id":1}`
+			if upstreamError {
+				oldBody, newBody = newBody, oldBody
+			}
+			srv := httptest.NewServer(jsonRPCResponseHandler(newBody))
+			defer srv.Close()
+			node := nodeFromTestServer(t, "filter-lifetime", srv, discovery.NodeTypeState)
+			lb := &LoadBalancer{Config: types.DefaultConfig()}
+			c := app.NewContext(0)
+			c.Request.SetRequestURI("http://proxy.local/1")
+			c.Request.Header.SetMethod(consts.MethodPost)
+			c.Request.SetBodyString(`{"jsonrpc":"2.0","method":"contractMultiCall","params":[],"id":1}`)
+			c.Response.SetBodyString(oldBody)
+			rc := &types.RequestContext{}
+			require.Equal(t, !upstreamError, rc.CachedResponseContainsErrorKey(c.Response.Body()))
+			// Deliberately omit resetResponse: attemptRequest must invalidate by itself.
+			lb.attemptRequest(context.Background(), c, rc, node)
+			require.Equal(t, newBody, string(c.Response.Body()))
+			require.Equal(t, upstreamError, rc.CachedResponseContainsErrorKey(c.Response.Body()))
+		})
+	}
+}
+
+func TestResetResponseInvalidatesFilterWithoutAttempt(t *testing.T) {
+	c := app.NewContext(0)
+	rc := &types.RequestContext{}
+	c.Response.SetBodyString(`{"error":null}`)
+	require.True(t, rc.CachedResponseContainsErrorKey(c.Response.Body()))
+	resetResponse(c, rc)
+	// A retry can fail during node selection, before reaching attemptRequest.
+	c.Response.SetBodyString(`{"result":null}`)
+	require.False(t, rc.CachedResponseContainsErrorKey(c.Response.Body()))
+	resetResponse(c, nil)
+}

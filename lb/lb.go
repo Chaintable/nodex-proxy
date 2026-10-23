@@ -430,8 +430,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		log.Info("Received error code -39006(StateBlockNotFound), retrying with archive node")
 
 		// Reset response body for retry
-		requestContext.ResetResponseErrorKey()
-		c.Response.Reset()
+		resetResponse(c, requestContext)
 
 		// Retry with archive node
 		requestContext.Archive = true
@@ -465,8 +464,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	// Retry to nativeNodes when CosmosPrecompile
 	if lb.shouldRetryWithNative(requestContext, responseErrorCodes) {
 		log.Info("Received error code -39008(CosmosPrecompile), retrying with native node")
-		requestContext.ResetResponseErrorKey()
-		c.Response.Reset()
+		resetResponse(c, requestContext)
 		requestContext.Native = true
 
 		targetNode, err := lb.chooseTargetNode(requestContext, "native")
@@ -520,7 +518,18 @@ func (lb *LoadBalancer) upstreamReadTimeout(method ejrpc.RPCMethod) time.Duratio
 	return time.Duration(lb.Config.DefaultRPCTimeout) * time.Millisecond
 }
 
+// resetResponse couples replacement of response bytes with invalidation, including
+// branches that fail to choose a node before an upstream attempt starts.
+func resetResponse(c *app.RequestContext, requestContext *types.RequestContext) {
+	requestContext.ResetResponseErrorKey()
+	c.Response.Reset()
+}
+
 func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, requestContext *types.RequestContext, targetNode *lbnode.Node) {
+	// Every upstream attempt owns a fresh filter result, even if a future caller
+	// retries without explicitly resetting the Hertz response first.
+	requestContext.ResetResponseErrorKey()
+
 	if requestContext != nil && requestContext.Native {
 		c.Request.URI().SetPath("/")
 	}
@@ -699,7 +708,7 @@ func (lb *LoadBalancer) parseRPCErrorCodes(responseBody []byte, requestContext *
 
 	// Retry decisions only care about JSON-RPC error codes; a response
 	// without an "error" member cannot carry one, so skip the full parse.
-	if !requestContext.ContainsResponseErrorKey(trimmed) {
+	if !requestContext.CachedResponseContainsErrorKey(trimmed) {
 		return nil
 	}
 
