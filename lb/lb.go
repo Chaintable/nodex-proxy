@@ -755,7 +755,9 @@ func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *pro
 	}
 	requestContext.IsBatch = len(requestContext.RequestBody) > 1
 	if !requestContext.IsBatch {
-		requestContext.Method = requestContext.RequestBody[0].Method
+		// The decoded method aliases a copy of the whole request body. Metric
+		// series and trace attributes outlive the request, so own it once here.
+		requestContext.Method = ejrpc.RPCMethod(strings.Clone(string(requestContext.RequestBody[0].Method)))
 	}
 	for _, req := range requestContext.RequestBody {
 		if requestContext.Error = ejrpc.ValidateRequest(req); requestContext.Error != nil {

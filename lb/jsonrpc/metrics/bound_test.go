@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,43 +55,67 @@ func metricSnapshot(t *testing.T, registry *prometheus.Registry, host string) []
 	return result
 }
 
+// recordDirect writes the expected series through the vectors with explicit
+// label values in declaration order, independent of the bound-handle code.
+func recordDirect(host string, method jsonrpc.RPCMethod) {
+	common := []string{host, "native", "1", "v1"}
+	labels := func(extra ...string) []string { return append(append([]string(nil), common...), extra...) }
+	totalJRPCRequest.WithLabelValues(common...).Inc()
+	statusMethod := string(method)
+	if statusMethod == "" {
+		statusMethod = "batch"
+	}
+	for _, status := range []int{200, 200, 408, 502, 504} {
+		httpStatusCode.WithLabelValues(labels(statusMethod, strconv.Itoa(status))...).Inc()
+	}
+	if method == "" {
+		batchCallsFinished.WithLabelValues(common...).Inc()
+		batchCallsTime.WithLabelValues(common...).Observe(12)
+		return
+	}
+	callsFinished.WithLabelValues(labels(string(method))...).Inc()
+	callsCacheHits.WithLabelValues(labels(string(method))...).Inc()
+	callsTime.WithLabelValues(labels(string(method))...).Observe(12)
+	requestPayloadSizes.WithLabelValues(labels(string(method))...).Observe(40000)
+	responsePayloadSizes.WithLabelValues(labels(string(method))...).Observe(262144)
+}
+
 func TestBoundMetricsPreserveExposition(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(totalJRPCRequest, callsFinished, callsCacheHits, callsFailed, batchCallsFinished, callsTime, batchCallsTime, requestPayloadSizes, responsePayloadSizes, httpStatusCode)
 	sequence := metricTestSequence.Add(1)
 	for _, method := range []jsonrpc.RPCMethod{"contractMultiCall", "eth_getBalance", "", "batch"} {
 		t.Run(string(method), func(t *testing.T) {
-			originalHost, cachedHost := fmt.Sprintf("original-%d-%s", sequence, method), fmt.Sprintf("cached-%d-%s", sequence, method)
-			original := NewCommonLabelMetrics(types.ProcessorHost(originalHost), "native", "1", "v1")
-			cached := NewCommonLabelMetrics(types.ProcessorHost(cachedHost), "native", "1", "v1").ForMethod(method)
-			require.Empty(t, metricSnapshot(t, registry, cachedHost), "binding must not create unused time series")
-			original.IncrTotalJRPCRequest()
-			cached.IncrTotalJRPCRequest()
-			for _, status := range []int{200, 200, 408, 502, 504} {
-				original.IncrHTTPStatusCode(status, method)
-				cached.IncrHTTPStatusCode(status)
-			}
-			if method == "" {
-				original.IncrBatchCallsFinished()
-				cached.IncrBatchCallsFinished()
-				original.ObBatchCallsTime(12 * time.Millisecond)
-				cached.ObBatchCallsTime(12 * time.Millisecond)
-			} else {
-				original.IncrCallsFinished(method)
-				cached.IncrCallsFinished()
-				original.IncrCallsCacheHits(method)
-				cached.IncrCallsCacheHits()
-				original.ObCallsTime(method, 12*time.Millisecond)
-				cached.ObCallsTime(12 * time.Millisecond)
-				original.ObRequestPayloadSizes(method, 40000)
-				cached.ObRequestPayloadSizes(40000)
-				original.ObResponsePayloadSizes(method, 262144)
-				cached.ObResponsePayloadSizes(262144)
-			}
-			expected, actual := metricSnapshot(t, registry, originalHost), metricSnapshot(t, registry, cachedHost)
-			require.Len(t, actual, len(expected))
-			for i := range expected {
-				require.True(t, proto.Equal(expected[i], actual[i]), "want %s; got %s", expected[i], actual[i])
+			directHost := fmt.Sprintf("direct-%d-%s", sequence, method)
+			recordDirect(directHost, method)
+			expected := metricSnapshot(t, registry, directHost)
+			for _, cached := range []bool{true, false} {
+				host := fmt.Sprintf("bound-%t-%d-%s", cached, sequence, method)
+				bound := NewCommonLabelMetrics(types.ProcessorHost(host), "native", "1", "v1").ForMethod(method)
+				require.NotNil(t, bound.handles)
+				if !cached {
+					bound.handles = nil // the path taken when the cache is full
+				}
+				require.Empty(t, metricSnapshot(t, registry, host), "binding must not create unused time series")
+				bound.IncrTotalJRPCRequest()
+				for _, status := range []int{200, 200, 408, 502, 504} {
+					bound.IncrHTTPStatusCode(status)
+				}
+				if method == "" {
+					bound.IncrBatchCallsFinished()
+					bound.ObBatchCallsTime(12 * time.Millisecond)
+				} else {
+					bound.IncrCallsFinished()
+					bound.IncrCallsCacheHits()
+					bound.ObCallsTime(12 * time.Millisecond)
+					bound.ObRequestPayloadSizes(40000)
+					bound.ObResponsePayloadSizes(262144)
+				}
+				actual := metricSnapshot(t, registry, host)
+				require.Len(t, actual, len(expected))
+				for i := range expected {
+					require.True(t, proto.Equal(expected[i], actual[i]), "cached=%t: want %s; got %s", cached, expected[i], actual[i])
+				}
 			}
 		})
 	}
@@ -140,20 +165,33 @@ func TestMethodMetricCacheAdmissionLimit(t *testing.T) {
 	key := func(method string) methodMetricKey {
 		return methodMetricKey{CommonLabelMetrics: common, method: jsonrpc.RPCMethod(method)}
 	}
-	hot := cache.forMethod(key("hot"))
-	require.Same(t, hot, cache.forMethod(key("hot")))
-	cache.forMethod(key("second"))
-	// Misses after the cap create no persistent entry but still report counters.
-	first := cache.forMethod(key("overflow"))
-	second := cache.forMethod(key("overflow"))
-	require.NotSame(t, first, second)
-	first.IncrCallsFinished()
-	second.IncrCallsFinished()
+	hot := cache.handlesFor(key("hot"))
+	require.NotNil(t, hot)
+	require.Same(t, hot, cache.handlesFor(key("hot")))
+	require.NotNil(t, cache.handlesFor(key("second")))
+	// Misses after the cap create no entry; metrics still record directly.
+	require.Nil(t, cache.handlesFor(key("overflow")))
+	overflow := MethodMetrics{key: key("overflow")}
+	overflow.IncrCallsFinished()
+	overflow.IncrCallsFinished()
 	metric := &dto.Metric{}
 	require.NoError(t, callsFinished.WithLabelValues(common.host, common.target, common.chainID, common.chainVersion, "overflow").Write(metric))
 	require.Equal(t, float64(2), metric.Counter.GetValue())
 	require.Equal(t, 2, cache.size)
-	require.Same(t, hot, cache.forMethod(key("hot")), "hitting the cap must not evict hot handles")
+	require.Same(t, hot, cache.handlesFor(key("hot")), "hitting the cap must not evict hot handles")
+
+	// Once full, misses must not wait for the admission lock.
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	done := make(chan *methodHandles, 1)
+	go func() { done <- cache.handlesFor(key("late")) }()
+	select {
+	case late := <-done:
+		require.Nil(t, late)
+	case <-time.After(5 * time.Second):
+		t.Fatal("full cache miss blocked on the admission lock")
+	}
+	require.Same(t, hot, cache.handlesFor(key("hot")))
 }
 
 func TestMethodMetricCacheConcurrentAdmission(t *testing.T) {
@@ -161,7 +199,7 @@ func TestMethodMetricCacheConcurrentAdmission(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 64 {
 		wg.Go(func() {
-			cache.forMethod(methodMetricKey{method: jsonrpc.RPCMethod(fmt.Sprint(i))})
+			cache.handlesFor(methodMetricKey{method: jsonrpc.RPCMethod(fmt.Sprint(i))})
 		})
 	}
 	wg.Wait()
@@ -188,7 +226,7 @@ func TestMethodMetricCacheRejectsOversizedKeys(t *testing.T) {
 		case 4:
 			key.method = jsonrpc.RPCMethod(long)
 		}
-		require.NotSame(t, cache.forMethod(key), cache.forMethod(key))
+		require.Nil(t, cache.handlesFor(key))
 	}
 	require.Zero(t, cache.size)
 }

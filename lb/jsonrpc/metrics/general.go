@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
@@ -32,7 +31,9 @@ var (
 // recorded through prometheus *Vec.WithLabelValues directly: label values must
 // be passed in the exact order the vector was declared with (common labels
 // first, extra labels after), which avoids the per-call label-map allocation
-// and sort that a name/value API needs.
+// and sort that a name/value API needs. A new time series retains its label
+// strings, so callers must pass owned strings, never substrings of request
+// buffers. Per-method metrics go through ForMethod (bound.go).
 type CommonLabelMetrics struct {
 	host         string
 	target       string
@@ -50,25 +51,13 @@ func NewCommonLabelMetrics(host types.ProcessorHost, target types.ProcessorTarge
 }
 
 func (m CommonLabelMetrics) IncrCallsStarted(method jsonrpc.RPCMethod, sourcedapp string) {
-	callsStarted.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, strings.Clone(string(method)), sourcedapp).Inc()
-}
-
-func (m CommonLabelMetrics) IncrCallsFinished(method jsonrpc.RPCMethod) {
-	callsFinished.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Inc()
-}
-
-func (m CommonLabelMetrics) IncrBatchCallsFinished() {
-	batchCallsFinished.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion).Inc()
-}
-
-func (m CommonLabelMetrics) IncrTotalJRPCRequest() {
-	totalJRPCRequest.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion).Inc()
+	callsStarted.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method), sourcedapp).Inc()
 }
 
 func (m CommonLabelMetrics) IncrCallsFailed(code jsonrpc.ErrorCode, method jsonrpc.RPCMethod, upstreamRelated bool, reason string, nodeAddr string) {
 	callsFailed.WithLabelValues(
 		m.host, m.target, m.chainID, m.chainVersion,
-		strings.Clone(string(method)),
+		string(method),
 		strconv.FormatInt(int64(code), 10),
 		strconv.FormatBool(upstreamRelated),
 		reason,
@@ -76,40 +65,8 @@ func (m CommonLabelMetrics) IncrCallsFailed(code jsonrpc.ErrorCode, method jsonr
 	).Inc()
 }
 
-func (m CommonLabelMetrics) IncrCallsCacheHits(method jsonrpc.RPCMethod) {
-	callsCacheHits.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Inc()
-}
-
-// ObCallsTime observe time cost in milliseconds for a single rpc call.
-func (m CommonLabelMetrics) ObCallsTime(method jsonrpc.RPCMethod, duration time.Duration) {
-	callsTime.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Observe(float64(duration.Milliseconds()))
-}
-
-// ObBatchCallsTime observe time cost in milliseconds for a single rpc call.
-func (m CommonLabelMetrics) ObBatchCallsTime(duration time.Duration) {
-	batchCallsTime.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion).Observe(float64(duration.Milliseconds()))
-}
-
-// ObRequestPayloadSizes observe payload size for a single rpc call.
-func (m CommonLabelMetrics) ObRequestPayloadSizes(method jsonrpc.RPCMethod, size int) {
-	requestPayloadSizes.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Observe(float64(size))
-}
-
-// ObResponsePayloadSizes observe payload size for a single rpc call.
-func (m CommonLabelMetrics) ObResponsePayloadSizes(method jsonrpc.RPCMethod, size int) {
-	responsePayloadSizes.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method)).Observe(float64(size))
-}
-
 func (m CommonLabelMetrics) IncrInternalFailedRequest() {
 	internalFailedRequest.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion).Inc()
-}
-
-// IncrHTTPStatusCode increments the HTTP status code counter
-func (m CommonLabelMetrics) IncrHTTPStatusCode(statusCode int, method jsonrpc.RPCMethod) {
-	if method == "" {
-		method = "batch"
-	}
-	httpStatusCode.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method), strconv.Itoa(statusCode)).Inc()
 }
 
 var (
