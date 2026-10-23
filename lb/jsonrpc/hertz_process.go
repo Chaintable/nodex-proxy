@@ -352,10 +352,15 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		chainID, chainVersion := metricChainLabels(processData)
 		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, chainID, chainVersion)
 		responseDuration := time.Since(processData.Start)
+		method := processData.Method
+		if processData.IsBatch {
+			method = ""
+		}
+		bound := m.ForMethod(method)
 
 		// basic request statistics
 		// TotalJRPCRequest = BatchCallsFinished + CallsFinished + CallsFailed
-		m.IncrTotalJRPCRequest()
+		bound.IncrTotalJRPCRequest()
 
 		// Record HTTP status code
 		statusCode := c.Response.StatusCode()
@@ -363,18 +368,14 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		if statusCode == 0 {
 			statusCode = 200
 		}
-		if processData.IsBatch {
-			m.IncrHTTPStatusCode(statusCode, "")
-		} else {
-			m.IncrHTTPStatusCode(statusCode, processData.Method)
-		}
+		bound.IncrHTTPStatusCode(statusCode)
 
 		if processData.IsBatch {
-			m.IncrBatchCallsFinished()
-			m.ObBatchCallsTime(responseDuration)
+			bound.IncrBatchCallsFinished()
+			bound.ObBatchCallsTime(responseDuration)
 			return ctx, c, processData
 		} else {
-			m.ObCallsTime(processData.Method, responseDuration)
+			bound.ObCallsTime(responseDuration)
 		}
 
 		if processData.Error != nil {
@@ -393,21 +394,21 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 				m.IncrCallsFailed(jsonrpc.InvalidResponseCode, processData.Method, processData.UpstreamRelated, reason, nodeAddr)
 			}
 		} else {
-			m.IncrCallsFinished(processData.Method)
+			bound.IncrCallsFinished()
 		}
 
 		// size statistics
 		if processData.RequestBodySize > 0 {
-			m.ObRequestPayloadSizes(processData.Method, processData.RequestBodySize)
+			bound.ObRequestPayloadSizes(processData.RequestBodySize)
 		}
 		responseBodySize := len(c.Response.Body())
 		if shouldRecordResponsePayloadSize(statusCode, processData, responseBodySize) {
-			m.ObResponsePayloadSizes(processData.Method, responseBodySize)
+			bound.ObResponsePayloadSizes(responseBodySize)
 		}
 
 		// cache statistics
 		if processData.Cached {
-			m.IncrCallsCacheHits(processData.Method)
+			bound.IncrCallsCacheHits()
 		}
 		return ctx, c, processData
 	}
