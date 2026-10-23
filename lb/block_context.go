@@ -2,6 +2,7 @@ package lb
 
 import (
 	"strings"
+	"unsafe"
 
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
@@ -32,7 +33,7 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 			return &types.BlockContext{BlockId: &blockID, Type: "Contains"}
 		}
 		var ctx types.BlockContext
-		// The search borrows request bytes. Own only the selected small argument so
+		// raw borrows request bytes. Own only the selected small argument so
 		// returned strings cannot retain or alias the mutable, potentially large body.
 		if err := sonic.UnmarshalString(strings.Clone(raw), &ctx); err != nil {
 			continue
@@ -42,42 +43,37 @@ func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *t
 	return nil
 }
 
+// blockContextArgument returns the routing argument, borrowed from params, and
+// the argument count. Second-argument methods select params[1]; others the last.
 func blockContextArgument(params []byte, second bool) (string, int, error) {
 	if second && !log.DebugEnabled() {
-		// Stop at params[1]; do not decode the call payload or inspect trailing args.
+		// Stop at params[1]: the AST search skips a large call list faster than a
+		// split and never looks at trailing arguments.
 		node, err := sonic.GetWithOptions(params, ast.SearchOptions{}, 1)
 		if err == nil {
 			raw, err := node.Raw()
 			return raw, 2, err
 		}
 	}
-	// Generic methods select the last argument. Also count the entire array when
-	// debug logs need params_count, or when the second argument is absent.
-	root, err := sonic.GetWithOptions(params, ast.SearchOptions{})
-	if err != nil {
+	// Split without copying: sonic.Unmarshal([]byte) copies the whole input
+	// first, and building an AST costs more for typical small params. This also
+	// counts every argument when debug logs need params_count.
+	var args []sonic.NoCopyRawMessage
+	if err := sonic.UnmarshalString(borrowString(params), &args); err != nil {
 		return "", 0, err
 	}
-	if root.TypeSafe() == ast.V_NULL {
+	if len(args) == 0 {
 		return "", 0, nil
 	}
-	iter, err := root.Values()
-	if err != nil {
-		return "", 0, err
+	arg := args[len(args)-1]
+	if second && len(args) > 1 {
+		arg = args[1]
 	}
-	var node ast.Node
-	var raw string
-	count := 0
-	for iter.Next(&node) {
-		count++
-		if !second || count == 2 {
-			raw, err = node.Raw()
-			if err != nil {
-				return "", 0, err
-			}
-		}
-	}
-	if err := root.Check(); err != nil {
-		return "", 0, err
-	}
-	return raw, count, nil
+	return borrowString(arg), len(args), nil
+}
+
+// borrowString views b as a string without copying. The caller must not let
+// the result outlive b or observe it while b changes.
+func borrowString(b []byte) string {
+	return unsafe.String(unsafe.SliceData(b), len(b))
 }

@@ -47,6 +47,8 @@ func BenchmarkBlockContextSelection(b *testing.B) {
 	ctx := `{"block_id":"0x1234","type":"Equals"}`
 	for name, requests := range map[string][]*ejrpc.RequestObject{
 		"genericSmall":     {{Method: "generic", Params: []byte(`[null,` + ctx + `]`)}},
+		"getBalanceLatest": {{Method: "eth_getBalance", Params: []byte(`["0x1234","latest"]`)}},
+		"ethCall4KiB":      {{Method: "eth_call", Params: []byte(`[{"to":"0x2222222222222222222222222222222222222222","data":"0x` + strings.Repeat("ab", 2048) + `"},` + ctx + `]`)}},
 		"genericLarge":     {{Method: "generic", Params: []byte(`[["0x` + strings.Repeat("ab", 20480) + `"],` + ctx + `]`)}},
 		"defaultLatest":    {{Method: ejrpc.ContractMultiCall, Params: []byte(`[null]`)}},
 		"batchFallthrough": {{Method: ejrpc.ContractMultiCall, Params: []byte(`[null,"latest"]`)}, {Method: ejrpc.ContractMultiCall, Params: []byte(`[null,` + ctx + `]`)}},
