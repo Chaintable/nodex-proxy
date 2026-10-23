@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
@@ -49,7 +50,7 @@ func NewCommonLabelMetrics(host types.ProcessorHost, target types.ProcessorTarge
 }
 
 func (m CommonLabelMetrics) IncrCallsStarted(method jsonrpc.RPCMethod, sourcedapp string) {
-	callsStarted.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, string(method), sourcedapp).Inc()
+	callsStarted.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion, strings.Clone(string(method)), sourcedapp).Inc()
 }
 
 func (m CommonLabelMetrics) IncrCallsFinished(method jsonrpc.RPCMethod) {
@@ -67,7 +68,7 @@ func (m CommonLabelMetrics) IncrTotalJRPCRequest() {
 func (m CommonLabelMetrics) IncrCallsFailed(code jsonrpc.ErrorCode, method jsonrpc.RPCMethod, upstreamRelated bool, reason string, nodeAddr string) {
 	callsFailed.WithLabelValues(
 		m.host, m.target, m.chainID, m.chainVersion,
-		string(method),
+		strings.Clone(string(method)),
 		strconv.FormatInt(int64(code), 10),
 		strconv.FormatBool(upstreamRelated),
 		reason,
