@@ -6,6 +6,7 @@ import (
 
 	"github.com/Chaintable/nodex-proxy/internal/benchfixture"
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/cloudwego/hertz/pkg/protocol"
 )
 
@@ -77,6 +78,65 @@ func BenchmarkParseRequest(b *testing.B) {
 					b.Fatal(err)
 				}
 				benchmarkRequests = parsed
+			}
+		})
+	}
+}
+
+// Evaluation only: build the fields needed by routing, validation, native
+// retry rewriting, and request logs using Sonic's lazy AST. This candidate
+// deliberately stays out of production: exact-key lookup also differs from
+// Unmarshal's handling of case variants and duplicate keys.
+func BenchmarkParseRequestOnDemand(b *testing.B) {
+	readObject := func(node *ast.Node) (*RequestObject, error) {
+		version, err := node.Get("jsonrpc").String()
+		if err != nil {
+			return nil, err
+		}
+		method, err := node.Get("method").String()
+		if err != nil {
+			return nil, err
+		}
+		params, err := node.Get("params").Raw()
+		if err != nil {
+			return nil, err
+		}
+		id, err := node.Get("id").Raw()
+		if err != nil {
+			return nil, err
+		}
+		return &RequestObject{Jsonrpc: version, Method: RPCMethod(method), Params: []byte(params), ID: []byte(id)}, nil
+	}
+	for name, body := range benchfixture.Requests() {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				root, err := sonic.GetWithOptions(body, ast.SearchOptions{ValidateJSON: true})
+				if err != nil {
+					b.Fatal(err)
+				}
+				var requests []*RequestObject
+				if IsBatch(body) {
+					values, err := root.Values()
+					if err != nil {
+						b.Fatal(err)
+					}
+					var node ast.Node
+					for values.Next(&node) {
+						req, err := readObject(&node)
+						if err != nil {
+							b.Fatal(err)
+						}
+						requests = append(requests, req)
+					}
+				} else {
+					req, err := readObject(&root)
+					if err != nil {
+						b.Fatal(err)
+					}
+					requests = []*RequestObject{req}
+				}
+				benchmarkRequests = requests
 			}
 		})
 	}
