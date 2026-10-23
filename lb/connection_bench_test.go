@@ -51,6 +51,9 @@ func BenchmarkUpstreamConnectionReuse(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
+		// The reverse proxy appends X-Forwarded-For to the request; without a
+		// reset the header grows every iteration and skews ns/op with b.N.
+		c.Request.Reset()
 		c.Request.SetRequestURI("http://proxy.local/1")
 		c.Request.Header.SetMethod("POST")
 		c.Request.SetBody([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`))
