@@ -30,7 +30,6 @@ import (
 	hzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/ethereum/go-ethereum/rpc"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -764,43 +763,6 @@ func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *pro
 		return lb.ParseBlockContext(requestBody)
 	})
 	return requestContext
-}
-
-func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {
-	for _, value := range requestBody {
-		var arr []sonic.NoCopyRawMessage
-		err := sonic.Unmarshal(value.Params, &arr)
-		if err != nil {
-			log.Error("failed to unmarshal params", err)
-			continue
-		}
-		if log.DebugEnabled() {
-			log.Debug("ParseBlockContext", log.Any("method", value.Method), log.Any("params_count", len(arr)))
-		}
-		if len(arr) <= 0 {
-			continue
-		}
-		blockCtx := arr[len(arr)-1]
-		if value.Method == ejrpc.ContractMultiCall || value.Method == ejrpc.SimulateTransactions || value.Method == ejrpc.EstimateGas {
-			if len(arr) > 1 {
-				blockCtx = arr[1]
-			} else {
-				blockID := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
-				return &types.BlockContext{
-					BlockId: &blockID,
-					Type:    "Contains",
-				}
-			}
-		}
-
-		var ctx types.BlockContext
-		if err := sonic.Unmarshal(blockCtx, &ctx); err != nil {
-			continue
-		}
-
-		return &ctx
-	}
-	return nil
 }
 
 func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Request) *types.RequestContext {
