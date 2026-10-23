@@ -79,6 +79,32 @@ type RequestContext struct {
 	TargetNodeAddr   string `json:"target_node_addr"`
 	Archive          bool   `json:"archive"`
 	Native           bool   `json:"native"`
+
+	responseErrorKeyKnown bool
+	responseHasErrorKey   bool
+}
+
+// CachedResponseContainsErrorKey returns the cached conservative pre-filter for
+// the current attempt, computing it from body only on the first call. Only the
+// request goroutine may access it. Attempts and response resets invalidate it.
+// A positive result still needs unmarshalling to find a top-level error.
+func (p *RequestContext) CachedResponseContainsErrorKey(body []byte) bool {
+	if p == nil {
+		return jsonrpc.ContainsErrorKey(body)
+	}
+	if !p.responseErrorKeyKnown {
+		p.responseHasErrorKey = jsonrpc.ContainsErrorKey(body)
+		p.responseErrorKeyKnown = true
+	}
+	return p.responseHasErrorKey
+}
+
+func (p *RequestContext) ResetResponseErrorKey() {
+	if p == nil {
+		return
+	}
+	p.responseErrorKeyKnown = false
+	p.responseHasErrorKey = false
 }
 
 // SetBlockContextFn installs a lazy block-context parser. Parsing the params

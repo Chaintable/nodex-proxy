@@ -30,7 +30,6 @@ import (
 	hzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/ethereum/go-ethereum/rpc"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -424,14 +423,14 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body_size", len(responseBody)))
 	}
 
-	responseErrorCodes := lb.parseRPCErrorCodes(responseBody)
+	responseErrorCodes := lb.parseRPCErrorCodes(responseBody, requestContext)
 
 	// Check if response contains error code -39006
 	if lb.shouldRetryWithArchive(requestContext, responseErrorCodes) {
 		log.Info("Received error code -39006(StateBlockNotFound), retrying with archive node")
 
 		// Reset response body for retry
-		c.Response.Reset()
+		resetResponse(c, requestContext)
 
 		// Retry with archive node
 		requestContext.Archive = true
@@ -458,14 +457,14 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
 		}
 		lb.attemptRequest(ctx, c, requestContext, targetNode)
-		responseErrorCodes = lb.parseRPCErrorCodes(c.Response.Body())
+		responseErrorCodes = lb.parseRPCErrorCodes(c.Response.Body(), requestContext)
 		lb.rememberArchiveHash(c, requestContext, responseErrorCodes)
 	}
 
 	// Retry to nativeNodes when CosmosPrecompile
 	if lb.shouldRetryWithNative(requestContext, responseErrorCodes) {
 		log.Info("Received error code -39008(CosmosPrecompile), retrying with native node")
-		c.Response.Reset()
+		resetResponse(c, requestContext)
 		requestContext.Native = true
 
 		targetNode, err := lb.chooseTargetNode(requestContext, "native")
@@ -519,7 +518,18 @@ func (lb *LoadBalancer) upstreamReadTimeout(method ejrpc.RPCMethod) time.Duratio
 	return time.Duration(lb.Config.DefaultRPCTimeout) * time.Millisecond
 }
 
+// resetResponse couples replacement of response bytes with invalidation, including
+// branches that fail to choose a node before an upstream attempt starts.
+func resetResponse(c *app.RequestContext, requestContext *types.RequestContext) {
+	requestContext.ResetResponseErrorKey()
+	c.Response.Reset()
+}
+
 func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContext, requestContext *types.RequestContext, targetNode *lbnode.Node) {
+	// Every upstream attempt owns a fresh filter result, even if a future caller
+	// retries without explicitly resetting the Hertz response first.
+	requestContext.ResetResponseErrorKey()
+
 	if requestContext != nil && requestContext.Native {
 		c.Request.URI().SetPath("/")
 	}
@@ -690,7 +700,7 @@ func (codes rpcErrorCodes) Has(code int) bool {
 	return ok
 }
 
-func (lb *LoadBalancer) parseRPCErrorCodes(responseBody []byte) rpcErrorCodes {
+func (lb *LoadBalancer) parseRPCErrorCodes(responseBody []byte, requestContext *types.RequestContext) rpcErrorCodes {
 	trimmed := bytes.TrimSpace(responseBody)
 	if len(trimmed) == 0 {
 		return nil
@@ -698,7 +708,7 @@ func (lb *LoadBalancer) parseRPCErrorCodes(responseBody []byte) rpcErrorCodes {
 
 	// Retry decisions only care about JSON-RPC error codes; a response
 	// without an "error" member cannot carry one, so skip the full parse.
-	if !ejrpc.ContainsErrorKey(trimmed) {
+	if !requestContext.CachedResponseContainsErrorKey(trimmed) {
 		return nil
 	}
 
@@ -745,7 +755,9 @@ func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *pro
 	}
 	requestContext.IsBatch = len(requestContext.RequestBody) > 1
 	if !requestContext.IsBatch {
-		requestContext.Method = requestContext.RequestBody[0].Method
+		// The decoded method aliases a copy of the whole request body. Metric
+		// series and trace attributes outlive the request, so own it once here.
+		requestContext.Method = ejrpc.RPCMethod(strings.Clone(string(requestContext.RequestBody[0].Method)))
 	}
 	for _, req := range requestContext.RequestBody {
 		if requestContext.Error = ejrpc.ValidateRequest(req); requestContext.Error != nil {
@@ -762,43 +774,6 @@ func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *pro
 		return lb.ParseBlockContext(requestBody)
 	})
 	return requestContext
-}
-
-func (lb *LoadBalancer) ParseBlockContext(requestBody []*ejrpc.RequestObject) *types.BlockContext {
-	for _, value := range requestBody {
-		var arr []sonic.NoCopyRawMessage
-		err := sonic.Unmarshal(value.Params, &arr)
-		if err != nil {
-			log.Error("failed to unmarshal params", err)
-			continue
-		}
-		if log.DebugEnabled() {
-			log.Debug("ParseBlockContext", log.Any("method", value.Method), log.Any("params_count", len(arr)))
-		}
-		if len(arr) <= 0 {
-			continue
-		}
-		blockCtx := arr[len(arr)-1]
-		if value.Method == ejrpc.ContractMultiCall || value.Method == ejrpc.SimulateTransactions || value.Method == ejrpc.EstimateGas {
-			if len(arr) > 1 {
-				blockCtx = arr[1]
-			} else {
-				blockID := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
-				return &types.BlockContext{
-					BlockId: &blockID,
-					Type:    "Contains",
-				}
-			}
-		}
-
-		var ctx types.BlockContext
-		if err := sonic.Unmarshal(blockCtx, &ctx); err != nil {
-			continue
-		}
-
-		return &ctx
-	}
-	return nil
 }
 
 func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Request) *types.RequestContext {

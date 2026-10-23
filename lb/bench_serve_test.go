@@ -67,7 +67,14 @@ func newBenchLoadBalancer(tb testing.TB, upstreamResp []byte) *LoadBalancer {
 }
 
 func benchServe(b *testing.B, requestBody, upstreamResp []byte) {
+	benchServeWithSetup(b, requestBody, upstreamResp, nil)
+}
+
+func benchServeWithSetup(b *testing.B, requestBody, upstreamResp []byte, setup func(*LoadBalancer)) {
 	lbi := newBenchLoadBalancer(b, upstreamResp)
+	if setup != nil {
+		setup(lbi)
+	}
 
 	// warm up the connection pool and sanity-check the wiring
 	c := app.NewContext(16)
