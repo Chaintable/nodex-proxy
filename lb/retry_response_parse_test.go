@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
+	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
+	jrpc "github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/lb/selector"
 	"github.com/Chaintable/nodex-proxy/types"
@@ -47,11 +49,24 @@ func TestParseRPCErrorCodes(t *testing.T) {
 			name: "invalid response",
 			body: []byte(`not-json`),
 		},
+		{
+			name: "nested error does not retry",
+			body: []byte(`{"jsonrpc":"2.0","result":{"error":{"code":-39006}},"id":1}`),
+		},
+		{
+			name: "nested batch error does not retry",
+			body: []byte(`[{"result":{"Error":{"code":-39008}},"id":1}]`),
+		},
+		{
+			name:      "capitalized key preserves retry",
+			body:      []byte(`{"jsonrpc":"2.0","Error":{"code":-39006},"id":1}`),
+			wantState: true,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			codes := lb.parseRPCErrorCodes(tc.body)
+			codes := lb.parseRPCErrorCodes(tc.body, &types.RequestContext{})
 			require.Equal(t, tc.wantState, codes.Has(types.StateBlockNotFound))
 			require.Equal(t, tc.wantNative, codes.Has(types.CosmosPrecompile))
 		})
@@ -92,6 +107,14 @@ func TestServeHTTPRetriesArchiveThenNativeFromParsedErrorCodes(t *testing.T) {
 		NodeSelector:       selector,
 		chainVersionRouter: NewChainVersionRouter(),
 	}
+	config := types.DefaultConfig()
+	lb.postProcessorsHertz = jrpc.GetPostProcessorHertz(&config, &jrpc.GeneralRPCMethodHertzHandler{Config: &config})
+	var finalError error
+	var finalResponse *ejrpc.ResponseObject
+	lb.postProcessorsHertz = append(lb.postProcessorsHertz, func(ctx context.Context, c *app.RequestContext, p *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+		finalError, finalResponse = p.Error, p.ResponseBody
+		return ctx, c, p
+	})
 
 	c := app.NewContext(0)
 	c.Request.SetRequestURI("http://proxy.local/1")
@@ -102,7 +125,9 @@ func TestServeHTTPRetriesArchiveThenNativeFromParsedErrorCodes(t *testing.T) {
 	lb.ServeHTTP(context.Background(), c, "1")
 
 	require.Equal(t, []string{"state", "archive", "native"}, selector.calls)
-	require.JSONEq(t, `{"jsonrpc":"2.0","result":"0x1","id":1}`, string(c.Response.Body()))
+	require.Equal(t, `{"jsonrpc":"2.0","result":"0x1","id":1}`, string(c.Response.Body()))
+	require.NoError(t, finalError)
+	require.Nil(t, finalResponse, "final success must not reuse an earlier attempt's filter")
 }
 
 func jsonRPCResponseHandler(body string) http.Handler {

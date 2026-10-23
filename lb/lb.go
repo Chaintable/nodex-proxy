@@ -424,13 +424,14 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		log.Debug("Response status code", log.Any("status_code", c.Response.StatusCode()), log.Any("response_body_size", len(responseBody)))
 	}
 
-	responseErrorCodes := lb.parseRPCErrorCodes(responseBody)
+	responseErrorCodes := lb.parseRPCErrorCodes(responseBody, requestContext)
 
 	// Check if response contains error code -39006
 	if lb.shouldRetryWithArchive(requestContext, responseErrorCodes) {
 		log.Info("Received error code -39006(StateBlockNotFound), retrying with archive node")
 
 		// Reset response body for retry
+		requestContext.ResetResponseErrorKey()
 		c.Response.Reset()
 
 		// Retry with archive node
@@ -458,13 +459,14 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			log.Debug("Selected archive target node", log.Any("node", targetNode.Addr()), log.Any("chain_id", requestContext.ChainId))
 		}
 		lb.attemptRequest(ctx, c, requestContext, targetNode)
-		responseErrorCodes = lb.parseRPCErrorCodes(c.Response.Body())
+		responseErrorCodes = lb.parseRPCErrorCodes(c.Response.Body(), requestContext)
 		lb.rememberArchiveHash(c, requestContext, responseErrorCodes)
 	}
 
 	// Retry to nativeNodes when CosmosPrecompile
 	if lb.shouldRetryWithNative(requestContext, responseErrorCodes) {
 		log.Info("Received error code -39008(CosmosPrecompile), retrying with native node")
+		requestContext.ResetResponseErrorKey()
 		c.Response.Reset()
 		requestContext.Native = true
 
@@ -690,7 +692,7 @@ func (codes rpcErrorCodes) Has(code int) bool {
 	return ok
 }
 
-func (lb *LoadBalancer) parseRPCErrorCodes(responseBody []byte) rpcErrorCodes {
+func (lb *LoadBalancer) parseRPCErrorCodes(responseBody []byte, requestContext *types.RequestContext) rpcErrorCodes {
 	trimmed := bytes.TrimSpace(responseBody)
 	if len(trimmed) == 0 {
 		return nil
@@ -698,7 +700,7 @@ func (lb *LoadBalancer) parseRPCErrorCodes(responseBody []byte) rpcErrorCodes {
 
 	// Retry decisions only care about JSON-RPC error codes; a response
 	// without an "error" member cannot carry one, so skip the full parse.
-	if !ejrpc.ContainsErrorKey(trimmed) {
+	if !requestContext.ContainsResponseErrorKey(trimmed) {
 		return nil
 	}
 

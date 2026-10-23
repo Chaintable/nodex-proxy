@@ -113,10 +113,7 @@ func IsBatch(msg []byte) bool {
 	return false
 }
 
-var (
-	errorKeyLower = []byte(`"error"`)
-	errorKeyUpper = []byte(`"Error"`)
-)
+var errorKeySuffix = []byte(`rror"`)
 
 // ContainsErrorKey is a cheap pre-filter for response bodies: a JSON-RPC
 // response without an "error"/"Error" key token cannot carry an error object,
@@ -124,5 +121,20 @@ var (
 // (e.g. "err\u006fr") are deliberately not recognized — no real node
 // software emits them, and a false negative only skips retry/error accounting.
 func ContainsErrorKey(msg []byte) bool {
-	return bytes.Contains(msg, errorKeyLower) || bytes.Contains(msg, errorKeyUpper)
+	// Both accepted tokens share this suffix. Search for it once, then check
+	// the preceding quote and e/E, instead of scanning large success results
+	// twice. Keep this a conservative pre-filter: the existing unmarshallers
+	// decide whether a match is actually a top-level error member.
+	for offset := 0; offset < len(msg); {
+		i := bytes.Index(msg[offset:], errorKeySuffix)
+		if i < 0 {
+			return false
+		}
+		i += offset
+		if i >= 2 && msg[i-2] == '"' && (msg[i-1] == 'e' || msg[i-1] == 'E') {
+			return true
+		}
+		offset = i + len(errorKeySuffix)
+	}
+	return false
 }

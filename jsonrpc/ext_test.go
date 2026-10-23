@@ -1,6 +1,9 @@
 package jsonrpc
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestContainsErrorKey(t *testing.T) {
 	cases := []struct {
@@ -20,6 +23,12 @@ func TestContainsErrorKey(t *testing.T) {
 		// through to a full parse of the top-level object.
 		{"nested error key", `{"jsonrpc":"2.0","result":{"error":null,"ok":true},"id":1}`, true},
 		{"empty", ``, false},
+		{"suffix without opening quote", `error"`, false},
+		{"suffix without e", `"rror"`, false},
+		{"other prefix then real error", `"terror", "Error"`, true},
+		{"adjacent suffixes", `rror"error"`, true},
+		{"all capitals remains unrecognized", `{"ERROR":{"code":-39006}}`, false},
+		{"escaped key remains unrecognized", `{"err\u006fr":{"code":-39006}}`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -28,4 +37,19 @@ func TestContainsErrorKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The filter is intentionally byte-for-byte compatible even on malformed JSON;
+// changing which malformed bodies reach the decoder would change error logs
+// and failure metrics.
+func FuzzContainsErrorKeyCompatible(f *testing.F) {
+	for _, body := range []string{``, `{"error":null}`, `{"Error":{}}`, `rror"error"`, `"terror"`, `\"error\"`} {
+		f.Add([]byte(body))
+	}
+	f.Fuzz(func(t *testing.T, body []byte) {
+		want := bytes.Contains(body, []byte(`"error"`)) || bytes.Contains(body, []byte(`"Error"`))
+		if got := ContainsErrorKey(body); got != want {
+			t.Fatalf("filter(%q) = %v, want %v", body, got, want)
+		}
+	})
 }
