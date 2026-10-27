@@ -71,9 +71,8 @@ type Node struct {
 	addr   string
 	source string
 
-	weight        atomic.Int64
-	currentWeight atomic.Int64
-	stateType     atomic.Int64
+	weight    atomic.Int64
+	stateType atomic.Int64
 
 	NodeType discovery.NodeType
 
@@ -102,7 +101,6 @@ func New(key, ip string, port, weight int, nodeType discovery.NodeType, opts ...
 		NodeType: nodeType,
 	}
 	node.weight.Store(int64(weight))
-	node.currentWeight.Store(int64(weight))
 	for _, opt := range opts {
 		opt(node)
 	}
@@ -129,23 +127,8 @@ func (node *Node) Weight() int {
 	return int(node.weight.Load())
 }
 
-// EffectWeight returns effect weight
-func (node *Node) EffectWeight() int {
-	return int(node.weight.Load())
-}
-
 func (node *Node) SetState(state int) {
 	node.stateType.Store(int64(state))
-}
-
-// CurrentWeight returns currentWeight
-func (node *Node) CurrentWeight() int {
-	return int(node.currentWeight.Load())
-}
-
-// IncrCurrentWeight increment currentWeight
-func (node *Node) IncrCurrentWeight(n int) int {
-	return int(node.currentWeight.Add(int64(n)))
 }
 
 // IP returns ip
@@ -206,20 +189,4 @@ func UpsertInto(nodes []*Node, node *Node) []*Node {
 		}
 	}
 	return append(nodes, node)
-}
-
-func (node *Node) Clone() *Node {
-	n := &Node{
-		key:          node.key,
-		ip:           node.ip,
-		port:         node.port,
-		addr:         node.addr,
-		source:       node.source,
-		NodeType:     node.NodeType,
-		ReverseProxy: node.ReverseProxy,
-	}
-	n.weight.Store(node.weight.Load())
-	n.currentWeight.Store(node.currentWeight.Load())
-	n.stateType.Store(node.stateType.Load())
-	return n
 }

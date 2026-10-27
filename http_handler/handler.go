@@ -14,7 +14,6 @@ import (
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/lb/selector"
 	"github.com/Chaintable/nodex-proxy/lb/selector/random"
-	"github.com/Chaintable/nodex-proxy/lb/selector/roundrobin"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/cloudwego/hertz/pkg/app"
@@ -62,12 +61,6 @@ func (h *Handler) SetWeight(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	nodeKey := c.Query("node")
 	weightStr := c.Query("weight")
-
-	// todo: round-robin doesn't support set weight now
-	if _, ok := h.nodeSelector.(*roundrobin.RoundRobin); ok {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "round-robin doesn't support set weight"})
-		return
-	}
 
 	if nodeKey == "" {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "node parameter is required"})
@@ -225,12 +218,6 @@ func (h *Handler) DeleteWeight(ctx context.Context, c *app.RequestContext) {
 
 	if nodeKey == "" {
 		c.JSON(consts.StatusBadRequest, map[string]string{"error": "node parameter is required"})
-		return
-	}
-
-	// todo: round-robin doesn't support set weight now
-	if _, ok := h.nodeSelector.(*roundrobin.RoundRobin); ok {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "round-robin doesn't support set weight"})
 		return
 	}
 

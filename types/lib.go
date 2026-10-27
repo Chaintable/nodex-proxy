@@ -1,7 +1,6 @@
 package types
 
 import (
-	"context"
 	"reflect"
 	"time"
 
@@ -59,7 +58,6 @@ type RequestContext struct {
 	BlockContext     *BlockContext            `json:"block_context"`
 	blockContextFn   func() *BlockContext
 	blockContextDone bool
-	Cached           bool   `json:"cached"`
 	BaseChainId      string `json:"base_chain_id"`
 	ChainUUID        string `json:"chain_uuid"`
 	ChainId          string `json:"chain_id"`
@@ -143,31 +141,31 @@ func (p *RequestContext) ClearTargetNode() {
 }
 
 type (
-	ProcessorFuncHertz func(ctx context.Context, c *app.RequestContext, processData *RequestContext) (context.Context, *app.RequestContext, *RequestContext)
+	// ProcessorFuncHertz runs before or after the upstream call. A
+	// pre-processor that writes a response body ends the request there.
+	ProcessorFuncHertz func(c *app.RequestContext, processData *RequestContext)
 
 	PreProcessorProcessorsHertz  []ProcessorFuncHertz
 	PostProcessorProcessorsHertz []ProcessorFuncHertz
 )
 
-func (p PreProcessorProcessorsHertz) Call(ctx context.Context, c *app.RequestContext, processData *RequestContext) (context.Context, *app.RequestContext, *RequestContext) {
+func (p PreProcessorProcessorsHertz) Call(c *app.RequestContext, processData *RequestContext) {
 	for _, processFunc := range p {
 		if processFunc != nil {
-			ctx, c, processData = processFunc(ctx, c, processData)
+			processFunc(c, processData)
 		}
 		if len(c.Response.Body()) != 0 {
 			break
 		}
 	}
-	return ctx, c, processData
 }
 
-func (p PostProcessorProcessorsHertz) Call(ctx context.Context, c *app.RequestContext, processData *RequestContext) (context.Context, *app.RequestContext, *RequestContext) {
+func (p PostProcessorProcessorsHertz) Call(c *app.RequestContext, processData *RequestContext) {
 	for _, processFunc := range p {
 		if processFunc != nil {
-			ctx, c, processData = processFunc(ctx, c, processData)
+			processFunc(c, processData)
 		}
 	}
-	return ctx, c, processData
 }
 
 func (p *RequestContext) LogAttributes() []attribute.KeyValue {
@@ -184,7 +182,6 @@ func (p *RequestContext) LogAttributes() []attribute.KeyValue {
 		attribute.Key("SourceServerVersion").String(p.SourceServerVersion),
 		attribute.Key("RequestBodySize").Int(p.RequestBodySize),
 		attribute.Key("ResponseBodySize").Int(p.ResponseBodySize),
-		attribute.Key("Cached").Bool(p.Cached),
 		attribute.Key("Method").String(string(p.Method)),
 	}
 	return result

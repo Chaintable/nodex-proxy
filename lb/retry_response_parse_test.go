@@ -112,12 +112,12 @@ func TestServeHTTPRetriesArchiveThenNativeFromParsedErrorCodes(t *testing.T) {
 		chainVersionRouter: NewChainVersionRouter(),
 	}
 	config := types.DefaultConfig()
-	lb.postProcessorsHertz = jrpc.GetPostProcessorHertz(&config, &jrpc.GeneralRPCMethodHertzHandler{Config: &config})
+	lb.postProcessorsHertz = jrpc.GetPostProcessorHertz(&config)
 	var finalError error
 	var finalResponse *ejrpc.ResponseObject
-	lb.postProcessorsHertz = append(lb.postProcessorsHertz, func(ctx context.Context, c *app.RequestContext, p *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+	lb.postProcessorsHertz = append(lb.postProcessorsHertz, func(c *app.RequestContext, p *types.RequestContext) {
 		finalError, finalResponse = p.Error, p.ResponseBody
-		return ctx, c, p
+		return
 	})
 
 	c := app.NewContext(0)

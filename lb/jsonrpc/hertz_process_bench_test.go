@@ -1,7 +1,6 @@
 package jsonrpc
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -32,11 +31,11 @@ func BenchmarkUpdatePostProcessorMetricsHertz(b *testing.B) {
 				Method: "contractMultiCall", IsBatch: batch, RequestBodySize: 40000, Start: time.Now(),
 			}
 			update := updatePostProcessorMetricsHertz()
-			update(context.Background(), c, p)
+			update(c, p)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				update(context.Background(), c, p)
+				update(c, p)
 			}
 		})
 	}

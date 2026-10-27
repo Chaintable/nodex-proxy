@@ -41,13 +41,11 @@ func startMockUpstream(tb testing.TB, resp []byte) (string, int) {
 
 func newBenchLoadBalancer(tb testing.TB, upstreamResp []byte) *LoadBalancer {
 	cfg := types.DefaultConfig()
-	cfg.Processor.MethodNameChecker.Enable = true
 	heightMap := jsonrpc.NewHeightMap()
 	lbi := NewLoadBalancer(
 		context.Background(),
 		cfg,
-		&jsonrpc.GeneralRPCMethodHertzHandler{Config: &cfg, HeightMap: heightMap},
-		jsonrpc.NewMethodLimiter(nil), heightMap, jsonrpc.NewMirrorLimiter(),
+		heightMap, jsonrpc.NewMirrorLimiter(),
 		make(chan *discovery.TargetNode), make(chan *discovery.ChainHeight),
 		make(chan *discovery.Gateway), make(chan *discovery.MirrorTarget),
 		make(chan *discovery.ChainVersion),

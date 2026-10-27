@@ -50,7 +50,6 @@ func (h *metricHandle[T]) get(bind func() T) T {
 type methodHandles struct {
 	total         metricHandle[prometheus.Counter]
 	finished      metricHandle[prometheus.Counter]
-	cacheHits     metricHandle[prometheus.Counter]
 	batchFinished metricHandle[prometheus.Counter]
 	callsDuration metricHandle[prometheus.Observer]
 	batchDuration metricHandle[prometheus.Observer]
@@ -110,10 +109,6 @@ func (k *methodMetricKey) finished() prometheus.Counter {
 	return callsFinished.WithLabelValues(k.host, k.target, k.chainID, k.chainVersion, string(k.method))
 }
 
-func (k *methodMetricKey) cacheHits() prometheus.Counter {
-	return callsCacheHits.WithLabelValues(k.host, k.target, k.chainID, k.chainVersion, string(k.method))
-}
-
 func (k *methodMetricKey) batchFinished() prometheus.Counter {
 	return batchCallsFinished.WithLabelValues(k.host, k.target, k.chainID, k.chainVersion)
 }
@@ -156,14 +151,6 @@ func (m *MethodMetrics) IncrCallsFinished() {
 		return
 	}
 	m.handles.finished.get(m.key.finished).Inc()
-}
-
-func (m *MethodMetrics) IncrCallsCacheHits() {
-	if m.handles == nil {
-		m.key.cacheHits().Inc()
-		return
-	}
-	m.handles.cacheHits.get(m.key.cacheHits).Inc()
 }
 
 func (m *MethodMetrics) IncrBatchCallsFinished() {

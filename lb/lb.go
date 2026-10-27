@@ -17,7 +17,6 @@ import (
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/lb/selector"
 	"github.com/Chaintable/nodex-proxy/lb/selector/random"
-	"github.com/Chaintable/nodex-proxy/lb/selector/roundrobin"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/Chaintable/nodex-proxy/utils"
@@ -32,7 +31,6 @@ import (
 type LoadBalancer struct {
 	ctx                 context.Context
 	Config              types.Config
-	Limiter             jsonrpc.Limiter
 	HeightMap           jsonrpc.HeightMap
 	GatewayStrategy     jsonrpc.GatewayStrategy
 	MirrorMap           jsonrpc.MirrorMap
@@ -61,7 +59,7 @@ const (
 )
 
 func NewLoadBalancer(ctx context.Context, config types.Config,
-	rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap,
+	heightMap jsonrpc.HeightMap,
 	mirrorLimiter jsonrpc.MirrorLimiter,
 	nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight,
 	gatewayChannel <-chan *discovery.Gateway, mirrorChannel <-chan *discovery.MirrorTarget,
@@ -69,13 +67,7 @@ func NewLoadBalancer(ctx context.Context, config types.Config,
 ) *LoadBalancer {
 	gatewayStrategy := jsonrpc.NewGatewayStrategy()
 	mirrorMap := jsonrpc.NewMirrorMap()
-	var nodeSelector selector.Strategy
-	switch config.NodeSelectStrategy {
-	case "round_robin":
-		nodeSelector = roundrobin.New(utils.PickNodes)
-	case "random":
-		nodeSelector = random.New(utils.PickNodes, gatewayStrategy)
-	}
+	nodeSelector := random.New(utils.PickNodes, gatewayStrategy)
 	// All node reverse proxies share one upstream client; its per-host pools
 	// survive node upserts so etcd refreshes no longer trigger reconnect storms.
 	if err := lbnode.InitSharedClient(
@@ -101,7 +93,6 @@ func NewLoadBalancer(ctx context.Context, config types.Config,
 	return &LoadBalancer{
 		ctx:                 ctx,
 		Config:              config,
-		Limiter:             limiter,
 		HeightMap:           heightMap,
 		GatewayStrategy:     gatewayStrategy,
 		MirrorMap:           mirrorMap,
@@ -112,8 +103,8 @@ func NewLoadBalancer(ctx context.Context, config types.Config,
 		gatewayChannel:      gatewayChannel,
 		mirrorChannel:       mirrorChannel,
 		versionChannel:      versionChannel,
-		preProcessorsHertz:  jsonrpc.GetPreProcessorHertz(&config, rpcMethodHandlerHertz, limiter, mirrorMap, mirrorLimiter),
-		postProcessorsHertz: jsonrpc.GetPostProcessorHertz(&config, rpcMethodHandlerHertz),
+		preProcessorsHertz:  jsonrpc.GetPreProcessorHertz(&config, heightMap, mirrorMap, mirrorLimiter),
+		postProcessorsHertz: jsonrpc.GetPostProcessorHertz(&config),
 		healthChecker:       NewNodeHealthChecker(healthCheckTimeout, maxWaitTime),
 		chainVersionRouter:  NewChainVersionRouter(),
 		nodeGens:            newNodeGenerations(),
@@ -383,10 +374,8 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	requestContext.ChainId = effectiveChainID
 
 	// Pre-processors and Post-processors
-	ctx, c, requestContext = lb.preProcessorsHertz.Call(ctx, c, requestContext)
-	defer func() {
-		_, _, _ = lb.postProcessorsHertz.Call(ctx, c, requestContext)
-	}()
+	lb.preProcessorsHertz.Call(c, requestContext)
+	defer lb.postProcessorsHertz.Call(c, requestContext)
 	// If response is already set by pre-processors, return directly
 	if len(c.Response.Body()) != 0 {
 		return
@@ -405,20 +394,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		targetNode, err = lb.chooseTargetNode(requestContext, "")
 	}
 	if err != nil {
-		log.Error("failed to get node, err ", err)
-		object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
-		requestContext.Error = retErr
-		requestContext.ResponseBody = object
-		requestContext.WriteError(c, consts.StatusOK, object)
-		return
-	}
-
-	if targetNode.ReverseProxy == nil {
-		log.Error("failed to get node, err ", errors.New("no reverse proxy available"))
-		object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
-		requestContext.Error = retErr
-		requestContext.ResponseBody = object
-		requestContext.WriteError(c, consts.StatusOK, object)
+		writeNoBackend(c, requestContext, err, "no backends available")
 		return
 	}
 
@@ -452,20 +428,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 
 		targetNode, err := lb.chooseTargetNode(requestContext, "")
 		if err != nil {
-			log.Error("failed to get node, err ", err)
-			object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
-			requestContext.Error = retErr
-			requestContext.ResponseBody = object
-			requestContext.WriteError(c, consts.StatusOK, object)
-			return
-		}
-
-		if targetNode.ReverseProxy == nil {
-			log.Error("failed to get node, err ", errors.New("no reverse proxy available"))
-			object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
-			requestContext.Error = retErr
-			requestContext.ResponseBody = object
-			requestContext.WriteError(c, consts.StatusOK, object)
+			writeNoBackend(c, requestContext, err, "no backends available")
 			return
 		}
 		if log.DebugEnabled() {
@@ -484,19 +447,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 
 		targetNode, err := lb.chooseTargetNode(requestContext, "native")
 		if err != nil {
-			log.Error("failed to get native node, err ", err)
-			object, retErr := ejrpc.BadGateway(errors.New("no native backends available"))
-			requestContext.Error = retErr
-			requestContext.ResponseBody = object
-			requestContext.WriteError(c, consts.StatusOK, object)
-			return
-		}
-		if targetNode.ReverseProxy == nil {
-			log.Error("failed to get native node, err ", errors.New("no reverse proxy available"))
-			object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
-			requestContext.Error = retErr
-			requestContext.ResponseBody = object
-			requestContext.WriteError(c, consts.StatusOK, object)
+			writeNoBackend(c, requestContext, err, "no native backends available")
 			return
 		}
 		if log.DebugEnabled() {
@@ -504,6 +455,16 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		}
 		lb.attemptRequest(ctx, c, requestContext, targetNode)
 	}
+}
+
+// writeNoBackend answers a request no node can serve. msg is the error data
+// the failure metrics classify on.
+func writeNoBackend(c *app.RequestContext, requestContext *types.RequestContext, err error, msg string) {
+	log.Error("failed to get node", err, log.Any("reason", msg))
+	object, retErr := ejrpc.BadGateway(errors.New(msg))
+	requestContext.Error = retErr
+	requestContext.ResponseBody = object
+	requestContext.WriteError(c, consts.StatusOK, object)
 }
 
 func (lb *LoadBalancer) chooseTargetNode(requestContext *types.RequestContext, requestKey string) (*lbnode.Node, error) {

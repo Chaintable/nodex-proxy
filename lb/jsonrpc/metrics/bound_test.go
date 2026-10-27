@@ -74,7 +74,6 @@ func recordDirect(host string, method jsonrpc.RPCMethod) {
 		return
 	}
 	callsFinished.WithLabelValues(labels(string(method))...).Inc()
-	callsCacheHits.WithLabelValues(labels(string(method))...).Inc()
 	callsTime.WithLabelValues(labels(string(method))...).Observe(12)
 	requestPayloadSizes.WithLabelValues(labels(string(method))...).Observe(40000)
 	responsePayloadSizes.WithLabelValues(labels(string(method))...).Observe(262144)
@@ -82,7 +81,7 @@ func recordDirect(host string, method jsonrpc.RPCMethod) {
 
 func TestBoundMetricsPreserveExposition(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(totalJRPCRequest, callsFinished, callsCacheHits, callsFailed, batchCallsFinished, callsTime, batchCallsTime, requestPayloadSizes, responsePayloadSizes, httpStatusCode)
+	registry.MustRegister(totalJRPCRequest, callsFinished, callsFailed, batchCallsFinished, callsTime, batchCallsTime, requestPayloadSizes, responsePayloadSizes, httpStatusCode)
 	sequence := metricTestSequence.Add(1)
 	for _, method := range []jsonrpc.RPCMethod{"contractMultiCall", "eth_getBalance", "", "batch"} {
 		t.Run(string(method), func(t *testing.T) {
@@ -106,7 +105,6 @@ func TestBoundMetricsPreserveExposition(t *testing.T) {
 					bound.ObBatchCallsTime(12 * time.Millisecond)
 				} else {
 					bound.IncrCallsFinished()
-					bound.IncrCallsCacheHits()
 					bound.ObCallsTime(12 * time.Millisecond)
 					bound.ObRequestPayloadSizes(40000)
 					bound.ObResponsePayloadSizes(262144)

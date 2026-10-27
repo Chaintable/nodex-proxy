@@ -156,14 +156,12 @@ func main() {
 		log.Fatal("Init node refresher failed: %v\n", err)
 	}
 
-	limiter := jsonrpc.NewMethodLimiter(cmdlineAndLoadConfig.ProxyConfig.Processor.RateLimiter.RpcMethods)
 	heightMap := jsonrpc.NewHeightMap()
 	mirrorLimiter := jsonrpc.NewMirrorLimiter()
 	loadBalancer := lb.NewLoadBalancer(
 		ctx,
 		*cmdlineAndLoadConfig.ProxyConfig,
-		&jsonrpc.GeneralRPCMethodHertzHandler{Config: cmdlineAndLoadConfig.ProxyConfig, HeightMap: heightMap},
-		limiter, heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel, versionChannel)
+		heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel, versionChannel)
 	go loadBalancer.BackgroundRefreshNode()
 
 	go func() {

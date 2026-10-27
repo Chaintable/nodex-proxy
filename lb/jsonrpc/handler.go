@@ -26,23 +26,20 @@ import (
 	"github.com/Chaintable/nodex-proxy/types"
 )
 
-func GetPreProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethodHandlerIHertz, limiter Limiter, mirrorMap MirrorMap, mirrorLimiter MirrorLimiter) types.PreProcessorProcessorsHertz {
+func GetPreProcessorHertz(config *types.Config, heightMap HeightMap, mirrorMap MirrorMap, mirrorLimiter MirrorLimiter) types.PreProcessorProcessorsHertz {
 	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
 	return []types.ProcessorFuncHertz{
 		jRPCMethodDeniedHertz(config.Processor.MethodDenied),
-		checkJRPCRequestBodyHertz(config.Processor.MethodNameChecker),
 		updatePreprocessorMetricsHertz(),
-		rpcMethodLimiterHertz(limiter),
-		rpcMethodHandlerProcessorHertz(rpcMethodHandler.PreHandlerMap()),
+		getLatestBlockHertz(heightMap),
 		requestMirrorHertz(defaultTimeout, config.Processor.RequestMirror, mirrorMap, mirrorLimiter),
 	}
 }
 
-func GetPostProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethodHandlerIHertz) types.PostProcessorProcessorsHertz {
+func GetPostProcessorHertz(config *types.Config) types.PostProcessorProcessorsHertz {
 	return []types.ProcessorFuncHertz{
 		parseJRPCResponseBodyHertz(),
 		logResponseHertz(),
-		rpcMethodHandlerPostProcessorHertz(rpcMethodHandler.PostHandlerMap()),
 		observabilityLogHertz(config.Processor.ObservabilityLog),
 		updatePostProcessorMetricsHertz(),
 	}

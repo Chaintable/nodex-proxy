@@ -1,7 +1,6 @@
 package lb
 
 import (
-	"context"
 	"testing"
 
 	"github.com/Chaintable/nodex-proxy/internal/benchfixture"
@@ -14,8 +13,7 @@ import (
 // the postprocessor's content-type and batch checks.
 func BenchmarkResponseProcessing(b *testing.B) {
 	config := types.DefaultConfig()
-	heightMap := jrpc.NewHeightMap()
-	processors := jrpc.GetPostProcessorHertz(&config, &jrpc.GeneralRPCMethodHertzHandler{Config: &config, HeightMap: heightMap})
+	processors := jrpc.GetPostProcessorHertz(&config)
 	parseResponse := processors[0]
 	for name, body := range benchfixture.Responses() {
 		b.Run(name, func(b *testing.B) {
@@ -28,7 +26,7 @@ func BenchmarkResponseProcessing(b *testing.B) {
 			for b.Loop() {
 				var p types.RequestContext
 				lb.parseRPCErrorCodes(c.Response.Body(), &p)
-				parseResponse(context.Background(), c, &p)
+				parseResponse(c, &p)
 			}
 		})
 	}

@@ -1,12 +1,5 @@
 package jsonrpc
 
-func TooManyRequestsResponse() (*ResponseObject, error) {
-	return ErrorResponse(&ErrorObject{
-		Code:    ExtTooManyRequests,
-		Message: ExtTooManyRequestsMsg,
-	}, nil)
-}
-
 func BadRequest(err error) (*ResponseObject, error) {
 	return ErrorResponse(&ErrorObject{
 		Code:    ParseErrorCode,
