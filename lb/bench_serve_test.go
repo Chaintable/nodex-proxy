@@ -45,7 +45,7 @@ func newBenchLoadBalancer(tb testing.TB, upstreamResp []byte) *LoadBalancer {
 	heightMap := jsonrpc.NewHeightMap()
 	lbi := NewLoadBalancer(
 		context.Background(),
-		nil, cfg,
+		cfg,
 		&jsonrpc.GeneralRPCMethodHertzHandler{Config: &cfg, HeightMap: heightMap},
 		jsonrpc.NewMethodLimiter(nil), heightMap, jsonrpc.NewMirrorLimiter(),
 		make(chan *discovery.TargetNode), make(chan *discovery.ChainHeight),

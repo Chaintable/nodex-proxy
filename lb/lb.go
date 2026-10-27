@@ -9,9 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-
 	"github.com/Chaintable/nodex-proxy/discovery"
 	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
@@ -30,12 +27,10 @@ import (
 	hzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"go.opentelemetry.io/otel/trace"
 )
 
 type LoadBalancer struct {
 	ctx                 context.Context
-	nodeRefresherMap    map[string]*etcd.Discover
 	Config              types.Config
 	Limiter             jsonrpc.Limiter
 	HeightMap           jsonrpc.HeightMap
@@ -56,11 +51,7 @@ type LoadBalancer struct {
 	archiveHashCache    *archiveHashCache
 }
 
-type jrpcxContextKeyType int
-
 const (
-	originHostKey jrpcxContextKeyType = iota
-
 	DBKBiz           = "x-dbk-biz"
 	DBKSourceHost    = "x-dbk-source-host"
 	DBKSource        = "x-dbk-source"
@@ -69,7 +60,7 @@ const (
 	NodexNodeType    = "x-nodex-node-type"
 )
 
-func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Discover, config types.Config,
+func NewLoadBalancer(ctx context.Context, config types.Config,
 	rpcMethodHandlerHertz types.RPCMethodHandlerIHertz, limiter jsonrpc.Limiter, heightMap jsonrpc.HeightMap,
 	mirrorLimiter jsonrpc.MirrorLimiter,
 	nodeChannel <-chan *discovery.TargetNode, heightChannel <-chan *discovery.ChainHeight,
@@ -109,7 +100,6 @@ func NewLoadBalancer(ctx context.Context, nodeRefresherMap map[string]*etcd.Disc
 
 	return &LoadBalancer{
 		ctx:                 ctx,
-		nodeRefresherMap:    nodeRefresherMap,
 		Config:              config,
 		Limiter:             limiter,
 		HeightMap:           heightMap,
@@ -364,14 +354,14 @@ func ParseBaseChainID(chainID string) (int64, bool) {
 func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, chainID string) {
 	requestContext := lb.generateRequestContext(ctx, &c.Request)
 	if requestContext.Error != nil {
-		_, object, _ := ejrpc.BadRequest(requestContext.Error)
+		object, _ := ejrpc.BadRequest(requestContext.Error)
 		requestContext.WriteError(c, consts.StatusOK, object)
 		return
 	}
 
 	baseChainID, chainUUID, rawChainID := splitChainIdentifier(chainID)
 	if baseChainID == "" {
-		_, object, _ := ejrpc.BadRequest(errors.New("invalid chain id"))
+		object, _ := ejrpc.BadRequest(errors.New("invalid chain id"))
 		requestContext.WriteError(c, consts.StatusOK, object)
 		return
 	}
@@ -392,13 +382,6 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	requestContext.ChainUUID = chainUUID
 	requestContext.ChainId = effectiveChainID
 
-	tracing := jsonrpc.TracingEnabled()
-	if tracing {
-		var roundTripSpan trace.Span
-		ctx, roundTripSpan = jsonrpc.Tracer.Start(ctx, "RoundTrip")
-		defer roundTripSpan.End()
-	}
-
 	// Pre-processors and Post-processors
 	ctx, c, requestContext = lb.preProcessorsHertz.Call(ctx, c, requestContext)
 	defer func() {
@@ -407,15 +390,6 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	// If response is already set by pre-processors, return directly
 	if len(c.Response.Body()) != 0 {
 		return
-	}
-
-	if tracing {
-		_, upstreamSpan := jsonrpc.Tracer.Start(
-			ctx,
-			"Upstream",
-			trace.WithAttributes(attribute.String("rpc_method", string(requestContext.Method))),
-		)
-		defer upstreamSpan.End()
 	}
 
 	// Mark as upstream related request
@@ -432,7 +406,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	}
 	if err != nil {
 		log.Error("failed to get node, err ", err)
-		_, object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
+		object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
 		requestContext.Error = retErr
 		requestContext.ResponseBody = object
 		requestContext.WriteError(c, consts.StatusOK, object)
@@ -441,7 +415,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 
 	if targetNode.ReverseProxy == nil {
 		log.Error("failed to get node, err ", errors.New("no reverse proxy available"))
-		_, object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+		object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
 		requestContext.Error = retErr
 		requestContext.ResponseBody = object
 		requestContext.WriteError(c, consts.StatusOK, object)
@@ -479,7 +453,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		targetNode, err := lb.chooseTargetNode(requestContext, "")
 		if err != nil {
 			log.Error("failed to get node, err ", err)
-			_, object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
+			object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
 			requestContext.Error = retErr
 			requestContext.ResponseBody = object
 			requestContext.WriteError(c, consts.StatusOK, object)
@@ -488,7 +462,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 
 		if targetNode.ReverseProxy == nil {
 			log.Error("failed to get node, err ", errors.New("no reverse proxy available"))
-			_, object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+			object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
 			requestContext.Error = retErr
 			requestContext.ResponseBody = object
 			requestContext.WriteError(c, consts.StatusOK, object)
@@ -511,7 +485,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		targetNode, err := lb.chooseTargetNode(requestContext, "native")
 		if err != nil {
 			log.Error("failed to get native node, err ", err)
-			_, object, retErr := ejrpc.BadGateway(errors.New("no native backends available"))
+			object, retErr := ejrpc.BadGateway(errors.New("no native backends available"))
 			requestContext.Error = retErr
 			requestContext.ResponseBody = object
 			requestContext.WriteError(c, consts.StatusOK, object)
@@ -519,7 +493,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		}
 		if targetNode.ReverseProxy == nil {
 			log.Error("failed to get native node, err ", errors.New("no reverse proxy available"))
-			_, object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
+			object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
 			requestContext.Error = retErr
 			requestContext.ResponseBody = object
 			requestContext.WriteError(c, consts.StatusOK, object)
@@ -584,22 +558,16 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 	}
 	c.Request.SetOptions(hzconfig.WithReadTimeout(lb.upstreamReadTimeout(method)))
 
-	// Inject trace context straight into the outgoing hertz headers; copying
-	// them into an http.Header first both allocated per request and dropped
-	// the injected values on the floor.
-	if jsonrpc.TracingEnabled() {
-		otel.GetTextMapPropagator().Inject(ctx, hertzHeaderCarrier{&c.Request.Header})
-	}
 	targetNode.ReverseProxy.ServeHTTP(ctx, c)
 
 	if c.Response.StatusCode() == consts.StatusGatewayTimeout {
-		_, object, retErr := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
+		object, retErr := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
 		requestContext.Error = retErr
 		requestContext.ResponseBody = object
 		requestContext.WriteError(c, consts.StatusGatewayTimeout, object)
 	}
 	if c.Response.StatusCode() == consts.StatusBadGateway {
-		_, object, retErr := ejrpc.BadGateway(errors.New("reverse proxy bad gateway"))
+		object, retErr := ejrpc.BadGateway(errors.New("reverse proxy bad gateway"))
 		requestContext.Error = retErr
 		requestContext.ResponseBody = object
 		requestContext.WriteError(c, consts.StatusBadGateway, object)
@@ -670,74 +638,6 @@ func (lb *LoadBalancer) shouldRetryWithNative(requestContext *types.RequestConte
 	return responseErrorCodes.Has(types.CosmosPrecompile)
 }
 
-func (lb *LoadBalancer) rewriteMethodForNativeRetry(c *app.RequestContext, requestContext *types.RequestContext) {
-	if c == nil || requestContext == nil {
-		return
-	}
-	if len(requestContext.RequestBody) == 0 {
-		return
-	}
-
-	rewriteMap := map[ejrpc.RPCMethod]ejrpc.RPCMethod{
-		ejrpc.SimulateTransactions: "debank_simulateTransactions",
-		ejrpc.ContractMultiCall:    "debank_contractMultiCall",
-		ejrpc.EstimateGas:          "debank_estimateGas",
-	}
-
-	changed := false
-	for _, req := range requestContext.RequestBody {
-		if req == nil {
-			continue
-		}
-		if to, ok := rewriteMap[req.Method]; ok {
-			req.Method = to
-			changed = true
-		}
-	}
-	if !changed {
-		return
-	}
-
-	var (
-		newBody []byte
-		err     error
-	)
-	if requestContext.IsBatch {
-		newBody, err = sonic.Marshal(requestContext.RequestBody)
-	} else {
-		newBody, err = sonic.Marshal(requestContext.RequestBody[0])
-		requestContext.Method = requestContext.RequestBody[0].Method
-	}
-	if err != nil {
-		log.Error("failed to rewrite request body for native retry", err)
-		return
-	}
-
-	requestContext.RawRequestBody = newBody
-	requestContext.RequestBodySize = len(newBody)
-	// SetBody overwrites the buffer the parsed requests borrow from.
-	ejrpc.OwnRequests(requestContext.RequestBody)
-	c.Request.SetBody(newBody)
-}
-
-// hertzHeaderCarrier adapts hertz request headers to otel's TextMapCarrier so
-// propagators can read and write them in place.
-type hertzHeaderCarrier struct {
-	header *protocol.RequestHeader
-}
-
-func (c hertzHeaderCarrier) Get(key string) string { return c.header.Get(key) }
-
-func (c hertzHeaderCarrier) Set(key, value string) { c.header.Set(key, value) }
-
-func (c hertzHeaderCarrier) Keys() []string {
-	keys := make([]string, 0, 16)
-	c.header.VisitAll(func(key, _ []byte) {
-		keys = append(keys, string(key))
-	})
-	return keys
-}
-
 type rpcErrorCodes map[int]struct{}
 
 func (codes rpcErrorCodes) Has(code int) bool {
@@ -806,7 +706,7 @@ func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *pro
 	}
 	for _, req := range requestContext.RequestBody {
 		if requestContext.Error = ejrpc.ValidateRequest(req); requestContext.Error != nil {
-			_, requestContext.ResponseBody, requestContext.Error = ejrpc.BadRequest(requestContext.Error)
+			requestContext.ResponseBody, requestContext.Error = ejrpc.BadRequest(requestContext.Error)
 			break
 		}
 	}
@@ -822,11 +722,6 @@ func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *pro
 }
 
 func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Request) *types.RequestContext {
-	var traceID string
-	if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
-		traceID = sc.TraceID().String()
-	}
-
 	sourceBiz := request.Header.Get(DBKBiz)
 	sourceHost := request.Header.Get(DBKSourceHost)
 	sourceIP := request.Header.Get(DBKSource)
@@ -836,8 +731,6 @@ func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Req
 
 	// TODO: add some general metrics
 	return &types.RequestContext{
-		Context:             ctx,
-		RequestId:           traceID,
 		SourceBiz:           sourceBiz,
 		SourceHost:          sourceHost,
 		SourceIP:            sourceIP,
@@ -846,7 +739,7 @@ func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Req
 
 		Start:           time.Now(),
 		Method:          "unknown",
-		Host:            types.ProcessorHost(originHostFromContext(ctx, string(request.Host()))),
+		Host:            types.ProcessorHost(request.Host()),
 		Target:          "native",
 		UpstreamRelated: false,
 		Archive:         useArchive,
@@ -855,16 +748,6 @@ func (lb *LoadBalancer) beforeProcess(ctx context.Context, request *protocol.Req
 
 func isArchiveNodeTypeHeaderValue(value string) bool {
 	return strings.TrimSpace(value) == "archive"
-}
-
-func originHostFromContext(ctx context.Context, defaultHost string) string {
-	if ctx == nil {
-		return defaultHost
-	}
-	if originHost, ok := ctx.Value(originHostKey).(string); ok {
-		return originHost
-	}
-	return defaultHost
 }
 
 // GetMirrorMap returns the MirrorMap instance for external access
