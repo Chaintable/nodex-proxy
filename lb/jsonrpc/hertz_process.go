@@ -233,6 +233,8 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 
 				return ctx, c, processData
 			}
+			// SetBody overwrites the buffer the parsed requests borrow from.
+			jsonrpc.OwnRequests(processData.RequestBody)
 			c.Request.SetBody(rawBytes)
 			log.Debug("getLatestBlock request rewritten", log.Any("request_body_size", len(rawBytes)))
 

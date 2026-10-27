@@ -23,6 +23,7 @@ package jsonrpc
 import (
 	"context"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/lib/log"
@@ -38,6 +39,16 @@ import (
 )
 
 var Tracer = otel.Tracer("jrpcx")
+
+// tracingEnabled is set once initTracer installs a real tracer provider.
+// Until then the global otel tracer is a no-op that still allocates a span
+// per Start, so the request path skips tracing entirely.
+var tracingEnabled atomic.Bool
+
+// TracingEnabled reports whether request spans and trace propagation are on.
+func TracingEnabled() bool {
+	return tracingEnabled.Load()
+}
 
 func initTracer(config types.Config) error {
 	traceConfig := config.Observability.Trace
@@ -93,5 +104,6 @@ func initTracer(config types.Config) error {
 	tp := sdktrace.NewTracerProvider(tracerProviderOptions...)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(xray.Propagator{})
+	tracingEnabled.Store(true)
 	return nil
 }

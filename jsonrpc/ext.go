@@ -23,7 +23,10 @@ package jsonrpc
 import (
 	"bytes"
 	"errors"
+	"strings"
+	"unsafe"
 
+	"github.com/Chaintable/nodex-proxy/internal/jsonscan"
 	"github.com/bytedance/sonic"
 	"github.com/cloudwego/hertz/pkg/protocol"
 )
@@ -43,28 +46,35 @@ var (
 
 // ParseRequest parse the jsonrpc request, unpack it into one RequestObject or
 // more to []RequestObject.
+//
+// The returned objects borrow the request body: Jsonrpc, Method, Params and ID
+// may point into it. Callers must not modify or release the body while the
+// objects are in use, and must copy (see OwnRequests) anything that outlives
+// the request or must survive a body rewrite.
 func ParseRequest(r *protocol.Request) ([]byte, []*RequestObject, int, error) {
-	//if r.Body == nil {
-	//	return nil, nil, 0, ErrEmptyBody
-	//}
 	body, err := r.BodyE()
-
-	//// handle whether err is encountered or not
-	//r.Body.Close()
-	//r.Body = io.NopCloser(bytes.NewBuffer(body))
 	if err != nil {
 		return nil, nil, 0, ErrReadBody
 	}
 
 	size := len(body)
+	if reqs, ok := parseRequestBorrowed(body); ok {
+		return body, reqs, size, nil
+	}
+	return parseRequestDecoded(body)
+}
+
+// parseRequestDecoded is the reference decoder. It copies the body, so its
+// results never alias request memory; the borrowed fast path must agree with
+// it on every input it accepts.
+func parseRequestDecoded(body []byte) ([]byte, []*RequestObject, int, error) {
+	size := len(body)
 	reqs := make([]*RequestObject, 0)
-	switch {
-	case IsBatch(body):
+	if IsBatch(body) {
 		if err := sonic.Unmarshal(body, &reqs); err != nil {
 			return nil, nil, size, ErrParseBatch
 		}
 		return body, reqs, size, nil
-	default:
 	}
 
 	var req RequestObject
@@ -74,6 +84,120 @@ func ParseRequest(r *protocol.Request) ([]byte, []*RequestObject, int, error) {
 	reqs = append(reqs, &req)
 
 	return body, reqs, size, nil
+}
+
+// singleRequest lets the common one-object request share one allocation with
+// the slice that holds it.
+type singleRequest struct {
+	req  RequestObject
+	reqs [1]*RequestObject
+}
+
+// parseRequestBorrowed decodes the common request shape without copying the
+// body: string fields and raw params/id are views into it. It declines
+// (ok=false) anything whose decoding is not byte-for-byte the raw text —
+// escapes anywhere, non-ASCII or non-string jsonrpc/method, case-folded or
+// non-ASCII keys, non-object batch items — and leaves those to the decoder,
+// so both paths agree. sonic.Valid does not check escape sequences, which is
+// why any backslash also falls back.
+func parseRequestBorrowed(body []byte) ([]*RequestObject, bool) {
+	if bytes.IndexByte(body, '\\') >= 0 || !sonic.Valid(body) {
+		return nil, false
+	}
+	s := unsafe.String(unsafe.SliceData(body), len(body))
+	i := jsonscan.SkipSpace(s, 0)
+	if i >= len(s) {
+		return nil, false
+	}
+	switch s[i] {
+	case '{':
+		single := &singleRequest{}
+		if !scanRequestObject(s, body, i, &single.req) {
+			return nil, false
+		}
+		single.reqs[0] = &single.req
+		return single.reqs[:], true
+	case '[':
+		reqs := make([]*RequestObject, 0, 4)
+		declined := false
+		_, ok := jsonscan.ScanArray(s, i, func(_ int, vs, _ int) bool {
+			req := &RequestObject{}
+			if s[vs] != '{' || !scanRequestObject(s, body, vs, req) {
+				declined = true
+				return false
+			}
+			reqs = append(reqs, req)
+			return true
+		})
+		if !ok || declined {
+			return nil, false
+		}
+		return reqs, true
+	default:
+		return nil, false
+	}
+}
+
+var requestKeys = [...]string{"jsonrpc", "method", "params", "id"}
+
+func scanRequestObject(s string, body []byte, i int, req *RequestObject) bool {
+	ok := true
+	_, scanned := jsonscan.ScanObject(s, i, func(key string, keyEscaped bool, vs, ve int) bool {
+		switch key {
+		case "jsonrpc", "method":
+			if s[vs] != '"' {
+				ok = false
+				return false
+			}
+			value := s[vs+1 : ve-1]
+			if !jsonscan.IsPlainASCII(value) {
+				ok = false
+				return false
+			}
+			if key == "jsonrpc" {
+				req.Jsonrpc = value
+			} else {
+				req.Method = RPCMethod(value)
+			}
+		case "params":
+			req.Params = body[vs:ve:ve]
+		case "id":
+			req.ID = body[vs:ve:ve]
+		default:
+			// The decoder matches keys case-insensitively; leave any key that
+			// could fold onto a field, or that we cannot fold, to it.
+			if keyEscaped || !jsonscan.IsPlainASCII(key) {
+				ok = false
+				return false
+			}
+			for _, k := range requestKeys {
+				if strings.EqualFold(key, k) {
+					ok = false
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return ok && scanned
+}
+
+// OwnRequests replaces every borrowed field of reqs with a private copy, for
+// callers about to rewrite the request body the objects were parsed from.
+func OwnRequests(reqs []*RequestObject) {
+	for _, req := range reqs {
+		if req == nil {
+			continue
+		}
+		req.Jsonrpc = strings.Clone(req.Jsonrpc)
+		req.Method = RPCMethod(strings.Clone(string(req.Method)))
+		if req.Params != nil {
+			req.Params = bytes.Clone(req.Params)
+		}
+		if req.ID != nil {
+			req.ID = bytes.Clone(req.ID)
+		}
+	}
 }
 
 // ValidateRequest check the value of jsonrpc request is valid or not.

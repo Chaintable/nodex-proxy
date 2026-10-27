@@ -1,8 +1,9 @@
 package lbnode
 
 import (
-	"fmt"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
@@ -59,20 +60,24 @@ func getSharedClient() (*client.Client, error) {
 	return sharedClient, nil
 }
 
+// Node is shared by every request routed to it. Identity fields (key, address,
+// source, NodeType, ReverseProxy) are immutable after construction; the
+// mutable load-balancing state is held in atomics so the per-request
+// availability scan does not bounce a lock's cache line between cores.
 type Node struct {
 	key    string
 	ip     string
 	port   int
-	weight int
+	addr   string
+	source string
 
-	conns         int64
-	currentWeight int
-	stateType     int
-	source        string
+	weight        atomic.Int64
+	currentWeight atomic.Int64
+	conns         atomic.Int64
+	stateType     atomic.Int64
 
 	NodeType discovery.NodeType
 
-	lock         sync.RWMutex
 	ReverseProxy *reverseproxy.ReverseProxy
 }
 type Option func(*Node)
@@ -91,18 +96,19 @@ func New(key, ip string, port, weight int, nodeType discovery.NodeType, opts ...
 		weight = 1
 	}
 	node := &Node{
-		key:           key,
-		ip:            ip,
-		port:          port,
-		weight:        weight,
-		currentWeight: weight,
-		NodeType:      nodeType,
+		key:      key,
+		ip:       ip,
+		port:     port,
+		addr:     ip + ":" + strconv.Itoa(port),
+		NodeType: nodeType,
 	}
+	node.weight.Store(int64(weight))
+	node.currentWeight.Store(int64(weight))
 	for _, opt := range opts {
 		opt(node)
 	}
 
-	proxy, err := reverseproxy.NewSingleHostReverseProxy(fmt.Sprintf("http://%s", node.Addr()))
+	proxy, err := reverseproxy.NewSingleHostReverseProxy("http://" + node.Addr())
 	if err != nil {
 		return node, err
 	}
@@ -121,54 +127,31 @@ func (node *Node) Key() string {
 }
 
 func (node *Node) Weight() int {
-	node.lock.RLock()
-	defer node.lock.RUnlock()
-
-	return node.weight
+	return int(node.weight.Load())
 }
 
 // EffectWeight returns effect weight
 func (node *Node) EffectWeight() int {
-	node.lock.RLock()
-	defer node.lock.RUnlock()
-
-	return node.effectWeight()
-}
-
-func (node *Node) effectWeight() int {
-	return int(int64(node.weight))
+	return int(node.weight.Load())
 }
 
 // SetWeight set weight
 func (node *Node) SetWeight(weight int) {
-	node.lock.Lock()
-	defer node.lock.Unlock()
-
-	node.weight = weight
+	node.weight.Store(int64(weight))
 }
 
 func (node *Node) SetState(state int) {
-	node.lock.Lock()
-	defer node.lock.Unlock()
-
-	node.stateType = state
+	node.stateType.Store(int64(state))
 }
 
 // CurrentWeight returns currentWeight
 func (node *Node) CurrentWeight() int {
-	node.lock.RLock()
-	defer node.lock.RUnlock()
-
-	return node.currentWeight
+	return int(node.currentWeight.Load())
 }
 
 // IncrCurrentWeight increment currentWeight
 func (node *Node) IncrCurrentWeight(n int) int {
-	node.lock.Lock()
-	defer node.lock.Unlock()
-
-	node.currentWeight += n
-	return node.currentWeight
+	return int(node.currentWeight.Add(int64(n)))
 }
 
 // IP returns ip
@@ -181,9 +164,9 @@ func (node *Node) Port() int {
 	return node.port
 }
 
-// Addr returns <ip>:<port>
+// Addr returns <ip>:<port>, computed once at construction.
 func (node *Node) Addr() string {
-	return fmt.Sprintf("%s:%d", node.IP(), node.Port())
+	return node.addr
 }
 
 func (node *Node) Source() string {
@@ -192,51 +175,38 @@ func (node *Node) Source() string {
 
 // Conns returns conns
 func (node *Node) Conns() int64 {
-	node.lock.RLock()
-	defer node.lock.RUnlock()
-
-	return node.conns
+	return node.conns.Load()
 }
 
-// IncrConns increment connection number
+// IncrConns increment connection number, never dropping below zero.
 func (node *Node) IncrConns(n int64) int64 {
-	node.lock.Lock()
-	defer node.lock.Unlock()
-
-	node.conns += n
-	if node.conns < 0 {
-		node.conns = 0
+	for {
+		old := node.conns.Load()
+		next := old + n
+		if next < 0 {
+			next = 0
+		}
+		if node.conns.CompareAndSwap(old, next) {
+			return next
+		}
 	}
-	return node.conns
 }
 
 func (node *Node) State() int {
-	node.lock.RLock()
-	defer node.lock.RUnlock()
-
-	return node.stateType
+	return int(node.stateType.Load())
 }
 
 func (node *Node) Available() bool {
-	node.lock.RLock()
-	defer node.lock.RUnlock()
-
-	return node.stateType == 1
+	return node.stateType.Load() == 1
 }
 
 // UpdateFrom refreshes the mutable attributes of node from other, keeping the
 // existing ReverseProxy and load-balancing state so that warm upstream
 // connections are not discarded. source and NodeType are immutable after a
-// node is published (they are read without holding node.lock); nodes whose
-// identity changed must be replaced instead.
+// node is published; nodes whose identity changed must be replaced instead.
 func (node *Node) UpdateFrom(other *Node) {
-	weight := other.Weight()
-	state := other.State()
-
-	node.lock.Lock()
-	defer node.lock.Unlock()
-	node.weight = weight
-	node.stateType = state
+	node.weight.Store(other.weight.Load())
+	node.stateType.Store(other.stateType.Load())
 }
 
 // UpsertInto merges node into nodes. A node with the same identity (key,
@@ -260,21 +230,18 @@ func UpsertInto(nodes []*Node, node *Node) []*Node {
 }
 
 func (node *Node) Clone() *Node {
-	node.lock.RLock()
-	defer node.lock.RUnlock()
-
-	n := Node{
-		key:           node.key,
-		ip:            node.ip,
-		port:          node.port,
-		weight:        node.weight,
-		source:        node.source,
-		conns:         node.conns,
-		currentWeight: node.currentWeight,
-		lock:          sync.RWMutex{},
-		stateType:     node.stateType,
-		NodeType:      node.NodeType,
-		ReverseProxy:  node.ReverseProxy,
+	n := &Node{
+		key:          node.key,
+		ip:           node.ip,
+		port:         node.port,
+		addr:         node.addr,
+		source:       node.source,
+		NodeType:     node.NodeType,
+		ReverseProxy: node.ReverseProxy,
 	}
-	return &n
+	n.weight.Store(node.weight.Load())
+	n.currentWeight.Store(node.currentWeight.Load())
+	n.conns.Store(node.conns.Load())
+	n.stateType.Store(node.stateType.Load())
+	return n
 }

@@ -24,10 +24,13 @@ func Responses() map[string][]byte {
 func Requests() map[string][]byte {
 	call := `{"to":"0x` + strings.Repeat("ab", 20) + `","data":"0x` + strings.Repeat("12", 128) + `"}`
 	multicall := `{"jsonrpc":"2.0","method":"contractMultiCall","params":[[` + strings.TrimSuffix(strings.Repeat(call+",", 128), ",") + `],{"block_id":"0x1234","type":"Equals"}],"id":1}`
+	// Production multicall requests average about 2.7KB.
+	multicall8 := `{"jsonrpc":"2.0","method":"contractMultiCall","params":[[` + strings.TrimSuffix(strings.Repeat(call+",", 8), ",") + `],{"block_id":"0x` + strings.Repeat("ab", 32) + `","type":"Equals"}],"id":1}`
 	small := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x1234","latest"],"id":1}`
 	return map[string][]byte{
-		"small":     []byte(small),
-		"multicall": []byte(multicall),
-		"batch":     []byte("[" + multicall + "," + small + "]"),
+		"small":      []byte(small),
+		"multicall":  []byte(multicall),
+		"multicall8": []byte(multicall8),
+		"batch":      []byte("[" + multicall + "," + small + "]"),
 	}
 }

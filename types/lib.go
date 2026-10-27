@@ -59,10 +59,13 @@ type RequestContext struct {
 
 	UpstreamRelated bool `json:"-"`
 
-	RequestId        string                   `json:"request_id"`
-	Start            time.Time                `json:"start"`
-	Error            error                    `json:"-"`
-	RawRequestBody   []byte                   `json:"-"`
+	RequestId      string    `json:"request_id"`
+	Start          time.Time `json:"start"`
+	Error          error     `json:"-"`
+	RawRequestBody []byte    `json:"-"`
+	// RequestBody borrows the hertz request body (see jsonrpc.ParseRequest):
+	// copy what must outlive the request, and call jsonrpc.OwnRequests before
+	// rewriting the body.
 	RequestBody      []*jsonrpc.RequestObject `json:"request_body"`
 	Method           jsonrpc.RPCMethod        `json:"method"`
 	IsBatch          bool                     `json:"is_batch"`

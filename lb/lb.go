@@ -357,8 +357,12 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	requestContext.ChainUUID = chainUUID
 	requestContext.ChainId = effectiveChainID
 
-	ctx, roundTripSpan := jsonrpc.Tracer.Start(ctx, "RoundTrip")
-	defer roundTripSpan.End()
+	tracing := jsonrpc.TracingEnabled()
+	if tracing {
+		var roundTripSpan trace.Span
+		ctx, roundTripSpan = jsonrpc.Tracer.Start(ctx, "RoundTrip")
+		defer roundTripSpan.End()
+	}
 
 	// Pre-processors and Post-processors
 	ctx, c, requestContext = lb.preProcessorsHertz.Call(ctx, c, requestContext)
@@ -370,12 +374,14 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		return
 	}
 
-	_, upstreamSpan := jsonrpc.Tracer.Start(
-		ctx,
-		"Upstream",
-		trace.WithAttributes(attribute.String("rpc_method", string(requestContext.Method))),
-	)
-	defer upstreamSpan.End()
+	if tracing {
+		_, upstreamSpan := jsonrpc.Tracer.Start(
+			ctx,
+			"Upstream",
+			trace.WithAttributes(attribute.String("rpc_method", string(requestContext.Method))),
+		)
+		defer upstreamSpan.End()
+	}
 
 	// Mark as upstream related request
 	requestContext.UpstreamRelated = true
@@ -546,7 +552,9 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 	// Inject trace context straight into the outgoing hertz headers; copying
 	// them into an http.Header first both allocated per request and dropped
 	// the injected values on the floor.
-	otel.GetTextMapPropagator().Inject(ctx, hertzHeaderCarrier{&c.Request.Header})
+	if jsonrpc.TracingEnabled() {
+		otel.GetTextMapPropagator().Inject(ctx, hertzHeaderCarrier{&c.Request.Header})
+	}
 	targetNode.ReverseProxy.ServeHTTP(ctx, c)
 
 	if c.Response.StatusCode() == consts.StatusGatewayTimeout {
@@ -672,6 +680,8 @@ func (lb *LoadBalancer) rewriteMethodForNativeRetry(c *app.RequestContext, reque
 
 	requestContext.RawRequestBody = newBody
 	requestContext.RequestBodySize = len(newBody)
+	// SetBody overwrites the buffer the parsed requests borrow from.
+	ejrpc.OwnRequests(requestContext.RequestBody)
 	c.Request.SetBody(newBody)
 }
 
@@ -755,8 +765,8 @@ func (lb *LoadBalancer) generateRequestContext(ctx context.Context, request *pro
 	}
 	requestContext.IsBatch = len(requestContext.RequestBody) > 1
 	if !requestContext.IsBatch {
-		// The decoded method aliases a copy of the whole request body. Metric
-		// series and trace attributes outlive the request, so own it once here.
+		// The parsed method borrows the request body. Metric series and trace
+		// attributes outlive the request, so own it once here.
 		requestContext.Method = ejrpc.RPCMethod(strings.Clone(string(requestContext.RequestBody[0].Method)))
 	}
 	for _, req := range requestContext.RequestBody {
