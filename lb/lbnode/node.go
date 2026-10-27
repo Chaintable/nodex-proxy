@@ -73,7 +73,6 @@ type Node struct {
 
 	weight        atomic.Int64
 	currentWeight atomic.Int64
-	conns         atomic.Int64
 	stateType     atomic.Int64
 
 	NodeType discovery.NodeType
@@ -135,11 +134,6 @@ func (node *Node) EffectWeight() int {
 	return int(node.weight.Load())
 }
 
-// SetWeight set weight
-func (node *Node) SetWeight(weight int) {
-	node.weight.Store(int64(weight))
-}
-
 func (node *Node) SetState(state int) {
 	node.stateType.Store(int64(state))
 }
@@ -171,25 +165,6 @@ func (node *Node) Addr() string {
 
 func (node *Node) Source() string {
 	return node.source
-}
-
-// Conns returns conns
-func (node *Node) Conns() int64 {
-	return node.conns.Load()
-}
-
-// IncrConns increment connection number, never dropping below zero.
-func (node *Node) IncrConns(n int64) int64 {
-	for {
-		old := node.conns.Load()
-		next := old + n
-		if next < 0 {
-			next = 0
-		}
-		if node.conns.CompareAndSwap(old, next) {
-			return next
-		}
-	}
 }
 
 func (node *Node) State() int {
@@ -245,7 +220,6 @@ func (node *Node) Clone() *Node {
 	}
 	n.weight.Store(node.weight.Load())
 	n.currentWeight.Store(node.currentWeight.Load())
-	n.conns.Store(node.conns.Load())
 	n.stateType.Store(node.stateType.Load())
 	return n
 }

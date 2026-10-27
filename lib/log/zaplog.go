@@ -46,39 +46,11 @@ func InitLogger(level string) {
 	ProductionModeWithoutStackTrace(logLevel)
 }
 
-func DevelopmentMode() {
-	config := zap.NewDevelopmentConfig()
-
-	buildLoggerWithConfig(config)
-}
-
-func DevelopmentModeWithoutStackTrace() {
-	config := zap.NewDevelopmentConfig()
-	config.DisableStacktrace = true
-
-	buildLoggerWithConfig(config)
-}
-
-func ProductionMode() {
-	config := zap.NewProductionConfig()
-	config.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
-
-	buildLoggerWithConfig(config)
-}
-
 func ProductionModeWithoutStackTrace(logLevel zapcore.Level) {
 	config := zap.NewProductionConfig()
 	config.Level = zap.NewAtomicLevelAt(logLevel)
 	config.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
 	config.DisableStacktrace = true
-
-	buildLoggerWithConfig(config)
-}
-
-func IntegrationTestMod() {
-	config := zap.NewProductionConfig()
-	config.Level = zap.NewAtomicLevelAt(zap.WarnLevel)
-	config.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
 
 	buildLoggerWithConfig(config)
 }
@@ -93,11 +65,6 @@ func buildLoggerWithConfig(config zap.Config) {
 
 func Any(key string, value interface{}) zap.Field {
 	return zap.Any(key, value)
-}
-
-// Logger ...
-func Logger() *zap.Logger {
-	return logger.WithOptions(zap.AddCallerSkip(-1))
 }
 
 // Info ...

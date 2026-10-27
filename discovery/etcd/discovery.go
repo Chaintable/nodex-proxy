@@ -18,8 +18,7 @@ import (
 )
 
 type Discover struct {
-	etcdClient  *clientv3.Client
-	watchCancel context.CancelFunc
+	etcdClient *clientv3.Client
 
 	// kv and watcher default to etcdClient; they are interfaces so tests can
 	// inject fakes for the watch/resync logic.
@@ -66,16 +65,13 @@ func New(ctx context.Context, etcdEndpoints []string, keyPrefix string) (*Discov
 	if err != nil {
 		log.Fatal("connecting etcd failed", err)
 	}
-	_, cancel := context.WithCancel(context.Background())
-
 	refresher := &Discover{
-		etcdClient:  etcdCli,
-		watchCancel: cancel,
-		kv:          etcdCli,
-		watcher:     etcdCli,
-		quit:        make(chan struct{}),
-		keyPrefix:   keyPrefix,
-		knownKeys:   make(map[string][]byte),
+		etcdClient: etcdCli,
+		kv:         etcdCli,
+		watcher:    etcdCli,
+		quit:       make(chan struct{}),
+		keyPrefix:  keyPrefix,
+		knownKeys:  make(map[string][]byte),
 	}
 
 	return refresher, err
@@ -91,7 +87,6 @@ func NewEtcdClient(ctx context.Context, etcdEndpoints []string) (*clientv3.Clien
 
 func (r *Discover) Close() error {
 	close(r.quit)
-	r.watchCancel()
 	return r.etcdClient.Close()
 }
 

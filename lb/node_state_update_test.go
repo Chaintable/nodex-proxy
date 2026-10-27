@@ -18,7 +18,7 @@ func TestNodeDowngradeSkipsHealthCheck(t *testing.T) {
 	cfg := types.DefaultConfig()
 	heightMap := jsonrpc.NewHeightMap()
 	nodeCh := make(chan *discovery.TargetNode)
-	lbi := NewLoadBalancer(ctx, nil, cfg,
+	lbi := NewLoadBalancer(ctx, cfg,
 		&jsonrpc.GeneralRPCMethodHertzHandler{Config: &cfg, HeightMap: heightMap},
 		jsonrpc.NewMethodLimiter(nil), heightMap, jsonrpc.NewMirrorLimiter(),
 		nodeCh, make(chan *discovery.ChainHeight), make(chan *discovery.Gateway),

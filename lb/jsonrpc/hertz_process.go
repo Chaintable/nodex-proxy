@@ -24,15 +24,6 @@ const (
 	headerDappKey     = "x-api-dapp"
 )
 
-func logRequestHertz() types.ProcessorFuncHertz {
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		if types.DebugInfo.DebugModeEnable() {
-			log.Observe("RPC Call Started", ctx, processData.LogAttributes()...)
-		}
-		return ctx, c, processData
-	}
-}
-
 func jRPCMethodDeniedHertz(deniedMethods *[]jsonrpc.RPCMethod) types.ProcessorFuncHertz {
 	deniedMethodMap := map[jsonrpc.RPCMethod]struct{}{}
 	if deniedMethods != nil {
@@ -49,7 +40,7 @@ func jRPCMethodDeniedHertz(deniedMethods *[]jsonrpc.RPCMethod) types.ProcessorFu
 		for _, req := range processData.RequestBody {
 			if _, ok := deniedMethodMap[req.Method]; ok {
 				var respObj *jsonrpc.ResponseObject
-				_, respObj, processData.Error = jsonrpc.ErrorResponse(http.StatusBadRequest, errObject, nil)
+				respObj, processData.Error = jsonrpc.ErrorResponse(errObject, nil)
 				processData.WriteError(c, http.StatusBadRequest, respObj)
 				break
 			}
@@ -77,14 +68,14 @@ func checkJRPCRequestBodyHertz(config types.MethodNameCheckerConfig) types.Proce
 			if deniedRegexp != nil {
 				if deniedRegexp.MatchString(string(req.Method)) {
 					var respObj *jsonrpc.ResponseObject
-					_, respObj, processData.Error = jsonrpc.ErrorResponse(http.StatusBadRequest, errObject, nil)
+					respObj, processData.Error = jsonrpc.ErrorResponse(errObject, nil)
 					processData.WriteError(c, http.StatusBadRequest, respObj)
 					break
 				}
 			}
 			if !reMethodName.MatchString(string(req.Method)) {
 				var respObj *jsonrpc.ResponseObject
-				_, respObj, processData.Error = jsonrpc.ErrorResponse(http.StatusBadRequest, errObject, nil)
+				respObj, processData.Error = jsonrpc.ErrorResponse(errObject, nil)
 				processData.WriteError(c, http.StatusBadRequest, respObj)
 				break
 			}
@@ -107,7 +98,7 @@ func rpcMethodLimiterHertz(limiter Limiter) types.ProcessorFuncHertz {
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
 		if !limiter.Allow(processData.Method) {
 			var respObj *jsonrpc.ResponseObject
-			_, respObj, processData.Error = jsonrpc.TooManyRequestsResponse()
+			respObj, processData.Error = jsonrpc.TooManyRequestsResponse()
 			processData.WriteError(c, http.StatusTooManyRequests, respObj)
 		}
 		return ctx, c, processData
@@ -227,13 +218,10 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 			rawBytes, err := nJson.Marshal(requestPayload)
 			if err != nil {
 				var respObj *jsonrpc.ResponseObject
-				_, respObj, processData.Error = jsonrpc.ErrorResponse(
-					http.StatusInternalServerError,
-					&jsonrpc.ErrorObject{
-						Code:    jsonrpc.InternalErrorCode,
-						Message: "Failed to marshal new request body",
-					}, nil,
-				)
+				respObj, processData.Error = jsonrpc.ErrorResponse(&jsonrpc.ErrorObject{
+					Code:    jsonrpc.InternalErrorCode,
+					Message: "Failed to marshal new request body",
+				}, nil)
 				processData.WriteError(c, http.StatusInternalServerError, respObj)
 
 				return ctx, c, processData
@@ -245,7 +233,7 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 
 		} else {
 			var respObj *jsonrpc.ResponseObject
-			_, respObj, processData.Error = jsonrpc.ErrorResponse(http.StatusOK, &jsonrpc.ErrorObject{
+			respObj, processData.Error = jsonrpc.ErrorResponse(&jsonrpc.ErrorObject{
 				Code:    jsonrpc.InvalidParamsCode,
 				Message: jsonrpc.InvalidParamsMsg,
 			}, nil)
@@ -313,10 +301,6 @@ func logResponseHertz() types.ProcessorFuncHertz {
 				log.Any("has_error", processData.ResponseBody != nil && processData.ResponseBody.Error != nil),
 			)
 		}
-		if types.DebugInfo.DebugModeEnable() {
-			attributes := append(processData.LogAttributes(), log.MillisDurationAttribute("duration", time.Since(processData.Start)))
-			log.Observe("RPC Call Complete", ctx, attributes...)
-		}
 		return ctx, c, processData
 	}
 }
@@ -346,7 +330,7 @@ func observabilityLogHertz(config types.ObservabilityLogProcessorConfig) types.P
 					attributes = append(attributes, attribute.Int("ErrorCode", int(processData.ResponseBody.Error.Code)))
 					attributes = append(attributes, attribute.String("ErrorMessage", string(processData.ResponseBody.Error.Message)))
 				}
-				log.Observe("observability log", ctx, attributes...)
+				log.Observe("observability log", attributes...)
 			}
 			return ctx, c, processData
 		}
