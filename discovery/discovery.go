@@ -1,7 +1,6 @@
 package discovery
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/Chaintable/nodex-proxy/types"
@@ -115,9 +114,4 @@ type ChainVersion struct {
 	ChainId    string `json:"-"`
 	Version    string `json:"version"`
 	ChangeType int    `json:"-"`
-}
-
-type Discover interface {
-	Init(ctx context.Context) (chan *TargetNode, <-chan *ChainHeight, <-chan *Gateway, <-chan *MirrorTarget, <-chan *ChainVersion, error)
-	Close() error
 }

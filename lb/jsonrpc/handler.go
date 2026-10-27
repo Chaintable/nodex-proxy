@@ -29,7 +29,6 @@ import (
 func GetPreProcessorHertz(config *types.Config, rpcMethodHandler types.RPCMethodHandlerIHertz, limiter Limiter, mirrorMap MirrorMap, mirrorLimiter MirrorLimiter) types.PreProcessorProcessorsHertz {
 	defaultTimeout := time.Duration(config.DefaultRPCTimeout) * time.Millisecond
 	return []types.ProcessorFuncHertz{
-		logRequestHertz(),
 		jRPCMethodDeniedHertz(config.Processor.MethodDenied),
 		checkJRPCRequestBodyHertz(config.Processor.MethodNameChecker),
 		updatePreprocessorMetricsHertz(),

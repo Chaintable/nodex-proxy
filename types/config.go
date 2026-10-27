@@ -21,24 +21,11 @@
 package types
 
 import (
-	"errors"
-	"fmt"
-	"net"
-	"net/http"
-	"os"
-	"path/filepath"
-
 	"github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
-	"github.com/go-chi/chi/v5"
-	"go.uber.org/atomic"
-	"gopkg.in/yaml.v3"
 )
 
-var (
-	DefaultWeight                 = 100
-	DefaultLoadBalancerTargetPort = 80
-)
+var DefaultWeight = 100
 
 // defaultConfig default configuration if config file not specified.
 var defaultConfig = Config{
@@ -193,50 +180,6 @@ type Config struct {
 	ArchiveHashCacheSize int `yaml:"archive_hash_cache_size"`
 }
 
-type RaftJoinConfig struct {
-	// Id identity of the node to be joined
-	Id                       uint64
-	Host                     string
-	NativeBlockChainNodeHost string
-}
-
-type RaftConfig struct {
-	// Id identity of current raft node.
-	Id         uint64
-	Join       bool
-	JoinConfig RaftJoinConfig
-
-	SnapRootDir string `yaml:"snapRootDir"`
-	WALDir      string `yaml:"walDir"`
-	SnapDir     string `yaml:"snapDir"`
-	SnapCount   uint64 `yaml:"snapCount"`
-
-	MinBlockNumberGap uint64 `yaml:"minBlockNumberGap"`
-
-	Host string `yaml:"host"`
-}
-
-// NewConfig creates a new config object.
-func NewConfig(filepath string, chainId string) (cfg Config, err error) {
-	if filepath == "" {
-		defaultConfig.ChainId = chainId
-		cfg.initMetrics()
-		return defaultConfig, nil
-	}
-	bs, err := os.ReadFile(filepath)
-	if err != nil {
-		return
-	}
-
-	cfg.ChainId = chainId
-	if err = yaml.Unmarshal(bs, &cfg); err != nil {
-		return
-	}
-
-	FillWithDefaultConfig(&cfg)
-	return
-}
-
 func FillWithDefaultConfig(cfg *Config) {
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = defaultConfig.ServiceName
@@ -326,152 +269,10 @@ func FillWithDefaultConfig(cfg *Config) {
 	cfg.initMetrics()
 }
 
-type debugInfo struct {
-	mode *atomic.Bool
-}
-
-var DebugInfo = &debugInfo{
-	mode: atomic.NewBool(false),
-}
-
-const (
-	DebugHTTPPath = "/status/jrpc-debug"
-)
-
-func (d *debugInfo) RouterRegister(r *chi.Mux) {
-	r.Handle(DebugHTTPPath, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		switch request.Method {
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		case http.MethodGet:
-			status := d.mode.Load()
-			if status {
-				w.WriteHeader(http.StatusOK)
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-			}
-		case http.MethodPut:
-			log.Info("Debug mode enabled")
-			d.mode.Store(true)
-			w.WriteHeader(http.StatusOK)
-		case http.MethodDelete:
-			log.Info("Debug mode disabled")
-			d.mode.Store(false)
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-}
-
-func (d *debugInfo) DebugModeEnable() bool {
-	return d.mode.Load()
-}
-
 const (
 	MirrorRequestHost = "mirror"
 )
 
-var jrpcxFileHome string
-
-func init() {
-	home, e := os.UserHomeDir()
-	if e != nil {
-		panic(e)
-	}
-	jrpcxFileHome = filepath.Join(home, ".jrpcx")
-	_, err := os.Stat(jrpcxFileHome)
-	if err != nil {
-		if os.IsNotExist(err) {
-			err := os.Mkdir(jrpcxFileHome, 0o777)
-			if err != nil && !errors.Is(err, os.ErrExist) {
-				panic(err)
-			}
-		} else {
-			panic(err)
-		}
-	}
-}
-
-type jrpcxFilePath string
-
-func (rawP jrpcxFilePath) AbsFilePath() (string, error) {
-	p, e := filepath.Abs(filepath.Join(jrpcxFileHome, string(rawP)))
-	if e != nil {
-		return "", e
-	}
-	return p, nil
-}
-
-func (rawP jrpcxFilePath) FileCreate() error {
-	p, err := ManualProbeFlagFilePath.AbsFilePath()
-	if err != nil {
-		return err
-	}
-	f, err := os.Create(p)
-	if err != nil {
-		return err
-	}
-	return f.Close()
-}
-
-func (rawP jrpcxFilePath) FileExist() bool {
-	p, err := ManualProbeFlagFilePath.AbsFilePath()
-	if err != nil {
-		return false
-	}
-	_, err = os.Stat(p)
-	return err == nil
-}
-
-func (rawP jrpcxFilePath) FileDelete() error {
-	p, err := ManualProbeFlagFilePath.AbsFilePath()
-	if err != nil {
-		return err
-	}
-	return os.Remove(p)
-}
-
-type manualProbeFlagType struct{}
-
-var ManualProbeFlag = manualProbeFlagType{}
-
-const (
-	ManualProbeFlagFilePath jrpcxFilePath = "jrpcx-manual-probe-flag"
-	ManualProbeFlagHTTPPath string        = "/jrpc/manual-probe-flag"
-)
-
-func (_ manualProbeFlagType) RouterRegister(r *chi.Mux) {
-	r.Handle(ManualProbeFlagHTTPPath, http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			default:
-				w.WriteHeader(http.StatusMethodNotAllowed)
-			case http.MethodPut:
-				if err := ManualProbeFlagFilePath.FileCreate(); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				w.WriteHeader(http.StatusCreated)
-			case http.MethodDelete:
-				if err := ManualProbeFlagFilePath.FileDelete(); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				w.WriteHeader(http.StatusOK)
-			}
-		}))
-}
-
 func DefaultConfig() Config {
 	return defaultConfig
-}
-
-func (c Config) InternalAPIHost() string {
-	host, port, err := net.SplitHostPort(c.InternalAPIListen)
-	if err != nil {
-		log.Fatal("SplitHostPort error", err)
-	}
-	if host == "" {
-		host = "0.0.0.0"
-	}
-	return fmt.Sprintf("http://%s:%s", host, port)
 }

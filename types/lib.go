@@ -2,7 +2,6 @@ package types
 
 import (
 	"context"
-	"net/http"
 	"reflect"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 )
 
 func init() {
-	_ = sonic.Pretouch(reflect.TypeOf(RequestContext{}))
 	_ = sonic.Pretouch(reflect.TypeOf(jsonrpc.RequestObject{}))
 	_ = sonic.Pretouch(reflect.TypeOf(jsonrpc.RawResponseObject{}))
 }
@@ -31,25 +29,12 @@ type BlockContext struct {
 	BlockId *rpc.BlockNumberOrHash `json:"block_id"`
 	Type    string                 `json:"type"`
 }
-type jrpcxContextKeyType int
-
-const (
-	originHostKey jrpcxContextKeyType = iota
-
-	// DBK HTTP metadata headers
-	DBKBiz           = "x-dbk-biz"
-	DBKSourceHost    = "x-dbk-source-host"
-	DBKSource        = "x-dbk-source"
-	DBKEnv           = "x-dbk-env"
-	DBKServerVersion = "x-dbk-server-version"
-)
 
 // RequestContext is the accompanying data in the pre-processing and post-processing processes,
 // and is used to pass the required data during the processing.
 type RequestContext struct {
-	Context context.Context
-	Host    ProcessorHost   `json:"host"`
-	Target  ProcessorTarget `json:"target"`
+	Host   ProcessorHost   `json:"host"`
+	Target ProcessorTarget `json:"target"`
 	// Request source metadata
 	SourceBiz           string `json:"source_biz"`
 	SourceHost          string `json:"source_host"`
@@ -59,7 +44,6 @@ type RequestContext struct {
 
 	UpstreamRelated bool `json:"-"`
 
-	RequestId      string    `json:"request_id"`
 	Start          time.Time `json:"start"`
 	Error          error     `json:"-"`
 	RawRequestBody []byte    `json:"-"`
@@ -159,32 +143,11 @@ func (p *RequestContext) ClearTargetNode() {
 }
 
 type (
-	// PreProcessorFunc emphasizes the preprocessing of the **request**,
-	// and when the request meets certain conditions, the response is pre-built to achieve the purpose of preprocessing.
-	PreProcessorFunc   func(request *http.Request, response *http.Response, processData *RequestContext) (*http.Request, *http.Response, *RequestContext)
 	ProcessorFuncHertz func(ctx context.Context, c *app.RequestContext, processData *RequestContext) (context.Context, *app.RequestContext, *RequestContext)
-	// PostProcessorFunc emphasizes the **observation and recording of the response**, to achieve specific requirements,
-	// and **does not modify the response**.
-	PostProcessorFunc func(request *http.Request, response *http.Response, processData *RequestContext) *RequestContext
-
-	PreProcessorProcessors []PreProcessorFunc
 
 	PreProcessorProcessorsHertz  []ProcessorFuncHertz
-	PostProcessorProcessors      []PostProcessorFunc
 	PostProcessorProcessorsHertz []ProcessorFuncHertz
 )
-
-func (p PreProcessorProcessors) Call(request *http.Request, response *http.Response, processData *RequestContext) (*http.Request, *http.Response, *RequestContext) {
-	for _, processFunc := range p {
-		if processFunc != nil {
-			request, response, processData = processFunc(request, response, processData)
-		}
-		if response != nil {
-			break
-		}
-	}
-	return request, response, processData
-}
 
 func (p PreProcessorProcessorsHertz) Call(ctx context.Context, c *app.RequestContext, processData *RequestContext) (context.Context, *app.RequestContext, *RequestContext) {
 	for _, processFunc := range p {
@@ -196,15 +159,6 @@ func (p PreProcessorProcessorsHertz) Call(ctx context.Context, c *app.RequestCon
 		}
 	}
 	return ctx, c, processData
-}
-
-func (p PostProcessorProcessors) Call(request *http.Request, response *http.Response, processData *RequestContext) *RequestContext {
-	for _, processFunc := range p {
-		if processFunc != nil {
-			processData = processFunc(request, response, processData)
-		}
-	}
-	return processData
 }
 
 func (p PostProcessorProcessorsHertz) Call(ctx context.Context, c *app.RequestContext, processData *RequestContext) (context.Context, *app.RequestContext, *RequestContext) {

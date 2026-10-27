@@ -144,7 +144,6 @@ func main() {
 			log.Any("report_interval", cmdlineAndLoadConfig.Usage.ReportInterval))
 	}
 
-	nodeRefresherMap := make(map[string]*etcd.Discover)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	nodeRefresher, err := etcd.New(ctx, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix)
@@ -162,7 +161,7 @@ func main() {
 	mirrorLimiter := jsonrpc.NewMirrorLimiter()
 	loadBalancer := lb.NewLoadBalancer(
 		ctx,
-		nodeRefresherMap, *cmdlineAndLoadConfig.ProxyConfig,
+		*cmdlineAndLoadConfig.ProxyConfig,
 		&jsonrpc.GeneralRPCMethodHertzHandler{Config: cmdlineAndLoadConfig.ProxyConfig, HeightMap: heightMap},
 		limiter, heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel, versionChannel)
 	go loadBalancer.BackgroundRefreshNode()
@@ -267,9 +266,5 @@ func main() {
 			log.Error("failed to flush usage records during shutdown", err)
 		}
 		shutdownCancel()
-	}
-
-	for _, refresher := range nodeRefresherMap {
-		refresher.Close()
 	}
 }

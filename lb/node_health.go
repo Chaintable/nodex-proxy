@@ -231,5 +231,5 @@ func (hc *NodeHealthChecker) recordHealthCheckMetric(chainId, nodeKey, status st
 		attribute.Float64("duration_sec", duration.Seconds()),
 	}
 
-	log.Observe("node_health_check", context.Background(), attributes...)
+	log.Observe("node_health_check", attributes...)
 }
