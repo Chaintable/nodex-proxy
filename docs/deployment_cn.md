@@ -255,7 +255,7 @@ etcd_endpoints:
   - "http://etcd3:2379"
 log_level: "info"
 proxy_config:
-  service_name: "jrpcx"
+  default_rpc_timeout: 5000
   # ...（完整选项请参考 config/config.example.yaml）
 ```
 
@@ -291,10 +291,8 @@ data:
       - "http://etcd-2.etcd-headless:2379"
     log_level: "info"
     proxy_config:
-      service_name: "jrpcx"
       default_rpc_timeout: 5000
       connection_pool_size: 2000
-      node_select_strategy: "random"
       processor:
         observability_log:
           enable: true
@@ -307,17 +305,6 @@ data:
           - txpool_inspect
           - txpool_contentFrom
           - txpool_status
-      observability:
-        trace:
-          enable: false
-        log:
-          sampling:
-            enable: true
-            initial: 100
-            thereafter: 100
-        static_resource:
-          service.name: "nodex-proxy"
-          service.version: "1.0.0"
 ```
 
 #### Deployment
@@ -453,7 +440,7 @@ kubectl apply -f hpa.yaml
 | 端口 | 协议 | 说明 | 配置项 |
 |------|------|------|--------|
 | 8663 | TCP | JSON-RPC 服务器（主端口） | `listen` 或 `-listen` 参数 |
-| 8664 | TCP | Prometheus 指标 | `metric_listen` |
+| 8664 | TCP | Prometheus 指标（`/metrics`）和 pprof（`/debug/pprof/`） | `metric_listen` |
 
 ## 监控
 
@@ -479,7 +466,6 @@ scrape_configs:
 | `jrpcx_rpc_calls_finished` | Counter | 已完成的 RPC 调用数 |
 | `jrpcx_rpc_calls_failed` | Counter | 失败的 RPC 调用数 |
 | `jrpcx_rpc_calls_time` | Histogram | RPC 延迟（毫秒） |
-| `jrpcx_rpc_calls_cache_hits` | Counter | 缓存命中数 |
 | `jrpcx_rpc_request_payload_sizes` | Histogram | 请求负载大小 |
 | `jrpcx_rpc_response_payload_sizes` | Histogram | 响应负载大小 |
 | `jrpcx_rpc_batch_calls_finished` | Counter | 批量请求数 |
@@ -495,7 +481,6 @@ scrape_configs:
 - **RPC QPS**：`rate(jrpcx_rpc_calls_finished[5m])`
 - **错误率**：`rate(jrpcx_rpc_calls_failed[5m]) / rate(jrpcx_rpc_calls_finished[5m])`
 - **P99 延迟**：`histogram_quantile(0.99, rate(jrpcx_rpc_calls_time_bucket[5m]))`
-- **缓存命中率**：`rate(jrpcx_rpc_calls_cache_hits[5m]) / rate(jrpcx_rpc_calls_finished[5m])`
 
 ## etcd 服务发现
 
@@ -557,34 +542,6 @@ proxy_config:
   default_rpc_timeout: 5000       # RPC 调用默认超时（毫秒）
   node_health_check_timeout: 5    # 健康检查重试间隔（秒）
   node_health_check_max_wait: 300 # 节点健康等待最大时间（秒）
-```
-
-### 限流
-
-配置按方法的速率限制以保护后端节点：
-
-```yaml
-proxy_config:
-  processor:
-    rate_limiter:
-      rpc_methods:
-        eth_call: 100          # 每秒请求数
-        eth_getLogs: 50
-        eth_getBlockByNumber: 200
-```
-
-### 日志采样
-
-高流量环境下，启用日志采样以减少日志量：
-
-```yaml
-proxy_config:
-  observability:
-    log:
-      sampling:
-        enable: true
-        initial: 100         # 每秒首先记录 N 条
-        thereafter: 100      # 之后每 N 条记录一条
 ```
 
 ### 慢请求阈值

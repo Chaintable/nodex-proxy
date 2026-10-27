@@ -7,8 +7,6 @@ require (
 	github.com/cloudwego/hertz v0.10.5
 	github.com/cloudwego/netpoll v0.7.4
 	github.com/ethereum/go-ethereum v1.14.11
-	github.com/go-chi/chi/v5 v5.1.0
-	github.com/go-kit/kit v0.9.0
 	github.com/google/uuid v1.6.0
 	github.com/hertz-contrib/reverseproxy v1.0.6
 	github.com/maypok86/otter/v2 v2.4.0
@@ -19,7 +17,6 @@ require (
 	go.etcd.io/etcd/api/v3 v3.5.17
 	go.etcd.io/etcd/client/v3 v3.5.17
 	go.opentelemetry.io/otel v1.32.0
-	go.uber.org/automaxprocs v1.6.0
 	go.uber.org/zap v1.19.1
 	golang.org/x/time v0.5.0
 	google.golang.org/protobuf v1.35.1
@@ -29,7 +26,6 @@ require (
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
-	github.com/VividCortex/gohistogram v1.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.15.0 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.4 // indirect

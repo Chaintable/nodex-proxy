@@ -9,7 +9,7 @@
 - 为多条区块链提供统一 JSON-RPC 入口。
 - 按链、区块上下文、节点角色、方法路由和负载均衡策略选择健康上游节点。
 - 通过 etcd 动态维护节点、权重、方法路由、镜像目标、链高度和版本路由。
-- 通过 Prometheus 指标、OpenTelemetry trace 和结构化日志输出可观测信号。
+- 通过 Prometheus 指标和结构化日志输出可观测信号。
 - 保持部署形态简单：一个 RPC/管理端口，一个 metrics 端口。
 
 ## 运行拓扑
@@ -46,9 +46,9 @@ flowchart LR
 | 配置加载 | `config/config.go`, `types/config.go` | 读取顶层启动配置和嵌套的 `proxy_config`，再填充 proxy 默认值。 |
 | etcd discovery | `discovery/etcd/discovery.go` | 读取 etcd 初始状态，监听动态更新，并通过类型化 channel 推送事件。 |
 | LoadBalancer | `lb/lb.go` | 负责请求编排、预处理、节点选择、上游代理、重试逻辑和后处理。 |
-| Node selector | `lb/selector/*` | 保存每条链的节点池，并按 random weighted 或 round-robin 策略选择节点。 |
+| Node selector | `lb/selector/*` | 保存每条链的节点池，并按加权随机选择节点。 |
 | Gateway strategy | `lb/jsonrpc/gateway_map.go` | 为 random selector 维护节点权重和方法路由规则。 |
-| 请求处理器 | `lb/jsonrpc/handler.go`, `lb/jsonrpc/hertz_process.go` | 方法校验、指标更新、限流、特殊方法改写、请求镜像、响应解析和日志输出。 |
+| 请求处理器 | `lb/jsonrpc/handler.go`, `lb/jsonrpc/hertz_process.go` | 方法校验、指标更新、特殊方法改写、请求镜像、响应解析和日志输出。 |
 | 管理 API | `http_handler/*` | 管理节点、权重、方法路由、writer 和 mirror target；需要持久化的变更写入 etcd。 |
 
 ## 配置边界
@@ -64,7 +64,6 @@ log_level: "info"
 proxy_config:
   default_rpc_timeout: 5000
   connection_pool_size: 2000
-  node_select_strategy: "random"
 ```
 
 `listen` 和 `metric_listen` 属于进程外层配置。运行时代理行为放在 `proxy_config` 下。
@@ -84,12 +83,9 @@ proxy_config:
 4. 预处理器按如下顺序运行：
 
 ```text
-log request
 method deny list
-method name checker
 preprocessor metrics
-method rate limiter
-method-specific pre-handler
+getLatestBlock rewrite
 request mirror
 ```
 
@@ -105,10 +101,9 @@ request mirror
 
 如果被选中的 state/archive 节点池为空，二者会互相兜底。每个节点池在存在可用节点时优先使用可用节点。
 
-6. 当 `node_select_strategy: "random"` 时，非 batch 请求会先按方法路由过滤候选节点，再按权重选择最终节点。没有显式权重的节点默认权重为 `100`。
-7. 当 `node_select_strategy: "round_robin"` 时，从候选节点池中按轮询选择。该 selector 不应用 gateway 权重和方法路由。
-8. 被选中的节点通过 reverse proxy 接收上游请求。
-9. 特定错误会触发第二次上游请求：
+6. 非 batch 请求会先按方法路由过滤候选节点，再按权重选择最终节点。没有显式权重的节点默认权重为 `100`。
+7. 被选中的节点通过 reverse proxy 接收上游请求。
+8. 特定错误会触发第二次上游请求：
 
 | 错误码 | 重试目标 | 说明 |
 |--------|----------|------|
@@ -117,12 +112,11 @@ request mirror
 
 非 batch 且按区块 hash 指定（`"type":"Equals"`）的请求，若 state 返回 `-39006`、archive 重试成功（HTTP 200 且无 `-39006`/`-39007`），该 hash 会记入按链区分的有界缓存（[otter](https://github.com/maypok86/otter)，W-TinyLFU 淘汰；`archive_hash_cache_size`，默认 `1024`，负数关闭）。之后同链同 hash 的非 batch `Equals` 请求直接发往 archive，跳过 state。命中和写入由 `archive_hash_cache_total{chain_id,event}` 统计。
 
-10. 后处理器按如下顺序运行：
+9. 后处理器按如下顺序运行：
 
 ```text
 parse JSON-RPC response
 log response
-method-specific post-handler
 slow/error observability log
 postprocessor metrics
 ```
@@ -179,7 +173,7 @@ metrics 暴露在 `http://<host>:<metric_listen>/metrics`。
 
 通用指标标签为 `host`、`target`、`chain_id` 和 `chain_version`。按方法统计的指标增加 `method`；`jrpcx_rpc_calls_started` 增加 `sourcedapp`；失败指标增加 `status_code`、`upstream_related` 和 `reason`。
 
-请求日志和 trace 使用 `RequestContext`，包括 `x-dbk-biz`、`x-dbk-source-host`、`x-dbk-source`、`x-dbk-env`、`x-dbk-server-version` 等来源 header。
+请求日志使用 `RequestContext`，包括 `x-dbk-biz`、`x-dbk-source-host`、`x-dbk-source`、`x-dbk-env`、`x-dbk-server-version` 等来源 header。
 
 慢请求和错误观测日志由以下配置控制：
 

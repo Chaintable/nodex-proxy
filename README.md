@@ -2,19 +2,17 @@
 
 English | [中文](README_CN.md)
 
-A high-performance blockchain JSON-RPC proxy server with load balancing, health checking, rate limiting, and observability. It sits between clients and blockchain nodes, distributing requests across a pool of nodes while providing advanced traffic management capabilities.
+A high-performance blockchain JSON-RPC proxy server with load balancing, health checking, and observability. It sits between clients and blockchain nodes, distributing requests across a pool of nodes while providing advanced traffic management capabilities.
 
 ## Features
 
 - **Multi-Chain Support** — Manage multiple blockchain chains simultaneously with per-chain configuration
-- **Load Balancing** — Random (with weighted gateway support) and Round-Robin strategies
+- **Load Balancing** — Weighted random node selection (gateway weights and method routes)
 - **Node Health Checking** — Automatic health verification with configurable timeouts and retries before adding nodes to the pool
-- **Rate Limiting** — Per-method RPC request rate limiting (token bucket algorithm)
 - **Request Mirroring** — Duplicate requests to mirror targets for analysis/monitoring
 - **Method Routing** — Route specific RPC methods to specific node subsets based on inclusion/exclusion rules
-- **Block Range Query Limiting** — Restrict block range queries to prevent excessive resource consumption
-- **Method Validation** — Regex-based validation and deny list for RPC method names
-- **Observability** — OpenTelemetry tracing, Prometheus metrics, structured logging with sampling
+- **Method Deny List** — Reject configured RPC methods
+- **Observability** — Prometheus metrics, structured slow/error request logging
 - **Service Discovery** — etcd-based dynamic node registration and configuration
 - **Version Routing** — Support for versioned chain endpoints for multi-version deployments
 - **Batch Request Support** — Handle JSON-RPC batch requests with unified timeout
@@ -45,7 +43,7 @@ A high-performance blockchain JSON-RPC proxy server with load balancing, health 
         │         Load Balancer             │
         │  ┌─────────────────────────────┐  │
         │  │  Node Selector Strategy     │  │
-        │  │  (Random / Round-Robin)     │  │
+        │  │  (Weighted Random)          │  │
         │  ├─────────────────────────────┤  │
         │  │  Gateway (Weights/Routes)   │  │
         │  └─────────────────────────────┘  │
@@ -135,11 +133,8 @@ usage:
   report_interval: 5s
 
 proxy_config:
-  service_name: "jrpcx"
-  native_node_url: "http://127.0.0.1:8545"
   default_rpc_timeout: 5000            # milliseconds
   connection_pool_size: 2000
-  node_select_strategy: "random"       # "random" or "round_robin"
   etcd_prefix: ""
 ```
 
@@ -180,26 +175,9 @@ proxy_config:
           eth_call: 1000
           eth_getLogs: 2000
 
-    # Per-method rate limiting (requests per second)
-    rate_limiter:
-      rpc_methods:
-        eth_call: 100
-        eth_getLogs: 50
-
-    # Block range query restriction
-    block_range_query_limit:
-      enable: false
-      recent_blocks: 0
-      rewrite_to_latest: false
-
     # Request mirroring
     request_mirror:
       enable: false
-
-    # Method name validation
-    method_name_checker:
-      enable: false
-      regexp: "^[a-zA-Z_][a-zA-Z0-9_]*$"
 
     # Denied RPC methods
     method_denied:
@@ -208,25 +186,6 @@ proxy_config:
       - txpool_inspect
       - txpool_contentFrom
       - txpool_status
-```
-
-### Observability
-
-```yaml
-proxy_config:
-  observability:
-    trace:
-      enable: false
-      otlp_endpoint: ""
-      sampling_ratio: 0.1
-    log:
-      sampling:
-        enable: true
-        initial: 100
-        thereafter: 100
-    static_resource:
-      service.name: "nodex-proxy"
-      service.version: "1.0.0"
 ```
 
 ## Service Discovery (etcd)
@@ -263,7 +222,6 @@ Prometheus metrics are exposed at `http://<host>:8664/metrics`.
 | `jrpcx_rpc_calls_finished` | Counter | RPC calls completed |
 | `jrpcx_rpc_calls_failed` | Counter | Failed RPC calls |
 | `jrpcx_rpc_calls_time` | Histogram | RPC latency (ms) |
-| `jrpcx_rpc_calls_cache_hits` | Counter | Cache hit count |
 | `jrpcx_rpc_request_payload_sizes` | Histogram | Request payload size |
 | `jrpcx_rpc_response_payload_sizes` | Histogram | Response payload size |
 | `jrpcx_rpc_batch_calls_finished` | Counter | Batch request count |
@@ -279,7 +237,6 @@ Common labels include `host`, `target`, `chain_id`, and `chain_version`. Method 
 | [cloudwego/hertz](https://github.com/cloudwego/hertz) | HTTP framework |
 | [ethereum/go-ethereum](https://github.com/ethereum/go-ethereum) | Ethereum types & RPC |
 | [etcd/client/v3](https://github.com/etcd-io/etcd) | Service discovery |
-| [opentelemetry](https://opentelemetry.io/) | Distributed tracing |
 | [uber/zap](https://github.com/uber-go/zap) | Structured logging |
 | [bytedance/sonic](https://github.com/bytedance/sonic) | High-performance JSON |
 | [prometheus/client_golang](https://github.com/prometheus/client_golang) | Metrics |

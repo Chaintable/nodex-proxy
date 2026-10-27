@@ -258,7 +258,7 @@ etcd_endpoints:
   - "http://etcd3:2379"
 log_level: "info"
 proxy_config:
-  service_name: "jrpcx"
+  default_rpc_timeout: 5000
   # ... (see config/config.example.yaml for full options)
 ```
 
@@ -294,10 +294,8 @@ data:
       - "http://etcd-2.etcd-headless:2379"
     log_level: "info"
     proxy_config:
-      service_name: "jrpcx"
       default_rpc_timeout: 5000
       connection_pool_size: 2000
-      node_select_strategy: "random"
       processor:
         observability_log:
           enable: true
@@ -310,17 +308,6 @@ data:
           - txpool_inspect
           - txpool_contentFrom
           - txpool_status
-      observability:
-        trace:
-          enable: false
-        log:
-          sampling:
-            enable: true
-            initial: 100
-            thereafter: 100
-        static_resource:
-          service.name: "nodex-proxy"
-          service.version: "1.0.0"
 ```
 
 #### Deployment
@@ -456,7 +443,7 @@ kubectl apply -f hpa.yaml
 | Port | Protocol | Description | Configuration Key |
 |------|----------|-------------|-------------------|
 | 8663 | TCP | JSON-RPC server (main) | `listen` or `-listen` flag |
-| 8664 | TCP | Prometheus metrics | `metric_listen` |
+| 8664 | TCP | Prometheus metrics (`/metrics`) and pprof (`/debug/pprof/`) | `metric_listen` |
 
 ## Monitoring
 
@@ -482,7 +469,6 @@ For Kubernetes, the Deployment template includes Prometheus annotations for auto
 | `jrpcx_rpc_calls_finished` | Counter | RPC calls completed |
 | `jrpcx_rpc_calls_failed` | Counter | Failed RPC calls |
 | `jrpcx_rpc_calls_time` | Histogram | RPC latency in milliseconds |
-| `jrpcx_rpc_calls_cache_hits` | Counter | Cache hit count |
 | `jrpcx_rpc_request_payload_sizes` | Histogram | Request payload size |
 | `jrpcx_rpc_response_payload_sizes` | Histogram | Response payload size |
 | `jrpcx_rpc_batch_calls_finished` | Counter | Batch request count |
@@ -498,7 +484,6 @@ Import the Prometheus data source and create dashboards using the metrics above.
 - **RPC QPS**: `rate(jrpcx_rpc_calls_finished[5m])`
 - **Error Rate**: `rate(jrpcx_rpc_calls_failed[5m]) / rate(jrpcx_rpc_calls_finished[5m])`
 - **P99 Latency**: `histogram_quantile(0.99, rate(jrpcx_rpc_calls_time_bucket[5m]))`
-- **Cache Hit Rate**: `rate(jrpcx_rpc_calls_cache_hits[5m]) / rate(jrpcx_rpc_calls_finished[5m])`
 
 ## etcd Service Discovery
 
@@ -560,34 +545,6 @@ proxy_config:
   default_rpc_timeout: 5000       # Default timeout for RPC calls (ms)
   node_health_check_timeout: 5    # Health check retry interval (seconds)
   node_health_check_max_wait: 300 # Max wait for node to become healthy (seconds)
-```
-
-### Rate Limiting
-
-Configure per-method rate limits to protect backend nodes:
-
-```yaml
-proxy_config:
-  processor:
-    rate_limiter:
-      rpc_methods:
-        eth_call: 100          # requests per second
-        eth_getLogs: 50
-        eth_getBlockByNumber: 200
-```
-
-### Log Sampling
-
-For high-traffic environments, enable log sampling to reduce log volume:
-
-```yaml
-proxy_config:
-  observability:
-    log:
-      sampling:
-        enable: true
-        initial: 100         # Log first N entries per second
-        thereafter: 100      # Then log every Nth entry
 ```
 
 ### Slow Request Thresholds

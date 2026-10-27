@@ -8,7 +8,7 @@ RUN go build -o node-proxy cmd/proxy/main.go
 
 FROM ubuntu:24.04
 
-RUN apt-get update && apt-get install -y ca-certificates wget libsnappy-dev libjemalloc-dev
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN update-ca-certificates
 
 WORKDIR /app

@@ -65,10 +65,6 @@ func (m CommonLabelMetrics) IncrCallsFailed(code jsonrpc.ErrorCode, method jsonr
 	).Inc()
 }
 
-func (m CommonLabelMetrics) IncrInternalFailedRequest() {
-	internalFailedRequest.WithLabelValues(m.host, m.target, m.chainID, m.chainVersion).Inc()
-}
-
 var (
 	callsStarted = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
@@ -81,12 +77,6 @@ var (
 		Subsystem: promSubsystem,
 		Name:      "calls_finished",
 		Help:      "Number of processed RPC calls (unique un-batched requests)",
-	}, methodCommonLabelNames)
-	callsCacheHits = promauto.NewCounterVec(stdprome.CounterOpts{
-		Namespace: promNamespace,
-		Subsystem: promSubsystem,
-		Name:      "calls_cache_hits",
-		Help:      "Number of hit the cache RPC calls (unique un-batched requests)",
 	}, methodCommonLabelNames)
 	callsFailed = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
@@ -134,12 +124,6 @@ var (
 		Help:      "Histogram of RPC response payload sizes",
 		Buckets:   []float64{10, 50, 100, 500, 1_000, 5_000, 10_000, 100_000, 1_000_000},
 	}, methodCommonLabelNames)
-	internalFailedRequest = promauto.NewCounterVec(stdprome.CounterOpts{
-		Namespace: promNamespace,
-		Subsystem: promSubsystem,
-		Name:      "internal_failed_request",
-		Help:      "Number of failed internal requests",
-	}, commonLabelNames)
 	httpStatusCode = promauto.NewCounterVec(stdprome.CounterOpts{
 		Namespace: promNamespace,
 		Subsystem: promSubsystem,

@@ -20,10 +20,8 @@ import (
 	"github.com/Chaintable/nodex-proxy/usage"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.uber.org/automaxprocs/maxprocs"
 	"go.uber.org/zap"
 )
 
@@ -115,13 +113,7 @@ func main() {
 	cmdlineAndLoadConfig := parseCmdlineAndLoadConfig()
 	log.InitLogger(cmdlineAndLoadConfig.LogLevel)
 
-	// Align GOMAXPROCS with the container CPU quota: on a 1-core cgroup the
-	// default (host core count) makes the scheduler and GC fight the quota.
-	if _, err := maxprocs.Set(maxprocs.Logger(func(format string, args ...interface{}) {
-		log.Info(fmt.Sprintf(format, args...))
-	})); err != nil {
-		log.Error("failed to set GOMAXPROCS from CPU quota", err)
-	}
+	// GOMAXPROCS follows the container CPU limit natively since Go 1.25.
 
 	log.Info("cmdlineAndLoadConfig: %", zap.Any("cmdlineAndLoadConfig", cmdlineAndLoadConfig))
 
@@ -156,21 +148,19 @@ func main() {
 		log.Fatal("Init node refresher failed: %v\n", err)
 	}
 
-	limiter := jsonrpc.NewMethodLimiter(cmdlineAndLoadConfig.ProxyConfig.Processor.RateLimiter.RpcMethods)
 	heightMap := jsonrpc.NewHeightMap()
 	mirrorLimiter := jsonrpc.NewMirrorLimiter()
 	loadBalancer := lb.NewLoadBalancer(
 		ctx,
 		*cmdlineAndLoadConfig.ProxyConfig,
-		&jsonrpc.GeneralRPCMethodHertzHandler{Config: cmdlineAndLoadConfig.ProxyConfig, HeightMap: heightMap},
-		limiter, heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel, versionChannel)
+		heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel, versionChannel)
 	go loadBalancer.BackgroundRefreshNode()
 
 	go func() {
-		router := chi.NewRouter()
+		router := http.NewServeMux()
 		// pprof lives on the internal metrics port, not on the RPC port that
 		// the load balancer exposes to clients.
-		router.HandleFunc("/debug/pprof/*", pprof.Index)
+		router.HandleFunc("/debug/pprof/", pprof.Index)
 		router.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 		router.HandleFunc("/debug/pprof/profile", pprof.Profile)
 		router.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
@@ -207,10 +197,7 @@ func main() {
 		c.SetStatusCode(http.StatusOK)
 	})
 
-	handler, err := http_handler.NewHandler(ctx, loadBalancer.NodeSelector, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix, nodeChannel, loadBalancer)
-	if err != nil {
-		log.Fatal("New handler failed: %v\n", err)
-	}
+	handler := http_handler.NewHandler(loadBalancer.NodeSelector, loadBalancer.GatewayStrategy, nodeRefresher.Client(), cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix, nodeChannel, loadBalancer)
 
 	// Add weight management endpoints
 	h.GET("/getChains", handler.GetAllChainsIDs)

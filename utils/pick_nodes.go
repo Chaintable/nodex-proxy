@@ -11,7 +11,7 @@ import (
 
 // PickNodesFunc receives the block context as a getter so implementations only
 // pay for parsing it when the state/archive decision actually depends on it.
-type PickNodesFunc func(getBlockContext func() *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, fourceArchive bool, fourceNative bool) []*lbnode.Node
+type PickNodesFunc func(getBlockContext func() *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, forceArchive bool, forceNative bool) []*lbnode.Node
 
 // preferAvailableNodes returns available nodes if any exist, otherwise returns
 // all nodes as fallback. When every node is available it returns the input
@@ -46,16 +46,16 @@ func preferAvailableNodes(nodes []*lbnode.Node) []*lbnode.Node {
 	return nodes
 }
 
-func PickNodes(getBlockContext func() *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, fourceArchive bool, fourceNative bool) []*lbnode.Node {
+func PickNodes(getBlockContext func() *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, forceArchive bool, forceNative bool) []*lbnode.Node {
 	// Prefer available nodes for each node type
 	archiveNodes = preferAvailableNodes(archiveNodes)
 	stateNodes = preferAvailableNodes(stateNodes)
 	nativeNodes = preferAvailableNodes(nativeNodes)
 
-	if fourceNative {
+	if forceNative {
 		return nativeNodes
 	}
-	if fourceArchive {
+	if forceArchive {
 		return archiveNodes
 	}
 
@@ -77,35 +77,25 @@ func PickNodes(getBlockContext func() *types.BlockContext, blockHeight *hexutil.
 	if getBlockContext != nil {
 		blockContext = getBlockContext()
 	}
-
-	// stateNodes strategy:
-	// when Equals and blockNumber is LatestBlockNumber or PendingBlockNumber, return stateNodes
-	// when Equals and blockNumber is less than 64 blocks behind the latest block, return stateNodes
-	// when Equals and blockNumber is more than 64 blocks behind the latest block, return archiveNodes
-	// when Contains, return stateNodes
-	if blockContext != nil {
-		if blockContext.Type == "Equals" && blockContext.BlockId != nil && blockContext.BlockId.BlockNumber != nil {
-			if *blockContext.BlockId.BlockNumber == rpc.LatestBlockNumber ||
-				*blockContext.BlockId.BlockNumber == rpc.PendingBlockNumber {
-				return stateNodes
-			}
-			if blockHeight == nil {
-				// Unknown chain height: only archive nodes are guaranteed to
-				// hold the requested historical block.
-				return archiveNodes
-			}
-			stateBlockHeightLow := big.NewInt(0)
-			stateBlockHeightLow.Sub(blockHeight.ToInt(), big.NewInt(64))
-			if big.NewInt(blockContext.BlockId.BlockNumber.Int64()).Cmp(stateBlockHeightLow) >= 0 {
-				return stateNodes
-			} else {
-				return archiveNodes
-			}
-		} else if blockContext.Type == "Contains" {
-			return stateNodes
-		} else {
-			return stateNodes
-		}
+	// Only a request pinned to a block number can need archive; Contains and
+	// hash lookups stay on state (the -39006 retry covers misses).
+	if blockContext == nil || blockContext.Type != "Equals" ||
+		blockContext.BlockId == nil || blockContext.BlockId.BlockNumber == nil {
+		return stateNodes
 	}
-	return stateNodes
+	blockNumber := *blockContext.BlockId.BlockNumber
+	if blockNumber == rpc.LatestBlockNumber || blockNumber == rpc.PendingBlockNumber {
+		return stateNodes
+	}
+	if blockHeight == nil {
+		// Unknown chain height: only archive nodes are guaranteed to
+		// hold the requested historical block.
+		return archiveNodes
+	}
+	// State nodes keep the latest 64 blocks.
+	stateLow := new(big.Int).Sub(blockHeight.ToInt(), big.NewInt(64))
+	if big.NewInt(blockNumber.Int64()).Cmp(stateLow) >= 0 {
+		return stateNodes
+	}
+	return archiveNodes
 }

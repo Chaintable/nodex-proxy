@@ -12,26 +12,6 @@ var (
 	observabilityLogger *zap.Logger
 )
 
-// ObservabilityLogSamplingConfig sets a sampling strategy for the logger. Sampling caps the
-// global CPU and I/O load that logging puts on your process while attempting
-// to preserve a representative subset of your logs.
-//
-// If specified, the Sampler will invoke the Hook after each decision.
-//
-// Values configured here are per-second. See zapcore.NewSamplerWithOptions for
-// details.
-type ObservabilityLogSamplingConfig struct {
-	Enable     bool `yaml:"enable"`
-	Initial    int  `yaml:"initial"`
-	Thereafter int  `yaml:"thereafter"`
-}
-
-type ObservabilityLogConfig struct {
-	Enable   bool                            `yaml:"enable"`
-	Endpoint string                          `yaml:"endpoint"`
-	Sampling *ObservabilityLogSamplingConfig `yaml:"sampling"`
-}
-
 func init() {
 	logger, err := zap.NewProduction(zap.AddCallerSkip(1))
 	if err != nil {

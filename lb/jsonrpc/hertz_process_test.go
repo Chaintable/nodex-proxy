@@ -1,7 +1,6 @@
 package jsonrpc
 
 import (
-	"context"
 	"errors"
 	"math/big"
 	"net/http"
@@ -162,7 +161,7 @@ func TestGetLatestBlockRewriteKeepsRequestID(t *testing.T) {
 	require.NoError(t, err)
 	processData := &types.RequestContext{ChainId: "1", Method: jsonrpc.GetLatestBlock, RequestBody: reqs}
 
-	getLatestBlockHertz(heightMap)(context.Background(), c, processData)
+	getLatestBlockHertz(heightMap)(c, processData)
 
 	require.Contains(t, string(c.Request.Body()), `"method":"getBlockByHeight"`)
 	require.Contains(t, string(c.Request.Body()), `"id":"req-9"`)

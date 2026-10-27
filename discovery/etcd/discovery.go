@@ -85,6 +85,12 @@ func NewEtcdClient(ctx context.Context, etcdEndpoints []string) (*clientv3.Clien
 	return etcdCli, err
 }
 
+// Client returns the etcd client, for callers that write the keys this
+// Discover watches.
+func (r *Discover) Client() *clientv3.Client {
+	return r.etcdClient
+}
+
 func (r *Discover) Close() error {
 	close(r.quit)
 	return r.etcdClient.Close()
@@ -221,61 +227,78 @@ func (r *Discover) processWatchEvents(ctx context.Context, watchChan clientv3.Wa
 	}
 }
 
+type keyKind int
+
+const (
+	keyUnknown keyKind = iota
+	keyNode
+	keyNativeNode
+	keyHeight
+	keyGateway
+	keyMirror
+	keyVersion
+)
+
+// parseKey classifies an etcd key and returns its chain ID and, for node and
+// mirror keys, the node key or mirror address key.
+func parseKey(key string) (kind keyKind, chainId, sub string) {
+	for _, p := range []struct {
+		kind    keyKind
+		pattern *regexp.Regexp
+		sub     string
+	}{
+		{keyNode, nodesPattern, "node"},
+		{keyNativeNode, nativeNodesPattern, "node"},
+		{keyHeight, lastBlockPattern, ""},
+		{keyGateway, gateWayPattern, ""},
+		{keyMirror, mirrorPattern, "addr"},
+		{keyVersion, versionPattern, ""},
+	} {
+		match := p.pattern.FindStringSubmatch(key)
+		if match == nil {
+			continue
+		}
+		chainId = normalizeMultiVersionChainID(match[p.pattern.SubexpIndex("chain")])
+		if p.sub != "" {
+			sub = match[p.pattern.SubexpIndex(p.sub)]
+		}
+		return p.kind, chainId, sub
+	}
+	return keyUnknown, "", ""
+}
+
 // dispatchPut parses a PUT for key and forwards it to the matching channel,
 // recording the key/value in knownKeys for resync and PrevKV fallback. Only
 // the Init goroutine and the watch goroutine may call it.
 func (r *Discover) dispatchPut(key string, value []byte) {
-	if match := nodesPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[nodesPattern.SubexpIndex("chain")])
-		nodeKey := match[nodesPattern.SubexpIndex("node")]
+	kind, chainId, sub := parseKey(key)
+	switch kind {
+	case keyNode, keyNativeNode:
 		var node discovery.TargetNode
-		err := json.Unmarshal(value, &node)
-		if err != nil {
+		if err := json.Unmarshal(value, &node); err != nil {
 			log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
 			return
 		}
-		node.NodeKey = nodeKey
+		node.NodeKey = sub
 		node.ChangeType = EVENT_PUT
 		node.ChainId = chainId
-		r.knownKeys[key] = value
-		r.nodeChannel <- &node
-		return
-	}
-	if match := nativeNodesPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[nativeNodesPattern.SubexpIndex("chain")])
-		nodeKey := match[nativeNodesPattern.SubexpIndex("node")]
-		var node discovery.TargetNode
-		err := json.Unmarshal(value, &node)
-		if err != nil {
-			log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
-			return
+		if kind == keyNativeNode {
+			node.Source = "native"
 		}
-		node.NodeKey = nodeKey
-		node.ChangeType = EVENT_PUT
-		node.ChainId = chainId
-		node.Source = "native"
 		r.knownKeys[key] = value
 		r.nodeChannel <- &node
-		return
-	}
-	if match := lastBlockPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[lastBlockPattern.SubexpIndex("chain")])
+	case keyHeight:
 		var height discovery.ChainHeight
-		err := json.Unmarshal(value, &height)
-		if err != nil {
+		if err := json.Unmarshal(value, &height); err != nil {
 			log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
 			return
 		}
 		height.ChainId = chainId
 		// heights have no DELETE semantics, so they are not tracked in knownKeys
 		r.heightChan <- &height
-		return
-	}
-	if match := gateWayPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[gateWayPattern.SubexpIndex("chain")])
+	case keyGateway:
 		var gateway discovery.Gateway
-		err := json.Unmarshal(value, &gateway)
-		if err != nil {
+		if err := json.Unmarshal(value, &gateway); err != nil {
 			log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
 			return
 		}
@@ -283,33 +306,23 @@ func (r *Discover) dispatchPut(key string, value []byte) {
 		gateway.ChangeType = EVENT_PUT
 		r.knownKeys[key] = value
 		r.gatewayChannel <- &gateway
-		return
-	}
-	if match := mirrorPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[mirrorPattern.SubexpIndex("chain")])
-		addrKey := match[mirrorPattern.SubexpIndex("addr")]
+	case keyMirror:
 		var mirror discovery.MirrorTarget
-		err := json.Unmarshal(value, &mirror)
-		if err != nil {
+		if err := json.Unmarshal(value, &mirror); err != nil {
 			log.Error("failed to unmarshal mirror target", err, log.Any("key", key), log.Any("chain_id", chainId))
 			return
 		}
 		mirror.ChainId = chainId
-		mirror.AddrKey = addrKey
+		mirror.AddrKey = sub
 		r.knownKeys[key] = value
 		r.mirrorChannel <- &mirror
-		return
-	}
-	if match := versionPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[versionPattern.SubexpIndex("chain")])
-		versionValue := parseVersionValue(value)
+	case keyVersion:
 		r.knownKeys[key] = value
 		r.versionChannel <- &discovery.ChainVersion{
 			ChainId:    chainId,
-			Version:    versionValue,
+			Version:    parseVersionValue(value),
 			ChangeType: EVENT_PUT,
 		}
-		return
 	}
 }
 
@@ -323,55 +336,27 @@ func (r *Discover) dispatchDelete(key string, prevValue []byte) {
 	}
 	delete(r.knownKeys, key)
 
-	if match := nodesPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[nodesPattern.SubexpIndex("chain")])
-		nodeKey := match[nodesPattern.SubexpIndex("node")]
+	kind, chainId, sub := parseKey(key)
+	switch kind {
+	case keyNode, keyNativeNode:
 		var node discovery.TargetNode
 		if prevValue != nil {
 			if err := json.Unmarshal(prevValue, &node); err != nil {
 				log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
 			}
 		}
-		node.NodeKey = nodeKey
+		node.NodeKey = sub
 		node.ChangeType = EVENT_DELETE
 		node.ChainId = chainId
-		log.Info("node delete event detected", log.Any("key", key), log.Any("chain_id", chainId), log.Any("node_key", nodeKey))
-		r.nodeChannel <- &node
-		return
-	}
-	if match := nativeNodesPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[nativeNodesPattern.SubexpIndex("chain")])
-		nodeKey := match[nativeNodesPattern.SubexpIndex("node")]
-		var node discovery.TargetNode
-		if prevValue != nil {
-			if err := json.Unmarshal(prevValue, &node); err != nil {
-				log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
-			}
+		if kind == keyNativeNode {
+			node.Source = "native"
 		}
-		node.NodeKey = nodeKey
-		node.ChangeType = EVENT_DELETE
-		node.ChainId = chainId
-		node.Source = "native"
-		log.Info("native node delete event detected", log.Any("key", key), log.Any("chain_id", chainId), log.Any("node_key", nodeKey))
+		log.Info("node delete event detected", log.Any("key", key), log.Any("chain_id", chainId), log.Any("node_key", sub))
 		r.nodeChannel <- &node
-		return
-	}
-	if match := gateWayPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[gateWayPattern.SubexpIndex("chain")])
-		var gateway discovery.Gateway
-		err := json.Unmarshal(prevValue, &gateway)
-		if err != nil {
-			log.Error("failed to unmarshal value for key", err, log.Any("key", key), log.Any("chain_id", chainId))
-			return
-		}
-		gateway.ChainId = chainId
-		gateway.ChangeType = EVENT_DELETE
-		r.gatewayChannel <- &gateway
-		return
-	}
-	if match := mirrorPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[mirrorPattern.SubexpIndex("chain")])
-		addrKey := match[mirrorPattern.SubexpIndex("addr")]
+	case keyGateway:
+		// Deleting a gateway only needs the chain; the old value is irrelevant.
+		r.gatewayChannel <- &discovery.Gateway{ChainId: chainId, ChangeType: EVENT_DELETE}
+	case keyMirror:
 		var mirror discovery.MirrorTarget
 		if prevValue != nil {
 			if err := json.Unmarshal(prevValue, &mirror); err != nil {
@@ -379,20 +364,15 @@ func (r *Discover) dispatchDelete(key string, prevValue []byte) {
 			}
 		}
 		mirror.ChainId = chainId
-		mirror.AddrKey = addrKey
+		mirror.AddrKey = sub
 		mirror.Deleted = true
 		r.mirrorChannel <- &mirror
-		return
-	}
-	if match := versionPattern.FindStringSubmatch(key); match != nil {
-		chainId := normalizeMultiVersionChainID(match[versionPattern.SubexpIndex("chain")])
-		versionValue := parseVersionValue(prevValue)
+	case keyVersion:
 		r.versionChannel <- &discovery.ChainVersion{
 			ChainId:    chainId,
-			Version:    versionValue,
+			Version:    parseVersionValue(prevValue),
 			ChangeType: EVENT_DELETE,
 		}
-		return
 	}
 }
 

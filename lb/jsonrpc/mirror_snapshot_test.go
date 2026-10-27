@@ -1,7 +1,6 @@
 package jsonrpc
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -52,7 +51,7 @@ func TestRequestMirrorSnapshotsRequestData(t *testing.T) {
 	body := []byte(`{"id":1}`)
 	processData := &types.RequestContext{ChainId: "1", RawRequestBody: body}
 
-	processor(context.Background(), c, processData)
+	processor(c, processData)
 
 	// Simulate hertz recycling the context and buffers for the next request
 	// while the mirror call is still in flight.

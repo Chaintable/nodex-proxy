@@ -2,10 +2,8 @@ package jsonrpc
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -36,7 +34,7 @@ func jRPCMethodDeniedHertz(deniedMethods *[]jsonrpc.RPCMethod) types.ProcessorFu
 		Code:    jsonrpc.ExtMethodNotAllowed,
 		Message: jsonrpc.ExtMethodNotAllowedMsg,
 	}
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+	return func(c *app.RequestContext, processData *types.RequestContext) {
 		for _, req := range processData.RequestBody {
 			if _, ok := deniedMethodMap[req.Method]; ok {
 				var respObj *jsonrpc.ResponseObject
@@ -45,74 +43,15 @@ func jRPCMethodDeniedHertz(deniedMethods *[]jsonrpc.RPCMethod) types.ProcessorFu
 				break
 			}
 		}
-		return ctx, c, processData
-	}
-}
-
-func checkJRPCRequestBodyHertz(config types.MethodNameCheckerConfig) types.ProcessorFuncHertz {
-	if !config.Enable {
-		return nil
-	}
-
-	reMethodName := regexp.MustCompile(config.Regexp)
-	var deniedRegexp *regexp.Regexp
-	if config.DeniedRegexp != "" {
-		deniedRegexp = regexp.MustCompile(config.DeniedRegexp)
-	}
-	errObject := &jsonrpc.ErrorObject{
-		Code:    jsonrpc.ExtMethodNotAllowed,
-		Message: jsonrpc.ExtMethodNotAllowedMsg,
-	}
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		for _, req := range processData.RequestBody {
-			if deniedRegexp != nil {
-				if deniedRegexp.MatchString(string(req.Method)) {
-					var respObj *jsonrpc.ResponseObject
-					respObj, processData.Error = jsonrpc.ErrorResponse(errObject, nil)
-					processData.WriteError(c, http.StatusBadRequest, respObj)
-					break
-				}
-			}
-			if !reMethodName.MatchString(string(req.Method)) {
-				var respObj *jsonrpc.ResponseObject
-				respObj, processData.Error = jsonrpc.ErrorResponse(errObject, nil)
-				processData.WriteError(c, http.StatusBadRequest, respObj)
-				break
-			}
-		}
-		return ctx, c, processData
 	}
 }
 
 func updatePreprocessorMetricsHertz() types.ProcessorFuncHertz {
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+	return func(c *app.RequestContext, processData *types.RequestContext) {
 		chainID, chainVersion := metricChainLabels(processData)
 		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, chainID, chainVersion)
 		sourceDapp := c.Request.Header.Get(headerDappKey)
 		m.IncrCallsStarted(processData.Method, sourceDapp)
-		return ctx, c, processData
-	}
-}
-
-func rpcMethodLimiterHertz(limiter Limiter) types.ProcessorFuncHertz {
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		if !limiter.Allow(processData.Method) {
-			var respObj *jsonrpc.ResponseObject
-			respObj, processData.Error = jsonrpc.TooManyRequestsResponse()
-			processData.WriteError(c, http.StatusTooManyRequests, respObj)
-		}
-		return ctx, c, processData
-	}
-}
-
-func rpcMethodHandlerProcessorHertz(handlerMap map[jsonrpc.RPCMethod]types.ProcessorFuncHertz) types.ProcessorFuncHertz {
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		if handler, ok := handlerMap[processData.Method]; ok {
-			if handler != nil {
-				return handler(ctx, c, processData)
-			}
-		}
-		return ctx, c, processData
 	}
 }
 
@@ -151,10 +90,10 @@ func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig,
 		// EOF; without draining every mirror request dials a new connection.
 		_, _ = io.Copy(io.Discard, resp.Body)
 	}
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+	return func(c *app.RequestContext, processData *types.RequestContext) {
 		mirrorURLs := mirrorMap.GetMirrorURLs(processData.ChainId)
 		if len(mirrorURLs) == 0 {
-			return ctx, c, processData
+			return
 		}
 
 		// Snapshot method/headers/body on the handler goroutine: c and
@@ -177,27 +116,16 @@ func requestMirrorHertz(timeout time.Duration, config types.RequestMirrorConfig,
 			go doMirrorRequest(method, header, body, url)
 		}
 
-		return ctx, c, processData
 	}
 }
 
-type GeneralRPCMethodHertzHandler struct {
-	Config    *types.Config
-	HeightMap HeightMap
-}
-
-func (e *GeneralRPCMethodHertzHandler) PreHandlerMap() map[jsonrpc.RPCMethod]types.ProcessorFuncHertz {
-	return map[jsonrpc.RPCMethod]types.ProcessorFuncHertz{
-		jsonrpc.GetLatestBlock: getLatestBlockHertz(e.HeightMap),
-	}
-}
-
-func (e *GeneralRPCMethodHertzHandler) PostHandlerMap() map[jsonrpc.RPCMethod]types.ProcessorFuncHertz {
-	return map[jsonrpc.RPCMethod]types.ProcessorFuncHertz{}
-}
-
+// getLatestBlockHertz rewrites getLatestBlock into getBlockByHeight at the
+// chain's latest known height.
 func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+	return func(c *app.RequestContext, processData *types.RequestContext) {
+		if processData.Method != jsonrpc.GetLatestBlock {
+			return
+		}
 		if height := heightMap.GetHeight(processData.ChainId); height != nil {
 			// Keep the caller's id: the upstream echoes whatever we send.
 			var id interface{} = 1
@@ -224,7 +152,7 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 				}, nil)
 				processData.WriteError(c, http.StatusInternalServerError, respObj)
 
-				return ctx, c, processData
+				return
 			}
 			// SetBody overwrites the buffer the parsed requests borrow from.
 			jsonrpc.OwnRequests(processData.RequestBody)
@@ -239,31 +167,30 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 			}, nil)
 			processData.WriteError(c, http.StatusOK, respObj)
 		}
-		return ctx, c, processData
 	}
 }
 
 func parseJRPCResponseBodyHertz() types.ProcessorFuncHertz {
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+	return func(c *app.RequestContext, processData *types.RequestContext) {
 		body := c.Response.Body()
 		if len(body) == 0 {
-			return ctx, c, processData
+			return
 		}
 		// Media types are case-insensitive (RFC 9110 §8.3.1); ToLower is
 		// alloc-free for the all-lowercase values every known upstream sends.
 		if !strings.Contains(strings.ToLower(c.Response.Header.Get("Content-Type")), "application/json") ||
 			strings.Contains(strings.ToLower(c.Response.Header.Get("Transfer-Encoding")), "chunked") {
-			return ctx, c, processData
+			return
 		}
 		processData.ResponseBodySize = len(body)
 		// skip batch jrpc response
 		if jsonrpc.IsBatch(body) {
-			return ctx, c, processData
+			return
 		}
 		// A success response carries no "error" member; skip the unmarshal
 		// entirely so the common path stays parse-free.
 		if !processData.CachedResponseContainsErrorKey(body) {
-			return ctx, c, processData
+			return
 		}
 
 		rawBody := &jsonrpc.RawResponseObject{}
@@ -274,7 +201,7 @@ func parseJRPCResponseBodyHertz() types.ProcessorFuncHertz {
 				log.Any("body", body),
 				log.Any("request header", string(c.Response.Header.Header())),
 			)
-			return ctx, c, processData
+			return
 		}
 
 		processData.ResponseBody = &jsonrpc.ResponseObject{
@@ -286,12 +213,11 @@ func parseJRPCResponseBodyHertz() types.ProcessorFuncHertz {
 		if processData.ResponseBody.Error != nil {
 			processData.Error = processData.ResponseBody.Error
 		}
-		return ctx, c, processData
 	}
 }
 
 func logResponseHertz() types.ProcessorFuncHertz {
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+	return func(c *app.RequestContext, processData *types.RequestContext) {
 		if log.DebugEnabled() {
 			log.Debug("logResponseHertz called",
 				log.Any("method", processData.Method),
@@ -301,24 +227,12 @@ func logResponseHertz() types.ProcessorFuncHertz {
 				log.Any("has_error", processData.ResponseBody != nil && processData.ResponseBody.Error != nil),
 			)
 		}
-		return ctx, c, processData
-	}
-}
-
-func rpcMethodHandlerPostProcessorHertz(handlerMap map[jsonrpc.RPCMethod]types.ProcessorFuncHertz) types.ProcessorFuncHertz {
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
-		if handler, ok := handlerMap[processData.Method]; ok {
-			if handler != nil {
-				return handler(ctx, c, processData)
-			}
-		}
-		return ctx, c, processData
 	}
 }
 
 func observabilityLogHertz(config types.ObservabilityLogProcessorConfig) types.ProcessorFuncHertz {
 	if config.Enable {
-		return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+		return func(c *app.RequestContext, processData *types.RequestContext) {
 			duration := time.Since(processData.Start)
 			observe := duration >= time.Duration(config.SlowThreshold.Default)*time.Millisecond
 			if threshold, ok := config.SlowThreshold.RpcMethods[processData.Method]; ok {
@@ -332,14 +246,13 @@ func observabilityLogHertz(config types.ObservabilityLogProcessorConfig) types.P
 				}
 				log.Observe("observability log", attributes...)
 			}
-			return ctx, c, processData
 		}
 	}
 	return nil
 }
 
 func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
-	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
+	return func(c *app.RequestContext, processData *types.RequestContext) {
 		chainID, chainVersion := metricChainLabels(processData)
 		m := metrics.NewCommonLabelMetrics(processData.Host, processData.Target, chainID, chainVersion)
 		responseDuration := time.Since(processData.Start)
@@ -364,7 +277,7 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		if processData.IsBatch {
 			bound.IncrBatchCallsFinished()
 			bound.ObBatchCallsTime(responseDuration)
-			return ctx, c, processData
+			return
 		} else {
 			bound.ObCallsTime(responseDuration)
 		}
@@ -396,12 +309,6 @@ func updatePostProcessorMetricsHertz() types.ProcessorFuncHertz {
 		if shouldRecordResponsePayloadSize(statusCode, processData, responseBodySize) {
 			bound.ObResponsePayloadSizes(responseBodySize)
 		}
-
-		// cache statistics
-		if processData.Cached {
-			bound.IncrCallsCacheHits()
-		}
-		return ctx, c, processData
 	}
 }
 
@@ -455,9 +362,6 @@ func classifyFailureReason(code jsonrpc.ErrorCode, msg jsonrpc.ErrorMsg, data in
 		}
 		if strings.Contains(rawData, "no backends available") {
 			return "no_backends_available"
-		}
-		if strings.Contains(rawData, "no reverse proxy available") {
-			return "no_reverse_proxy_available"
 		}
 		if strings.Contains(rawData, "reverse proxy bad gateway") {
 			return "upstream_bad_gateway"
