@@ -50,7 +50,7 @@ func jRPCMethodDeniedHertz(deniedMethods *[]jsonrpc.RPCMethod) types.ProcessorFu
 			if _, ok := deniedMethodMap[req.Method]; ok {
 				var respObj *jsonrpc.ResponseObject
 				_, respObj, processData.Error = jsonrpc.ErrorResponse(http.StatusBadRequest, errObject, nil)
-				c.JSON(http.StatusBadRequest, respObj)
+				processData.WriteError(c, http.StatusBadRequest, respObj)
 				break
 			}
 		}
@@ -78,14 +78,14 @@ func checkJRPCRequestBodyHertz(config types.MethodNameCheckerConfig) types.Proce
 				if deniedRegexp.MatchString(string(req.Method)) {
 					var respObj *jsonrpc.ResponseObject
 					_, respObj, processData.Error = jsonrpc.ErrorResponse(http.StatusBadRequest, errObject, nil)
-					c.JSON(http.StatusBadRequest, respObj)
+					processData.WriteError(c, http.StatusBadRequest, respObj)
 					break
 				}
 			}
 			if !reMethodName.MatchString(string(req.Method)) {
 				var respObj *jsonrpc.ResponseObject
 				_, respObj, processData.Error = jsonrpc.ErrorResponse(http.StatusBadRequest, errObject, nil)
-				c.JSON(http.StatusBadRequest, respObj)
+				processData.WriteError(c, http.StatusBadRequest, respObj)
 				break
 			}
 		}
@@ -108,7 +108,7 @@ func rpcMethodLimiterHertz(limiter Limiter) types.ProcessorFuncHertz {
 		if !limiter.Allow(processData.Method) {
 			var respObj *jsonrpc.ResponseObject
 			_, respObj, processData.Error = jsonrpc.TooManyRequestsResponse()
-			c.JSON(http.StatusTooManyRequests, respObj)
+			processData.WriteError(c, http.StatusTooManyRequests, respObj)
 		}
 		return ctx, c, processData
 	}
@@ -208,6 +208,11 @@ func (e *GeneralRPCMethodHertzHandler) PostHandlerMap() map[jsonrpc.RPCMethod]ty
 func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 	return func(ctx context.Context, c *app.RequestContext, processData *types.RequestContext) (context.Context, *app.RequestContext, *types.RequestContext) {
 		if height := heightMap.GetHeight(processData.ChainId); height != nil {
+			// Keep the caller's id: the upstream echoes whatever we send.
+			var id interface{} = 1
+			if len(processData.RequestBody) == 1 && processData.RequestBody[0].ID != nil {
+				id = nJson.NoCopyRawMessage(processData.RequestBody[0].ID)
+			}
 			// 构造新的 JSON-RPC 请求体
 			requestPayload := map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -215,7 +220,7 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 				"params": []interface{}{
 					height, // 传入的区块高度
 				},
-				"id": 1, // 可根据实际情况设置
+				"id": id,
 			}
 
 			// 将新请求体序列化为 JSON
@@ -229,7 +234,7 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 						Message: "Failed to marshal new request body",
 					}, nil,
 				)
-				c.JSON(http.StatusInternalServerError, respObj)
+				processData.WriteError(c, http.StatusInternalServerError, respObj)
 
 				return ctx, c, processData
 			}
@@ -244,7 +249,7 @@ func getLatestBlockHertz(heightMap HeightMap) types.ProcessorFuncHertz {
 				Code:    jsonrpc.InvalidParamsCode,
 				Message: jsonrpc.InvalidParamsMsg,
 			}, nil)
-			c.JSON(http.StatusOK, respObj)
+			processData.WriteError(c, http.StatusOK, respObj)
 		}
 		return ctx, c, processData
 	}

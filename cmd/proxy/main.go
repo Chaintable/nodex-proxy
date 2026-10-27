@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"strings"
 	"time"
 
@@ -20,7 +21,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/go-chi/chi/v5"
-	"github.com/hertz-contrib/pprof"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/automaxprocs/maxprocs"
@@ -169,6 +169,13 @@ func main() {
 
 	go func() {
 		router := chi.NewRouter()
+		// pprof lives on the internal metrics port, not on the RPC port that
+		// the load balancer exposes to clients.
+		router.HandleFunc("/debug/pprof/*", pprof.Index)
+		router.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		router.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		router.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		router.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		router.Handle("/metrics", promhttp.InstrumentMetricHandler(
 			prometheus.DefaultRegisterer, promhttp.HandlerFor(
 				prometheus.DefaultGatherer,
@@ -194,7 +201,12 @@ func main() {
 		server.WithExitWaitTime(gracefulExitWait(cmdlineAndLoadConfig.ProxyConfig)),
 	)
 
-	pprof.Register(h)
+	// Readiness: the process is serving once etcd discovery has been
+	// initialised above. Without this route the probe fell through to the
+	// RPC handler, which answers 200 even to an empty request.
+	h.GET("/status", func(_ context.Context, c *app.RequestContext) {
+		c.SetStatusCode(http.StatusOK)
+	})
 
 	handler, err := http_handler.NewHandler(ctx, loadBalancer.NodeSelector, cmdlineAndLoadConfig.EtcdEndpoints, cmdlineAndLoadConfig.ProxyConfig.EtcdPrefix, nodeChannel, loadBalancer)
 	if err != nil {

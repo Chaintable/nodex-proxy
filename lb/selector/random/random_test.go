@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
+	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/stretchr/testify/require"
 )
 
 func TempPickNodes(getBlockContext func() *types.BlockContext, blockHeight *hexutil.Big, archiveNodes []*lbnode.Node, stateNodes []*lbnode.Node, nativeNodes []*lbnode.Node, forceArchive bool, forceNative bool) []*lbnode.Node {
@@ -58,4 +60,31 @@ func TestRandom_GetNode(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRandomGetNodeHonorsWeights(t *testing.T) {
+	gs := jsonrpc.NewGatewayStrategy()
+	gs.UpdateGateway("1", discovery.Gateway{Weights: []discovery.WeightInfo{
+		{NodeKey: "zero", Weight: 0},
+		{NodeKey: "one", Weight: 1},
+		{NodeKey: "three", Weight: 3},
+	}})
+	r := New(TempPickNodes, gs)
+	for _, key := range []string{"zero", "one", "three"} {
+		node, err := lbnode.New(key, "10.0.0.1", 80, 100, discovery.NodeTypeState)
+		require.NoError(t, err)
+		node.SetState(1)
+		require.NoError(t, r.UpsertNode(context.Background(), "1", discovery.NodeTypeState, node))
+	}
+
+	const rounds = 40000
+	hits := map[string]int{}
+	for range rounds {
+		node, err := r.GetNode(&types.RequestContext{ChainId: "1", IsBatch: true}, "")
+		require.NoError(t, err)
+		hits[node.Key()]++
+	}
+	require.Zero(t, hits["zero"], "a zero-weight node must never be selected")
+	require.InDelta(t, 0.25, float64(hits["one"])/rounds, 0.02)
+	require.InDelta(t, 0.75, float64(hits["three"])/rounds, 0.02)
 }
