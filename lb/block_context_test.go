@@ -3,6 +3,7 @@ package lb
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/stretchr/testify/require"
 )
@@ -103,4 +105,152 @@ func FuzzBlockContextSelection(f *testing.F) {
 		raw := []byte("[" + string(first) + "," + string(selected) + "]")
 		require.Equal(t, decodedContext(selected), (&LoadBalancer{}).ParseBlockContext([]*ejrpc.RequestObject{{Method: method, Params: raw}}))
 	})
+}
+
+// legacyBlockContextArgument is the previous sonic-based implementation, kept
+// as the reference for the scanner.
+func legacyBlockContextArgument(params []byte, second bool) (string, int, error) {
+	if second && !log.DebugEnabled() {
+		node, err := sonic.GetWithOptions(params, ast.SearchOptions{}, 1)
+		if err == nil {
+			raw, err := node.Raw()
+			return raw, 2, err
+		}
+	}
+	var args []sonic.NoCopyRawMessage
+	if err := sonic.UnmarshalString(string(params), &args); err != nil {
+		return "", 0, err
+	}
+	if len(args) == 0 {
+		return "", 0, nil
+	}
+	arg := args[len(args)-1]
+	if second && len(args) > 1 {
+		arg = args[1]
+	}
+	return string(arg), len(args), nil
+}
+
+func requireSameArgument(t *testing.T, params []byte, second bool) {
+	t.Helper()
+	if !json.Valid(params) {
+		// Params are always part of a validated request body.
+		return
+	}
+	wantRaw, wantCount, wantErr := legacyBlockContextArgument(params, second)
+	gotRaw, gotCount, gotErr := blockContextArgument(params, second)
+	if wantErr != nil && hasOutOfRangeNumber(params) {
+		return // sonic optdec rejects float-overflowing literals; see jsonrpc tests.
+	}
+	require.Equal(t, wantErr == nil, gotErr == nil, "%q second=%v: %v / %v", params, second, wantErr, gotErr)
+	require.Equal(t, wantCount, gotCount, "%q second=%v", params, second)
+	// sonic optdec keeps trailing whitespace on raw number elements; padding
+	// around a value never changes how it decodes.
+	require.Equal(t, strings.TrimSpace(wantRaw), gotRaw, "%q second=%v", params, second)
+}
+
+func requireSameBlockContext(t *testing.T, raw string) {
+	t.Helper()
+	if !json.Valid([]byte(raw)) {
+		return
+	}
+	var want types.BlockContext
+	wantErr := sonic.UnmarshalString(raw, &want)
+	got, gotErr := decodeBlockContext(raw)
+	if wantErr != nil && hasOutOfRangeNumber([]byte(raw)) {
+		return
+	}
+	require.Equal(t, wantErr == nil, gotErr == nil, "%q: %v / %v", raw, wantErr, gotErr)
+	if wantErr == nil {
+		require.Equal(t, &want, got, "%q", raw)
+	}
+}
+
+var blockContextSeeds = []string{
+	`{"block_id":"0x1234","type":"Equals"}`,
+	`{"block_id":"0x` + strings.Repeat("ab", 32) + `","type":"Equals"}`,
+	`{"block_id":"0x` + strings.Repeat("AB", 32) + `","type":"Contains"}`,
+	`{"block_id":"0x` + strings.Repeat("zz", 32) + `","type":"Equals"}`,
+	`{"block_id":"latest","type":"Equals"}`,
+	`{"block_id":"earliest"}`, `{"block_id":"safe"}`, `{"block_id":"finalized"}`, `{"block_id":"pending"}`,
+	`{"block_id":"0x8000000000000000","type":"Equals"}`,
+	`{"block_id":"0x01","type":"Equals"}`, `{"block_id":"","type":"Equals"}`, `{"block_id":"12","type":"Equals"}`,
+	`{"block_id":{"blockHash":"0x` + strings.Repeat("ab", 32) + `","requireCanonical":true},"type":"Equals"}`,
+	`{"block_id":{"blockNumber":"0x10"},"type":"Equals"}`,
+	`{"block_id":null,"type":"Contains"}`, `{"block_id":12,"type":"Equals"}`,
+	`{"Block_ID":"0x1234","TYPE":"Equals"}`, `{"type":"Equals","type":"Contains"}`,
+	`{"type":"Equals"}`, `{"type":"Équals"}`, `{"other":[1,{"a":"}"}],"type":"Equals"}`,
+	`{}`, `null`, `"latest"`, `[]`, `0`, `true`,
+}
+
+func TestDecodeBlockContextMatchesSonic(t *testing.T) {
+	for _, raw := range blockContextSeeds {
+		requireSameBlockContext(t, raw)
+	}
+}
+
+func TestBlockContextArgumentMatchesLegacy(t *testing.T) {
+	ctx := `{"block_id":"0x1234","type":"Equals"}`
+	for _, params := range []string{
+		`[]`, ` [ ] `, `null`, ` null `, `[null]`, `[1]`, `[1,` + ctx + `]`, `[1,` + ctx + `,false]`,
+		`[[{"to":"0x01","data":"0x02"}],` + ctx + `]`, `["a\"]b",` + ctx + `]`, `[ 1 , ` + ctx + ` ]`,
+		`{}`, `"text"`, `0`,
+		// Above nativeSkipThreshold, exercising the sonic skip path.
+		`[["0x` + strings.Repeat("ab", 8<<10) + `"],` + ctx + `]`,
+		`[["0x` + strings.Repeat("ab", 8<<10) + `"]]`,
+		`[["0x` + strings.Repeat("ab", 8<<10) + `"],` + ctx + `,false] trailing`,
+	} {
+		for _, second := range []bool{false, true} {
+			requireSameArgument(t, []byte(params), second)
+		}
+	}
+}
+
+func FuzzBlockContextArgumentMatchesLegacy(f *testing.F) {
+	f.Add([]byte(`[[1,2],{"block_id":"0x1234","type":"Equals"},false]`), true)
+	f.Add([]byte(`["a\"]b",null]`), false)
+	f.Fuzz(func(t *testing.T, params []byte, second bool) {
+		requireSameArgument(t, params, second)
+	})
+}
+
+func FuzzDecodeBlockContextMatchesSonic(f *testing.F) {
+	for _, seed := range blockContextSeeds {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		requireSameBlockContext(t, raw)
+	})
+}
+
+// hasOutOfRangeNumber reports whether any number token outside strings
+// overflows float64.
+func hasOutOfRangeNumber(body []byte) bool {
+	inString := false
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if inString {
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			continue
+		}
+		if c == '-' || (c >= '0' && c <= '9') {
+			j := i
+			for j < len(body) && strings.IndexByte("0123456789+-.eE", body[j]) >= 0 {
+				j++
+			}
+			if _, err := strconv.ParseFloat(string(body[i:j]), 64); errors.Is(err, strconv.ErrRange) {
+				return true
+			}
+			i = j - 1
+		}
+	}
+	return false
 }

@@ -10,6 +10,9 @@ import (
 type GatewayStrategy interface {
 	// weight management
 	GetWeightForChain(chainId string) (map[string]int, bool)
+	// ChainWeights returns the chain's published weight map without copying.
+	// Callers must treat it as read-only; it is never mutated after publish.
+	ChainWeights(chainId string) map[string]int
 	GetWeightForNode(chainId string, nodeId string) (int, bool)
 	UpdateWeightForChain(chainId string, status []discovery.WeightInfo)
 
@@ -24,7 +27,9 @@ type GatewayStrategy interface {
 }
 
 type gatewayStrategy struct {
-	// chainid -> nodeid -> weight
+	// chainid -> nodeid -> weight. Inner maps are built completely before they
+	// are published and never modified afterwards, so ChainWeights can hand
+	// them out without copying.
 	weightMap map[string]map[string]int
 	// chainid -> method -> route
 	methodRouteMap map[string]map[string]discovery.MethodRoute
@@ -53,6 +58,12 @@ func (g *gatewayStrategy) GetWeightForChain(chainId string) (map[string]int, boo
 	return copied, exists
 }
 
+func (g *gatewayStrategy) ChainWeights(chainId string) map[string]int {
+	g.RLock()
+	defer g.RUnlock()
+	return g.weightMap[chainId]
+}
+
 func (g *gatewayStrategy) GetWeightForNode(chainId string, nodeId string) (int, bool) {
 	g.RLock()
 	defer g.RUnlock()
@@ -69,10 +80,11 @@ func (g *gatewayStrategy) UpdateWeightForChain(chainId string, status []discover
 	g.Lock()
 	defer g.Unlock()
 
-	g.weightMap[chainId] = make(map[string]int)
+	weights := make(map[string]int, len(status))
 	for _, status := range status {
-		g.weightMap[chainId][status.NodeKey] = status.Weight
+		weights[status.NodeKey] = status.Weight
 	}
+	g.weightMap[chainId] = weights
 }
 
 func (g *gatewayStrategy) UpdateGateway(chainId string, gateway discovery.Gateway) {
@@ -80,10 +92,11 @@ func (g *gatewayStrategy) UpdateGateway(chainId string, gateway discovery.Gatewa
 	defer g.Unlock()
 
 	// 更新权重
-	g.weightMap[chainId] = make(map[string]int)
+	weights := make(map[string]int, len(gateway.Weights))
 	for _, weightInfo := range gateway.Weights {
-		g.weightMap[chainId][weightInfo.NodeKey] = weightInfo.Weight
+		weights[weightInfo.NodeKey] = weightInfo.Weight
 	}
+	g.weightMap[chainId] = weights
 
 	// 更新方法路由
 	g.methodRouteMap[chainId] = make(map[string]discovery.MethodRoute)

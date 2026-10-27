@@ -22,6 +22,11 @@ func BenchmarkBlockContextLargeParams(b *testing.B) {
 		b.Fatal(err)
 	}
 	fixtures["calls128"] = multicall.Params
+	var multicall8 ejrpc.RequestObject
+	if err := sonic.Unmarshal(benchfixture.Requests()["multicall8"], &multicall8); err != nil {
+		b.Fatal(err)
+	}
+	fixtures["calls8"] = multicall8.Params
 	for name, params := range fixtures {
 		requests := []*ejrpc.RequestObject{{Method: ejrpc.ContractMultiCall, Params: params}}
 		for strategy, parse := range map[string]func([]*ejrpc.RequestObject) *types.BlockContext{

@@ -11,10 +11,12 @@ import (
 	"testing"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
+	"github.com/Chaintable/nodex-proxy/internal/benchfixture"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
@@ -124,4 +126,31 @@ func BenchmarkServeHTTPLargeResp(b *testing.B) {
 	}
 	sb.WriteString(`]}`)
 	benchServe(b, requestBody, []byte(sb.String()))
+}
+
+// BenchmarkServeHTTPMulticallMultiPool mirrors the production hot path: a
+// ~2.7KB contractMultiCall pinned to a block hash on a chain with separate
+// state and archive pools and an active archive-hash cache, so every request
+// scans node availability and parses its block context.
+func BenchmarkServeHTTPMulticallMultiPool(b *testing.B) {
+	upstreamResp := []byte(`{"jsonrpc":"2.0","id":1,"result":"0x` + strings.Repeat("0123456789abcdef", 200) + `"}`)
+	benchServeWithSetup(b, benchfixture.Requests()["multicall8"], upstreamResp, func(lbi *LoadBalancer) {
+		ip, port := startMockUpstream(b, upstreamResp)
+		for i := range 35 {
+			var role discovery.NodeType = discovery.NodeTypeArchive
+			if i < 5 {
+				role = discovery.NodeTypeState
+			}
+			node, err := lbnode.New(fmt.Sprintf("pool_%d", i), ip, port, 100, role)
+			if err != nil {
+				b.Fatal(err)
+			}
+			node.SetState(1)
+			if err := lbi.NodeSelector.UpsertNode(context.Background(), "1", role, node); err != nil {
+				b.Fatal(err)
+			}
+		}
+		// Any cached hash makes the chain parse block contexts on every request.
+		lbi.archiveHashCache.Add("1", common.HexToHash("0x01"))
+	})
 }
