@@ -1,12 +1,19 @@
 package jsonrpc
 
 import (
+	"context"
 	"errors"
+	"math/big"
 	"net/http"
 	"testing"
 
+	"github.com/Chaintable/nodex-proxy/jsonrpc"
+	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
+	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMetricChainLabels(t *testing.T) {
@@ -141,4 +148,25 @@ func TestShouldRecordResponsePayloadSize(t *testing.T) {
 			assert.Equal(t, tc.want, shouldRecordResponsePayloadSize(tc.statusCode, tc.ctx, tc.responseBodySize))
 		})
 	}
+}
+
+func TestGetLatestBlockRewriteKeepsRequestID(t *testing.T) {
+	log.InitLogger("error")
+	heightMap := NewHeightMap()
+	height := hexutil.Big(*big.NewInt(42))
+	heightMap.SetHeight("1", &height)
+
+	c := app.NewContext(0)
+	c.Request.SetBody([]byte(`{"jsonrpc":"2.0","method":"getLatestBlock","params":[],"id":"req-9"}`))
+	_, reqs, _, err := jsonrpc.ParseRequest(&c.Request)
+	require.NoError(t, err)
+	processData := &types.RequestContext{ChainId: "1", Method: jsonrpc.GetLatestBlock, RequestBody: reqs}
+
+	getLatestBlockHertz(heightMap)(context.Background(), c, processData)
+
+	require.Contains(t, string(c.Request.Body()), `"method":"getBlockByHeight"`)
+	require.Contains(t, string(c.Request.Body()), `"id":"req-9"`)
+	// The parsed request was made independent of the rewritten body.
+	require.Equal(t, `"req-9"`, string(processData.RequestBody[0].ID))
+	require.Equal(t, jsonrpc.GetLatestBlock, processData.RequestBody[0].Method)
 }

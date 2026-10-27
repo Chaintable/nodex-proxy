@@ -196,8 +196,12 @@ func (node *Node) State() int {
 	return int(node.stateType.Load())
 }
 
+// StateAvailable is the discovery state of a node that serves traffic
+// (1=latest; 2=delay and 3=offline do not).
+const StateAvailable = 1
+
 func (node *Node) Available() bool {
-	return node.stateType.Load() == 1
+	return node.stateType.Load() == StateAvailable
 }
 
 // UpdateFrom refreshes the mutable attributes of node from other, keeping the

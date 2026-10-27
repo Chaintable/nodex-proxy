@@ -153,6 +153,13 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 				// health check below only publishes its result if no newer
 				// PUT/DELETE arrived while it ran.
 				gen := lb.nodeGens.Bump(nodeId)
+				if tempNode.StateType != lbnode.StateAvailable && lb.nodeInPool(nodeId) {
+					// A downgrade takes traffic away, so apply it now: an
+					// offline node never passes the health check, and waiting
+					// on it kept the old available state serving traffic.
+					lb.applyNodeState(chainId, role, tempNode)
+					continue
+				}
 				// Perform health check in background goroutine
 				go func(nodeId nodeIdentity, chainId string, role discovery.NodeType, node *discovery.TargetNode, gen uint64) {
 					log.Info("performing health check for new node",
@@ -243,6 +250,34 @@ func (lb *LoadBalancer) BackgroundRefreshNode() {
 	}
 }
 
+// nodeInPool reports whether the node is currently in the selector's pool.
+func (lb *LoadBalancer) nodeInPool(id nodeIdentity) bool {
+	nodes, _ := lb.NodeSelector.GetAllNodes(id.chainId)
+	for _, node := range nodes {
+		if node.Key() == id.nodeKey && (node.Source() == "native") == id.native {
+			return true
+		}
+	}
+	return false
+}
+
+// applyNodeState upserts a discovery update without a health check, keeping
+// the pooled node's connections.
+func (lb *LoadBalancer) applyNodeState(chainId string, role discovery.NodeType, update *discovery.TargetNode) {
+	node, err := lbnode.New(update.NodeKey, update.Address, update.Port, update.Weight, role, lbnode.WithSource(update.Source))
+	if err != nil {
+		log.Error("failed to create node", err)
+		return
+	}
+	node.SetState(update.StateType)
+	_ = lb.NodeSelector.UpsertNode(lb.ctx, chainId, role, node)
+	log.Info("node state updated without health check",
+		log.Any("node_key", update.NodeKey),
+		log.Any("address", node.Addr()),
+		log.Any("chain_id", chainId),
+		log.Any("state", update.StateType))
+}
+
 func (lb *LoadBalancer) handleChainVersionUpdate(update *discovery.ChainVersion) {
 	if update == nil {
 		return
@@ -330,14 +365,14 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 	requestContext := lb.generateRequestContext(ctx, &c.Request)
 	if requestContext.Error != nil {
 		_, object, _ := ejrpc.BadRequest(requestContext.Error)
-		c.JSON(consts.StatusOK, object)
+		requestContext.WriteError(c, consts.StatusOK, object)
 		return
 	}
 
 	baseChainID, chainUUID, rawChainID := splitChainIdentifier(chainID)
 	if baseChainID == "" {
 		_, object, _ := ejrpc.BadRequest(errors.New("invalid chain id"))
-		c.JSON(consts.StatusOK, object)
+		requestContext.WriteError(c, consts.StatusOK, object)
 		return
 	}
 
@@ -400,7 +435,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		_, object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
 		requestContext.Error = retErr
 		requestContext.ResponseBody = object
-		c.JSON(consts.StatusOK, object)
+		requestContext.WriteError(c, consts.StatusOK, object)
 		return
 	}
 
@@ -409,7 +444,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 		_, object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
 		requestContext.Error = retErr
 		requestContext.ResponseBody = object
-		c.JSON(consts.StatusOK, object)
+		requestContext.WriteError(c, consts.StatusOK, object)
 		return
 	}
 
@@ -447,7 +482,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			_, object, retErr := ejrpc.BadGateway(errors.New("no backends available"))
 			requestContext.Error = retErr
 			requestContext.ResponseBody = object
-			c.JSON(consts.StatusOK, object)
+			requestContext.WriteError(c, consts.StatusOK, object)
 			return
 		}
 
@@ -456,7 +491,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			_, object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
 			requestContext.Error = retErr
 			requestContext.ResponseBody = object
-			c.JSON(consts.StatusOK, object)
+			requestContext.WriteError(c, consts.StatusOK, object)
 			return
 		}
 		if log.DebugEnabled() {
@@ -479,7 +514,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			_, object, retErr := ejrpc.BadGateway(errors.New("no native backends available"))
 			requestContext.Error = retErr
 			requestContext.ResponseBody = object
-			c.JSON(consts.StatusOK, object)
+			requestContext.WriteError(c, consts.StatusOK, object)
 			return
 		}
 		if targetNode.ReverseProxy == nil {
@@ -487,7 +522,7 @@ func (lb *LoadBalancer) ServeHTTP(ctx context.Context, c *app.RequestContext, ch
 			_, object, retErr := ejrpc.BadGateway(errors.New("no reverse proxy available"))
 			requestContext.Error = retErr
 			requestContext.ResponseBody = object
-			c.JSON(consts.StatusOK, object)
+			requestContext.WriteError(c, consts.StatusOK, object)
 			return
 		}
 		if log.DebugEnabled() {
@@ -561,13 +596,13 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 		_, object, retErr := ejrpc.GatewayTimeout(errors.New("reverse proxy gateway timeout"))
 		requestContext.Error = retErr
 		requestContext.ResponseBody = object
-		c.JSON(consts.StatusGatewayTimeout, object)
+		requestContext.WriteError(c, consts.StatusGatewayTimeout, object)
 	}
 	if c.Response.StatusCode() == consts.StatusBadGateway {
 		_, object, retErr := ejrpc.BadGateway(errors.New("reverse proxy bad gateway"))
 		requestContext.Error = retErr
 		requestContext.ResponseBody = object
-		c.JSON(consts.StatusBadGateway, object)
+		requestContext.WriteError(c, consts.StatusBadGateway, object)
 	}
 }
 

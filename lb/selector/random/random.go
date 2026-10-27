@@ -90,11 +90,13 @@ func (r *Random) GetNode(ctx *types.RequestContext, requestKey string) (*lbnode.
 		return nil, utils.NewNoAvailableNodeError(chainId, "weight sum is zero, all nodes have zero weight")
 	}
 
+	// targetWeight is uniform in [0, weightSum); node i owns the half-open
+	// range [prefix, prefix+weight), so zero-weight nodes are never picked.
 	targetWeight := utils.RangeRandom(0, int64(weightSum))
 	curWeight := 0
 	for _, node := range nodes {
 		curWeight += nodeWeight(node.Key())
-		if int64(curWeight) >= targetWeight {
+		if int64(curWeight) > targetWeight {
 			// Shared node: identity fields are immutable and callers only
 			// read them, so no per-request copy is needed.
 			return node, nil

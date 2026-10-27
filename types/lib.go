@@ -134,6 +134,16 @@ func (p *RequestContext) GetBlockContext() *BlockContext {
 	return p.BlockContext
 }
 
+// WriteError writes a proxy-generated JSON-RPC error response. A single
+// request gets its own id back, as JSON-RPC requires; otherwise (unparsable
+// body, batch) resp keeps the id it was built with.
+func (p *RequestContext) WriteError(c *app.RequestContext, status int, resp *jsonrpc.ResponseObject) {
+	if p != nil && len(p.RequestBody) == 1 && p.RequestBody[0] != nil && p.RequestBody[0].ID != nil {
+		resp.ID = p.RequestBody[0].ID
+	}
+	c.JSON(status, resp)
+}
+
 func (p *RequestContext) SetTargetNode(addr string) {
 	if p == nil {
 		return

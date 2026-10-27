@@ -1025,13 +1025,15 @@ func (h *Handler) DeleteLocalNode(ctx context.Context, c *app.RequestContext) {
 	}
 
 	deleteEvent := &discovery.TargetNode{
-		ChainId:    chainId,
-		NodeKey:    nodeKey,
-		Address:    node.IP(),
-		Port:       node.Port(),
-		NodeType:   node.NodeType,
-		StateType:  node.State(),
-		Source:     "local",
+		ChainId:   chainId,
+		NodeKey:   nodeKey,
+		Address:   node.IP(),
+		Port:      node.Port(),
+		NodeType:  node.NodeType,
+		StateType: node.State(),
+		// Keep the pooled node's source: removal picks the native or the
+		// state/archive list by it, so "local" left native nodes in place.
+		Source:     node.Source(),
 		ChangeType: 1,
 	}
 
