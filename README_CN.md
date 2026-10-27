@@ -2,19 +2,17 @@
 
 [English](README.md) | 中文
 
-一个高性能的区块链 JSON-RPC 代理服务器，具备负载均衡、健康检查、限流和可观测性等功能。它位于客户端与区块链节点之间，将请求分发到节点池中，同时提供高级流量管理能力。
+一个高性能的区块链 JSON-RPC 代理服务器，具备负载均衡、健康检查和可观测性等功能。它位于客户端与区块链节点之间，将请求分发到节点池中，同时提供高级流量管理能力。
 
 ## 功能特性
 
 - **多链支持** — 同时管理多条区块链，支持按链独立配置
-- **负载均衡** — 支持随机（含加权网关）和轮询策略
+- **负载均衡** — 加权随机选择节点（支持网关权重与方法路由）
 - **节点健康检查** — 自动健康验证，可配置超时和重试次数，通过检查后才加入节点池
-- **限流** — 基于令牌桶算法的按方法 RPC 请求限流
 - **请求镜像** — 将请求复制到镜像目标用于分析/监控
 - **方法路由** — 基于包含/排除规则将特定 RPC 方法路由到特定节点子集
-- **区块范围查询限制** — 限制区块范围查询以防止资源过度消耗
-- **方法校验** — 基于正则表达式的 RPC 方法名验证与拒绝列表
-- **可观测性** — OpenTelemetry 链路追踪、Prometheus 指标、结构化日志与采样
+- **方法拒绝列表** — 拒绝配置中列出的 RPC 方法
+- **可观测性** — Prometheus 指标、结构化慢请求/错误日志
 - **服务发现** — 基于 etcd 的动态节点注册与配置
 - **版本路由** — 支持版本化链端点，适用于多版本部署
 - **批量请求支持** — 处理 JSON-RPC 批量请求，统一超时控制
@@ -44,7 +42,7 @@
         │           负载均衡器              │
         │  ┌─────────────────────────────┐  │
         │  │   节点选择策略              │  │
-        │  │  (随机 / 轮询)             │  │
+        │  │  (加权随机)                 │  │
         │  ├─────────────────────────────┤  │
         │  │  网关 (权重/路由)           │  │
         │  └─────────────────────────────┘  │
@@ -134,11 +132,8 @@ usage:
   report_interval: 5s
 
 proxy_config:
-  service_name: "jrpcx"
-  native_node_url: "http://127.0.0.1:8545"
   default_rpc_timeout: 5000            # 毫秒
   connection_pool_size: 2000
-  node_select_strategy: "random"       # "random" 或 "round_robin"
   etcd_prefix: ""
 ```
 
@@ -176,26 +171,9 @@ proxy_config:
           eth_call: 1000
           eth_getLogs: 2000
 
-    # 按方法限流（每秒请求数）
-    rate_limiter:
-      rpc_methods:
-        eth_call: 100
-        eth_getLogs: 50
-
-    # 区块范围查询限制
-    block_range_query_limit:
-      enable: false
-      recent_blocks: 0
-      rewrite_to_latest: false
-
     # 请求镜像
     request_mirror:
       enable: false
-
-    # 方法名校验
-    method_name_checker:
-      enable: false
-      regexp: "^[a-zA-Z_][a-zA-Z0-9_]*$"
 
     # 拒绝的 RPC 方法
     method_denied:
@@ -204,25 +182,6 @@ proxy_config:
       - txpool_inspect
       - txpool_contentFrom
       - txpool_status
-```
-
-### 可观测性
-
-```yaml
-proxy_config:
-  observability:
-    trace:
-      enable: false
-      otlp_endpoint: ""
-      sampling_ratio: 0.1
-    log:
-      sampling:
-        enable: true
-        initial: 100
-        thereafter: 100
-    static_resource:
-      service.name: "nodex-proxy"
-      service.version: "1.0.0"
 ```
 
 ## 服务发现（etcd）
@@ -259,7 +218,6 @@ Prometheus 指标暴露在 `http://<host>:8664/metrics`。
 | `jrpcx_rpc_calls_finished` | Counter | 已完成的 RPC 调用数 |
 | `jrpcx_rpc_calls_failed` | Counter | 失败的 RPC 调用数 |
 | `jrpcx_rpc_calls_time` | Histogram | RPC 延迟（毫秒） |
-| `jrpcx_rpc_calls_cache_hits` | Counter | 缓存命中次数 |
 | `jrpcx_rpc_request_payload_sizes` | Histogram | 请求负载大小 |
 | `jrpcx_rpc_response_payload_sizes` | Histogram | 响应负载大小 |
 | `jrpcx_rpc_batch_calls_finished` | Counter | 批量请求数 |
@@ -275,7 +233,6 @@ Prometheus 指标暴露在 `http://<host>:8664/metrics`。
 | [cloudwego/hertz](https://github.com/cloudwego/hertz) | HTTP 框架 |
 | [ethereum/go-ethereum](https://github.com/ethereum/go-ethereum) | 以太坊类型 & RPC |
 | [etcd/client/v3](https://github.com/etcd-io/etcd) | 服务发现 |
-| [opentelemetry](https://opentelemetry.io/) | 分布式链路追踪 |
 | [uber/zap](https://github.com/uber-go/zap) | 结构化日志 |
 | [bytedance/sonic](https://github.com/bytedance/sonic) | 高性能 JSON |
 | [prometheus/client_golang](https://github.com/prometheus/client_golang) | 指标采集 |

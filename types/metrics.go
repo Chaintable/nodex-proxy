@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/go-kit/kit/metrics"
-	"github.com/go-kit/kit/metrics/prometheus"
-	stdprome "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 const (
@@ -14,16 +13,12 @@ const (
 	ConfigValueLabel = "config_value"
 )
 
-var configGauge metrics.Gauge
-
-func init() {
-	configGauge = prometheus.NewGaugeFrom(stdprome.GaugeOpts{
-		Namespace: "jrpcx",
-		Subsystem: "pkg",
-		Name:      "configuration",
-		Help:      "Current JRPCX configuration",
-	}, []string{ConfigNameLabel, ConfigValueLabel})
-}
+var configGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "jrpcx",
+	Subsystem: "pkg",
+	Name:      "configuration",
+	Help:      "Current JRPCX configuration",
+}, []string{ConfigNameLabel, ConfigValueLabel})
 
 func initMetrics(t reflect.Type, v reflect.Value, prefix string) {
 	switch t.Kind() {
@@ -40,10 +35,7 @@ func initMetrics(t reflect.Type, v reflect.Value, prefix string) {
 			}
 		}
 	default:
-		configGauge.With(
-			ConfigNameLabel, prefix,
-			ConfigValueLabel, fmt.Sprint(v),
-		).Set(1)
+		configGauge.WithLabelValues(prefix, fmt.Sprint(v)).Set(1)
 	}
 
 }

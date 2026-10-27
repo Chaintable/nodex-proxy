@@ -551,3 +551,15 @@ func TestWatchResyncGetFailureKeepsRevision(t *testing.T) {
 	assert.Equal(t, []int64{11, 11}, fw.revs)
 	assert.Equal(t, int64(10), r.watchRevision)
 }
+
+// A gateway DELETE only needs the chain. It used to be dropped when neither
+// PrevKV nor a remembered value could be unmarshalled.
+func TestDispatchDeleteGatewayWithoutPrevValue(t *testing.T) {
+	r := newTestDiscover()
+
+	r.dispatchDelete("1/gateway", nil)
+
+	gateway := <-r.gatewayChannel
+	assert.Equal(t, "1", gateway.ChainId)
+	assert.Equal(t, EVENT_DELETE, gateway.ChangeType)
+}

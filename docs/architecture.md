@@ -9,7 +9,7 @@ This document describes the runtime architecture of nodex-proxy as implemented i
 - Provide a single JSON-RPC entrypoint for many blockchain chains.
 - Select healthy upstream nodes by chain, block context, node role, method route, and load-balancing strategy.
 - Keep node membership, weights, method routing, mirrors, heights, and version overrides dynamic through etcd.
-- Expose operational signals through Prometheus metrics, OpenTelemetry traces, and structured logs.
+- Expose operational signals through Prometheus metrics and structured logs.
 - Keep the process simple to deploy: one RPC/admin listener and one metrics listener.
 
 ## Runtime Topology
@@ -46,9 +46,9 @@ The same Hertz listener serves both public JSON-RPC requests and management endp
 | Config loader | `config/config.go`, `types/config.go` | Load top-level launch config and nested `proxy_config`, then fill proxy defaults. |
 | etcd discovery | `discovery/etcd/discovery.go` | Load initial etcd state, watch dynamic updates, and publish typed events into channels. |
 | Load balancer | `lb/lb.go` | Own request orchestration, preprocessing, node selection, upstream proxying, retry behavior, and postprocessing. |
-| Node selector | `lb/selector/*` | Store per-chain node pools and choose a node using random weighted or round-robin strategies. |
+| Node selector | `lb/selector/*` | Store per-chain node pools and choose a node by weighted random selection. |
 | Gateway strategy | `lb/jsonrpc/gateway_map.go` | Maintain node weights and method routing rules for the random selector. |
-| Request processors | `lb/jsonrpc/handler.go`, `lb/jsonrpc/hertz_process.go` | Validate methods, update metrics, enforce limits, rewrite special requests, mirror traffic, parse responses, and emit logs. |
+| Request processors | `lb/jsonrpc/handler.go`, `lb/jsonrpc/hertz_process.go` | Validate methods, update metrics, rewrite special requests, mirror traffic, parse responses, and emit logs. |
 | Management API | `http_handler/*` | Manage nodes, weights, method routes, writers, and mirror targets. Persistent changes are written to etcd where applicable. |
 
 ## Configuration Boundaries
@@ -64,7 +64,6 @@ log_level: "info"
 proxy_config:
   default_rpc_timeout: 5000
   connection_pool_size: 2000
-  node_select_strategy: "random"
 ```
 
 `listen` and `metric_listen` belong to the process wrapper. Runtime proxy behavior belongs under `proxy_config`.
@@ -84,12 +83,9 @@ Important boundaries:
 4. Pre-processors run in order:
 
 ```text
-log request
 method deny list
-method name checker
 preprocessor metrics
-method rate limiter
-method-specific pre-handler
+getLatestBlock rewrite
 request mirror
 ```
 
@@ -105,10 +101,9 @@ request mirror
 
 If a selected pool is empty, state and archive pools fall back to each other. Each pool prefers available nodes when any are available.
 
-6. For `node_select_strategy: "random"`, method routes filter the candidate nodes for non-batch requests, then weights choose the final node. Missing weights default to `100`.
-7. For `node_select_strategy: "round_robin"`, nodes are selected round-robin from the candidate pool. Gateway weights and method routes are not applied by this selector.
-8. The selected node reverse-proxy handles the upstream request.
-9. Retry rules may trigger a second upstream request:
+6. Method routes filter the candidate nodes for non-batch requests, then weights choose the final node. Missing weights default to `100`.
+7. The selected node reverse-proxy handles the upstream request.
+8. Retry rules may trigger a second upstream request:
 
 | Error code | Retry target | Notes |
 |------------|--------------|-------|
@@ -117,12 +112,11 @@ If a selected pool is empty, state and archive pools fall back to each other. Ea
 
 When a non-batch request pinned to a block hash (`"type":"Equals"`) gets `-39006` from state and the archive retry serves it (HTTP 200, no `-39006`/`-39007`), the hash is remembered in a per-chain bounded cache ([otter](https://github.com/maypok86/otter), W-TinyLFU eviction; `archive_hash_cache_size`, default `1024`, negative disables). Later non-batch `Equals` requests with that hash on the same chain go straight to archive, skipping the state attempt. Hits and inserts are counted by `archive_hash_cache_total{chain_id,event}`.
 
-10. Post-processors run in order:
+9. Post-processors run in order:
 
 ```text
 parse JSON-RPC response
 log response
-method-specific post-handler
 slow/error observability log
 postprocessor metrics
 ```
@@ -179,7 +173,7 @@ Metrics are exposed at `http://<host>:<metric_listen>/metrics`.
 
 Common metric labels are `host`, `target`, `chain_id`, and `chain_version`. Method metrics add `method`; `jrpcx_rpc_calls_started` adds `sourcedapp`; failed call metrics add `status_code`, `upstream_related`, and `reason`.
 
-Request logs and traces use the request context, including source headers such as `x-dbk-biz`, `x-dbk-source-host`, `x-dbk-source`, `x-dbk-env`, and `x-dbk-server-version`.
+Request logs use the request context, including source headers such as `x-dbk-biz`, `x-dbk-source-host`, `x-dbk-source`, `x-dbk-env`, and `x-dbk-server-version`.
 
 Slow/error observability logs are controlled by:
 

@@ -9,11 +9,9 @@ import (
 	"time"
 
 	"github.com/Chaintable/nodex-proxy/discovery"
-	"github.com/Chaintable/nodex-proxy/discovery/etcd"
 	"github.com/Chaintable/nodex-proxy/lb/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lb/lbnode"
 	"github.com/Chaintable/nodex-proxy/lb/selector"
-	"github.com/Chaintable/nodex-proxy/lb/selector/random"
 	"github.com/Chaintable/nodex-proxy/lib/log"
 	"github.com/Chaintable/nodex-proxy/types"
 	"github.com/cloudwego/hertz/pkg/app"
@@ -28,25 +26,32 @@ type MirrorHandler interface {
 }
 
 type Handler struct {
-	nodeSelector  selector.Strategy
-	etcdClient    *clientv3.Client
-	keyPrefix     string
-	nodeChannel   chan<- *discovery.TargetNode
-	mirrorHandler MirrorHandler
+	nodeSelector    selector.Strategy
+	gatewayStrategy jsonrpc.GatewayStrategy
+	etcdClient      *clientv3.Client
+	keyPrefix       string
+	nodeChannel     chan<- *discovery.TargetNode
+	mirrorHandler   MirrorHandler
 }
 
-func NewHandler(ctx context.Context, nodeSelector selector.Strategy, etcdEndpoints []string, keyPrefix string, nodeChannel chan<- *discovery.TargetNode, mirrorHandler MirrorHandler) (*Handler, error) {
-	etcdClient, err := etcd.NewEtcdClient(ctx, etcdEndpoints)
-	if err != nil {
-		return nil, err
-	}
+// NewHandler serves the admin API. etcdClient is shared with discovery.
+func NewHandler(nodeSelector selector.Strategy, gatewayStrategy jsonrpc.GatewayStrategy, etcdClient *clientv3.Client, keyPrefix string, nodeChannel chan<- *discovery.TargetNode, mirrorHandler MirrorHandler) *Handler {
 	return &Handler{
-		nodeSelector:  nodeSelector,
-		etcdClient:    etcdClient,
-		keyPrefix:     keyPrefix,
-		nodeChannel:   nodeChannel,
-		mirrorHandler: mirrorHandler,
-	}, nil
+		nodeSelector:    nodeSelector,
+		gatewayStrategy: gatewayStrategy,
+		etcdClient:      etcdClient,
+		keyPrefix:       keyPrefix,
+		nodeChannel:     nodeChannel,
+		mirrorHandler:   mirrorHandler,
+	}
+}
+
+func writeError(c *app.RequestContext, status int, msg string) {
+	c.JSON(status, map[string]string{"error": msg})
+}
+
+func (h *Handler) gatewayKey(chainId string) string {
+	return h.keyPrefix + chainId + "/gateway"
 }
 
 func (h *Handler) GetAllChainsIDs(ctx context.Context, c *app.RequestContext) {
@@ -63,30 +68,30 @@ func (h *Handler) SetWeight(ctx context.Context, c *app.RequestContext) {
 	weightStr := c.Query("weight")
 
 	if nodeKey == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "node parameter is required"})
+		writeError(c, consts.StatusBadRequest, "node parameter is required")
 		return
 	}
 
 	weight, err := strconv.Atoi(weightStr)
 	if err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid weight value"})
+		writeError(c, consts.StatusBadRequest, "invalid weight value")
 		return
 	}
 
 	if weight < 0 || weight > types.DefaultWeight {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "weight must be between 0 and 100"})
+		writeError(c, consts.StatusBadRequest, "weight must be between 0 and 100")
 		return
 	}
 
 	_, err = h.findNode(chainId, nodeKey)
 	if err != nil {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+		writeError(c, consts.StatusNotFound, "node not found")
 		return
 	}
 
 	err = h.setWeight(ctx, chainId, nodeKey, weight)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to set weight: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to set weight: %v", err))
 		return
 	}
 
@@ -97,69 +102,13 @@ func (h *Handler) SetWeight(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-func (h *Handler) generateGatewayWeight(ctx context.Context, chainId string, nodeKey string, weight int) (*discovery.Gateway, error) {
-	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
-	resp, err := h.etcdClient.Get(ctx, gatewayKey)
-	if err != nil {
-		return nil, err
-	}
-
-	gateway := &discovery.Gateway{}
-	if len(resp.Kvs) > 0 {
-		err = json.Unmarshal(resp.Kvs[0].Value, &gateway)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	gateway.SetWeight(nodeKey, weight)
-
-	return gateway, nil
-}
-
 func (h *Handler) setWeight(ctx context.Context, chainId string, nodeKey string, weight int) error {
-	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
-
-	// Get the current value and revision
-	resp, err := h.etcdClient.Get(ctx, gatewayKey)
+	gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
 	if err != nil {
 		return err
 	}
-
-	var modRevision int64
-	if len(resp.Kvs) > 0 {
-		modRevision = resp.Kvs[0].ModRevision
-	}
-
-	gateway, err := h.generateGatewayWeight(ctx, chainId, nodeKey, weight)
-	if err != nil {
-		return err
-	}
-
-	gatewayBytes, err := json.Marshal(gateway)
-	if err != nil {
-		return err
-	}
-
-	// Create a transaction
-	txn := h.etcdClient.Txn(ctx)
-
-	// Compare the value hasn't changed since we read it
-	txnResp, err := txn.
-		If(clientv3.Compare(clientv3.ModRevision(gatewayKey), "=", modRevision)).
-		Then(clientv3.OpPut(gatewayKey, string(gatewayBytes))).
-		Else(clientv3.OpGet(gatewayKey)).
-		Commit()
-
-	if err != nil {
-		return err
-	}
-
-	if !txnResp.Succeeded {
-		return fmt.Errorf("concurrent modification detected, please retry")
-	}
-
-	return nil
+	gateway.SetWeight(nodeKey, weight)
+	return h.updateGatewayConfigWithTransaction(ctx, chainId, gateway, modRevision)
 }
 
 func (h *Handler) GetWeight(ctx context.Context, c *app.RequestContext) {
@@ -167,12 +116,12 @@ func (h *Handler) GetWeight(ctx context.Context, c *app.RequestContext) {
 	nodeKey := c.Query("node")
 
 	if chainId == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId parameter is required"})
+		writeError(c, consts.StatusBadRequest, "chainId parameter is required")
 		return
 	}
 
 	if nodeKey == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "node parameter is required"})
+		writeError(c, consts.StatusBadRequest, "node parameter is required")
 		return
 	}
 
@@ -188,7 +137,7 @@ func (h *Handler) GetWeight(ctx context.Context, c *app.RequestContext) {
 	// return weight for a specific node
 	node, err := h.findNode(chainId, nodeKey)
 	if err != nil {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+		writeError(c, consts.StatusNotFound, "node not found")
 		return
 	}
 
@@ -217,19 +166,19 @@ func (h *Handler) DeleteWeight(ctx context.Context, c *app.RequestContext) {
 	nodeKey := c.Query("node")
 
 	if nodeKey == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "node parameter is required"})
+		writeError(c, consts.StatusBadRequest, "node parameter is required")
 		return
 	}
 
 	_, err := h.findNode(chainId, nodeKey)
 	if err != nil {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+		writeError(c, consts.StatusNotFound, "node not found")
 		return
 	}
 
 	err = h.setWeight(ctx, chainId, nodeKey, types.DefaultWeight)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to reset weight to default: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to reset weight to default: %v", err))
 		return
 	}
 
@@ -330,30 +279,30 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 
 	var req AddNodeRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid request format"})
+		writeError(c, consts.StatusBadRequest, "invalid request format")
 		return
 	}
 
 	// Validate required fields
 	if req.IP == "" || req.Port == 0 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "(ip, port) are required"})
+		writeError(c, consts.StatusBadRequest, "(ip, port) are required")
 		return
 	}
 
 	// Validate node type
 	if req.NodeType != 1 && req.NodeType != 2 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid node_type value"})
+		writeError(c, consts.StatusBadRequest, "invalid node_type value")
 		return
 	}
 
 	// Validate state value
 	if req.State < 1 || req.State > 3 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "state must be between 1 and 3"})
+		writeError(c, consts.StatusBadRequest, "state must be between 1 and 3")
 		return
 	}
 
 	if req.Weight < 0 || req.Weight > types.DefaultWeight {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "weight must be between 0 and 100"})
+		writeError(c, consts.StatusBadRequest, "weight must be between 0 and 100")
 		return
 	}
 
@@ -365,11 +314,11 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 	// todo: check if node already exists
 	nodes, err := h.etcdClient.Get(ctx, etcdKey)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to get node from etcd: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to get node from etcd: %v", err))
 		return
 	}
 	if len(nodes.Kvs) > 0 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("node %s already exists", req.NodeKey)})
+		writeError(c, consts.StatusBadRequest, fmt.Sprintf("node %s already exists", req.NodeKey))
 		return
 	}
 
@@ -384,47 +333,40 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 
 	nodeDataBytes, err := json.Marshal(nodeData)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to marshal node data: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to marshal node data: %v", err))
 		return
 	}
 
-	// Prepare gateway update if weight is not default
-	var gatewayBytes []byte
+	conds := []clientv3.Cmp{clientv3.Compare(clientv3.Version(etcdKey), "=", 0)}
+	ops := []clientv3.Op{clientv3.OpPut(etcdKey, string(nodeDataBytes))}
 	if req.Weight != types.DefaultWeight {
-		gateway, err := h.generateGatewayWeight(ctx, chainId, req.NodeKey, req.Weight)
+		gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
 		if err != nil {
-			c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to prepare gateway update: %v", err)})
+			writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to prepare gateway update: %v", err))
 			return
 		}
-
-		gatewayBytes, err = json.Marshal(gateway)
+		gateway.SetWeight(req.NodeKey, req.Weight)
+		gatewayBytes, err := json.Marshal(gateway)
 		if err != nil {
-			c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to marshal gateway: %v", err)})
+			writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to marshal gateway: %v", err))
 			return
 		}
+		// Without the revision check a concurrent gateway edit would be lost.
+		gatewayKey := h.gatewayKey(chainId)
+		conds = append(conds, clientv3.Compare(clientv3.ModRevision(gatewayKey), "=", modRevision))
+		ops = append(ops, clientv3.OpPut(gatewayKey, string(gatewayBytes)))
 	}
-
-	txn := h.etcdClient.Txn(ctx)
-	txn = txn.If(clientv3.Compare(clientv3.Version(etcdKey), "=", 0))
-	if req.Weight != types.DefaultWeight {
-		gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
-		txn = txn.Then(
-			clientv3.OpPut(etcdKey, string(nodeDataBytes)),
-			clientv3.OpPut(gatewayKey, string(gatewayBytes)),
-		)
-	} else {
-		txn = txn.Then(clientv3.OpPut(etcdKey, string(nodeDataBytes)))
-	}
+	txn := h.etcdClient.Txn(ctx).If(conds...).Then(ops...)
 
 	// Commit transaction
 	txnResp, err := txn.Commit()
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to commit transaction: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to commit transaction: %v", err))
 		return
 	}
 
 	if !txnResp.Succeeded {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "concurrent modification detected, please retry"})
+		writeError(c, consts.StatusBadRequest, "concurrent modification detected, please retry")
 		return
 	}
 
@@ -440,27 +382,16 @@ func (h *Handler) AddNode(ctx context.Context, c *app.RequestContext) {
 }
 
 func (h *Handler) getNodeWeight(chainId string, node *lbnode.Node) int {
-	switch h.nodeSelector.(type) {
-	case *random.Random:
-		weight, exists := h.nodeSelector.(*random.Random).GatewayStrategy.GetWeightForNode(chainId, node.Key())
-		if !exists {
-			return types.DefaultWeight
-		}
-		return weight
-	default:
-		return node.Weight()
+	weight, exists := h.gatewayStrategy.GetWeightForNode(chainId, node.Key())
+	if !exists {
+		return types.DefaultWeight
 	}
+	return weight
 }
 
 func (h *Handler) getChainWeights(chainId string) map[string]int {
-	switch h.nodeSelector.(type) {
-	case *random.Random:
-		weights, _ := h.nodeSelector.(*random.Random).GatewayStrategy.GetWeightForChain(chainId)
-		return weights
-	default:
-		weights := make(map[string]int)
-		return weights
-	}
+	weights, _ := h.gatewayStrategy.GetWeightForChain(chainId)
+	return weights
 }
 
 func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
@@ -472,29 +403,29 @@ func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
 	// Check if node exists
 	nodes, err := h.etcdClient.Get(ctx, etcdKey)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get node from etcd"})
+		writeError(c, consts.StatusInternalServerError, "failed to get node from etcd")
 		return
 	}
 	if len(nodes.Kvs) == 0 {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("node %s not found", nodeKey)})
+		writeError(c, consts.StatusNotFound, fmt.Sprintf("node %s not found", nodeKey))
 		return
 	}
 
 	// check source is manual
 	var nodeData discovery.TargetNode
 	if err := json.Unmarshal(nodes.Kvs[0].Value, &nodeData); err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to parse existing node data"})
+		writeError(c, consts.StatusInternalServerError, "failed to parse existing node data")
 		return
 	}
 	if nodeData.Source != "manual" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "only manual nodes can be deleted"})
+		writeError(c, consts.StatusBadRequest, "only manual nodes can be deleted")
 		return
 	}
 
 	// Get current Gateway config to clean up method routes
 	gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to get gateway config: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to get gateway config: %v", err))
 		return
 	}
 
@@ -505,13 +436,13 @@ func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
 	// Prepare gateway update to remove node weight and clean up method routes
 	gatewayBytes, err := json.Marshal(gateway)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to marshal gateway config"})
+		writeError(c, consts.StatusInternalServerError, "failed to marshal gateway config")
 		return
 	}
 
 	// Create transaction to delete node and update gateway
 	txn := h.etcdClient.Txn(ctx)
-	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+	gatewayKey := h.gatewayKey(chainId)
 
 	// Delete node and update gateway in the same transaction
 	txnResp, err := txn.
@@ -523,12 +454,12 @@ func (h *Handler) DeleteNode(ctx context.Context, c *app.RequestContext) {
 		Commit()
 
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to commit transaction: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to commit transaction: %v", err))
 		return
 	}
 
 	if !txnResp.Succeeded {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "concurrent modification detected, please retry"})
+		writeError(c, consts.StatusInternalServerError, "concurrent modification detected, please retry")
 		return
 	}
 
@@ -547,12 +478,12 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 
 	var req UpdateNodeRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid request format"})
+		writeError(c, consts.StatusBadRequest, "invalid request format")
 		return
 	}
 
 	if req.IP == "" && req.Port == 0 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "at least one field(ip, port) is required"})
+		writeError(c, consts.StatusBadRequest, "at least one field(ip, port) is required")
 		return
 	}
 
@@ -561,23 +492,23 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 	// Check if node exists
 	nodes, err := h.etcdClient.Get(ctx, etcdKey)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get node from etcd"})
+		writeError(c, consts.StatusInternalServerError, "failed to get node from etcd")
 		return
 	}
 	if len(nodes.Kvs) == 0 {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("node %s not found", nodeKey)})
+		writeError(c, consts.StatusNotFound, fmt.Sprintf("node %s not found", nodeKey))
 		return
 	}
 
 	// Parse existing node data
 	var nodeData discovery.TargetNode
 	if err := json.Unmarshal(nodes.Kvs[0].Value, &nodeData); err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to parse existing node data"})
+		writeError(c, consts.StatusInternalServerError, "failed to parse existing node data")
 		return
 	}
 
 	if nodeData.Source != "manual" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "only manual nodes can be updated"})
+		writeError(c, consts.StatusBadRequest, "only manual nodes can be updated")
 		return
 	}
 
@@ -592,13 +523,13 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 	// Marshal and store updated node data
 	nodeDataBytes, err := json.Marshal(nodeData)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to marshal node data"})
+		writeError(c, consts.StatusInternalServerError, "failed to marshal node data")
 		return
 	}
 
 	_, err = h.etcdClient.Put(ctx, etcdKey, string(nodeDataBytes))
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to update node in etcd"})
+		writeError(c, consts.StatusInternalServerError, "failed to update node in etcd")
 		return
 	}
 
@@ -613,7 +544,7 @@ func (h *Handler) UpdateNode(ctx context.Context, c *app.RequestContext) {
 
 // getGatewayConfig retrieves and parses gateway configuration from etcd
 func (h *Handler) getGatewayConfig(ctx context.Context, chainId string) (*discovery.Gateway, int64, error) {
-	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+	gatewayKey := h.gatewayKey(chainId)
 	resp, err := h.etcdClient.Get(ctx, gatewayKey)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get gateway config: %v", err)
@@ -634,7 +565,7 @@ func (h *Handler) getGatewayConfig(ctx context.Context, chainId string) (*discov
 
 // updateGatewayConfigWithTransaction updates gateway configuration in etcd using transaction to ensure atomicity
 func (h *Handler) updateGatewayConfigWithTransaction(ctx context.Context, chainId string, gateway *discovery.Gateway, modRevision int64) error {
-	gatewayKey := fmt.Sprintf("%s%s/gateway", h.keyPrefix, chainId)
+	gatewayKey := h.gatewayKey(chainId)
 	gatewayBytes, err := json.Marshal(gateway)
 	if err != nil {
 		return fmt.Errorf("failed to marshal gateway config: %v", err)
@@ -685,26 +616,26 @@ func (h *Handler) AddMethodRoute(ctx context.Context, c *app.RequestContext) {
 
 	var req AddMethodRouteRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid request format"})
+		writeError(c, consts.StatusBadRequest, "invalid request format")
 		return
 	}
 
 	err := h.checkNodeExist(chainId, req.IncludeNodeKeys, req.ExcludeNodeKeys)
 	if err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Validate required fields
 	if req.Method == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "method is required"})
+		writeError(c, consts.StatusBadRequest, "method is required")
 		return
 	}
 
 	// Get current Gateway config
 	gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -739,7 +670,7 @@ func (h *Handler) AddMethodRoute(ctx context.Context, c *app.RequestContext) {
 	// Update ETCD with transaction
 	err = h.updateGatewayConfigWithTransaction(ctx, chainId, gateway, modRevision)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -791,13 +722,13 @@ func (h *Handler) DeleteMethodRoute(ctx context.Context, c *app.RequestContext) 
 	// Get current Gateway config
 	gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
 
 	_, exists := gateway.MethodRoutes[method]
 	if !exists {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("method route(%s) not found", method)})
+		writeError(c, consts.StatusNotFound, fmt.Sprintf("method route(%s) not found", method))
 		return
 	}
 
@@ -806,7 +737,7 @@ func (h *Handler) DeleteMethodRoute(ctx context.Context, c *app.RequestContext) 
 	// Update ETCD with transaction
 	err = h.updateGatewayConfigWithTransaction(ctx, chainId, gateway, modRevision)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -820,7 +751,7 @@ func (h *Handler) GetMethodRoutes(ctx context.Context, c *app.RequestContext) {
 	// Get current Gateway config
 	gateway, _, err := h.getGatewayConfig(ctx, chainId)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -837,14 +768,14 @@ func (h *Handler) GetMethodRoute(ctx context.Context, c *app.RequestContext) {
 	// Get current Gateway config
 	gateway, _, err := h.getGatewayConfig(ctx, chainId)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
 
 	// Find specified route by method
 	route, exists := gateway.MethodRoutes[method]
 	if !exists {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("method route(%s) not found", method)})
+		writeError(c, consts.StatusNotFound, fmt.Sprintf("method route(%s) not found", method))
 		return
 	}
 
@@ -859,38 +790,38 @@ func (h *Handler) RemoveMethodRoute(ctx context.Context, c *app.RequestContext) 
 
 	var req RemoveMethodRouteRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid request format"})
+		writeError(c, consts.StatusBadRequest, "invalid request format")
 		return
 	}
 
 	err := h.checkNodeExist(chainId, req.IncludeNodeKeys, req.ExcludeNodeKeys)
 	if err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Validate required fields
 	if req.Method == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "method is required"})
+		writeError(c, consts.StatusBadRequest, "method is required")
 		return
 	}
 
 	// Get current Gateway config
 	gateway, modRevision, err := h.getGatewayConfig(ctx, chainId)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if gateway.MethodRoutes == nil {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("method route(%s) not found", req.Method)})
+		writeError(c, consts.StatusNotFound, fmt.Sprintf("method route(%s) not found", req.Method))
 		return
 	}
 
 	// Check if route exists for this method
 	route, exists := gateway.MethodRoutes[req.Method]
 	if !exists {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("method route(%s) not found", req.Method)})
+		writeError(c, consts.StatusNotFound, fmt.Sprintf("method route(%s) not found", req.Method))
 		return
 	}
 
@@ -920,7 +851,7 @@ func (h *Handler) RemoveMethodRoute(ctx context.Context, c *app.RequestContext) 
 	// Update ETCD with transaction
 	err = h.updateGatewayConfigWithTransaction(ctx, chainId, gateway, modRevision)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(c, consts.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -938,27 +869,27 @@ func (h *Handler) AddLocalNode(ctx context.Context, c *app.RequestContext) {
 
 	var req AddNodeRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid request format"})
+		writeError(c, consts.StatusBadRequest, "invalid request format")
 		return
 	}
 
 	if req.IP == "" || req.Port == 0 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "(ip, port) are required"})
+		writeError(c, consts.StatusBadRequest, "(ip, port) are required")
 		return
 	}
 
 	if req.NodeType != 1 && req.NodeType != 2 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "invalid node_type value"})
+		writeError(c, consts.StatusBadRequest, "invalid node_type value")
 		return
 	}
 
 	if req.State < 1 || req.State > 3 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "state must be between 1 and 3"})
+		writeError(c, consts.StatusBadRequest, "state must be between 1 and 3")
 		return
 	}
 
 	if req.Weight < 0 || req.Weight > types.DefaultWeight {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "weight must be between 0 and 100"})
+		writeError(c, consts.StatusBadRequest, "weight must be between 0 and 100")
 		return
 	}
 
@@ -997,7 +928,7 @@ func (h *Handler) AddLocalNode(ctx context.Context, c *app.RequestContext) {
 			"source": "local",
 		})
 	case <-time.After(time.Second):
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to process node event"})
+		writeError(c, consts.StatusInternalServerError, "failed to process node event")
 	}
 }
 
@@ -1007,7 +938,7 @@ func (h *Handler) DeleteLocalNode(ctx context.Context, c *app.RequestContext) {
 
 	node, err := h.findNode(chainId, nodeKey)
 	if err != nil {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": "node not found"})
+		writeError(c, consts.StatusNotFound, "node not found")
 		return
 	}
 
@@ -1031,7 +962,7 @@ func (h *Handler) DeleteLocalNode(ctx context.Context, c *app.RequestContext) {
 			log.Any("node_key", nodeKey))
 		c.JSON(consts.StatusOK, map[string]string{"message": fmt.Sprintf("node %s deleted successfully", nodeKey)})
 	case <-time.After(time.Second):
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to process delete event"})
+		writeError(c, consts.StatusInternalServerError, "failed to process delete event")
 	}
 }
 
@@ -1057,23 +988,23 @@ type MirrorTargetResponse struct {
 func (h *Handler) AddLocalMirror(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		writeError(c, consts.StatusBadRequest, "chainId is required")
 		return
 	}
 
 	var req AddMirrorRequest
 	if err := c.Bind(&req); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request body: %v", err)})
+		writeError(c, consts.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
 	if req.Address == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "address is required"})
+		writeError(c, consts.StatusBadRequest, "address is required")
 		return
 	}
 
 	if req.Port <= 0 || req.Port > 65535 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "port must be between 1 and 65535"})
+		writeError(c, consts.StatusBadRequest, "port must be between 1 and 65535")
 		return
 	}
 
@@ -1119,23 +1050,23 @@ type DeleteMirrorRequest struct {
 func (h *Handler) DeleteLocalMirror(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		writeError(c, consts.StatusBadRequest, "chainId is required")
 		return
 	}
 
 	var req DeleteMirrorRequest
 	if err := c.Bind(&req); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request body: %v", err)})
+		writeError(c, consts.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
 	if req.Address == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "address is required"})
+		writeError(c, consts.StatusBadRequest, "address is required")
 		return
 	}
 
 	if req.Port <= 0 || req.Port > 65535 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "port must be between 1 and 65535"})
+		writeError(c, consts.StatusBadRequest, "port must be between 1 and 65535")
 		return
 	}
 
@@ -1159,7 +1090,7 @@ func (h *Handler) DeleteLocalMirror(ctx context.Context, c *app.RequestContext) 
 func (h *Handler) DeleteAllLocalMirrors(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		writeError(c, consts.StatusBadRequest, "chainId is required")
 		return
 	}
 
@@ -1176,7 +1107,7 @@ func (h *Handler) DeleteAllLocalMirrors(ctx context.Context, c *app.RequestConte
 func (h *Handler) GetMirrors(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		writeError(c, consts.StatusBadRequest, "chainId is required")
 		return
 	}
 
@@ -1230,23 +1161,23 @@ func (h *Handler) GetAllMirrors(ctx context.Context, c *app.RequestContext) {
 func (h *Handler) AddMirror(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		writeError(c, consts.StatusBadRequest, "chainId is required")
 		return
 	}
 
 	var req AddMirrorRequest
 	if err := c.Bind(&req); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request body: %v", err)})
+		writeError(c, consts.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
 	if req.Address == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "address is required"})
+		writeError(c, consts.StatusBadRequest, "address is required")
 		return
 	}
 
 	if req.Port <= 0 || req.Port > 65535 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "port must be between 1 and 65535"})
+		writeError(c, consts.StatusBadRequest, "port must be between 1 and 65535")
 		return
 	}
 
@@ -1255,11 +1186,11 @@ func (h *Handler) AddMirror(ctx context.Context, c *app.RequestContext) {
 
 	resp, err := h.etcdClient.Get(ctx, etcdKey)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to get mirror from etcd: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to get mirror from etcd: %v", err))
 		return
 	}
 	if len(resp.Kvs) > 0 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("mirror %s already exists", addrKey)})
+		writeError(c, consts.StatusBadRequest, fmt.Sprintf("mirror %s already exists", addrKey))
 		return
 	}
 
@@ -1271,7 +1202,7 @@ func (h *Handler) AddMirror(ctx context.Context, c *app.RequestContext) {
 
 	mirrorDataBytes, err := json.Marshal(mirrorData)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to marshal mirror data: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to marshal mirror data: %v", err))
 		return
 	}
 
@@ -1282,12 +1213,12 @@ func (h *Handler) AddMirror(ctx context.Context, c *app.RequestContext) {
 		Commit()
 
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to commit transaction: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to commit transaction: %v", err))
 		return
 	}
 
 	if !txnResp.Succeeded {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "concurrent modification detected, please retry"})
+		writeError(c, consts.StatusBadRequest, "concurrent modification detected, please retry")
 		return
 	}
 
@@ -1307,23 +1238,23 @@ func (h *Handler) AddMirror(ctx context.Context, c *app.RequestContext) {
 func (h *Handler) DeleteMirror(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		writeError(c, consts.StatusBadRequest, "chainId is required")
 		return
 	}
 
 	var req DeleteMirrorRequest
 	if err := c.Bind(&req); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request body: %v", err)})
+		writeError(c, consts.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
 	if req.Address == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "address is required"})
+		writeError(c, consts.StatusBadRequest, "address is required")
 		return
 	}
 
 	if req.Port <= 0 || req.Port > 65535 {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "port must be between 1 and 65535"})
+		writeError(c, consts.StatusBadRequest, "port must be between 1 and 65535")
 		return
 	}
 
@@ -1332,17 +1263,17 @@ func (h *Handler) DeleteMirror(ctx context.Context, c *app.RequestContext) {
 
 	resp, err := h.etcdClient.Get(ctx, etcdKey)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get mirror from etcd"})
+		writeError(c, consts.StatusInternalServerError, "failed to get mirror from etcd")
 		return
 	}
 	if len(resp.Kvs) == 0 {
-		c.JSON(consts.StatusNotFound, map[string]string{"error": fmt.Sprintf("mirror %s not found", addrKey)})
+		writeError(c, consts.StatusNotFound, fmt.Sprintf("mirror %s not found", addrKey))
 		return
 	}
 
 	_, err = h.etcdClient.Delete(ctx, etcdKey)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to delete mirror from etcd: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to delete mirror from etcd: %v", err))
 		return
 	}
 
@@ -1356,7 +1287,7 @@ func (h *Handler) DeleteMirror(ctx context.Context, c *app.RequestContext) {
 func (h *Handler) DeleteAllMirrors(ctx context.Context, c *app.RequestContext) {
 	chainId := c.Param("chainId")
 	if chainId == "" {
-		c.JSON(consts.StatusBadRequest, map[string]string{"error": "chainId is required"})
+		writeError(c, consts.StatusBadRequest, "chainId is required")
 		return
 	}
 
@@ -1364,7 +1295,7 @@ func (h *Handler) DeleteAllMirrors(ctx context.Context, c *app.RequestContext) {
 
 	_, err := h.etcdClient.Delete(ctx, etcdPrefix, clientv3.WithPrefix())
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to delete mirrors from etcd: %v", err)})
+		writeError(c, consts.StatusInternalServerError, fmt.Sprintf("failed to delete mirrors from etcd: %v", err))
 		return
 	}
 
