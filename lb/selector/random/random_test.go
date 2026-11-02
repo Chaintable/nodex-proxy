@@ -47,7 +47,7 @@ func TestRandom_GetNode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := New(TempPickNodes, nil)
+			r := New(TempPickNodes, nil, false)
 			r.UpsertNode(context.TODO(), "0x1", 2, tt.fields[0])
 			r.UpsertNode(context.TODO(), "0x1", 2, tt.fields[1])
 			got, err := r.GetNode(&types.RequestContext{ChainId: "0x1"}, tt.args.requestKey)
@@ -69,7 +69,7 @@ func TestRandomGetNodeHonorsWeights(t *testing.T) {
 		{NodeKey: "one", Weight: 1},
 		{NodeKey: "three", Weight: 3},
 	}})
-	r := New(TempPickNodes, gs)
+	r := New(TempPickNodes, gs, false)
 	for _, key := range []string{"zero", "one", "three"} {
 		node, err := lbnode.New(key, "10.0.0.1", 80, 100, discovery.NodeTypeState)
 		require.NoError(t, err)

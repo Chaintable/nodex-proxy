@@ -98,6 +98,10 @@ type Config struct {
 	// remembered hash go straight to archive. 0 uses the default; negative
 	// disables the cache.
 	ArchiveHashCacheSize int `yaml:"archive_hash_cache_size"`
+	// ArchiveBlockAffinity sends archive requests pinned to the same block
+	// (hash or number) to the same archive node, chosen by weighted rendezvous
+	// hashing, instead of a random one.
+	ArchiveBlockAffinity bool `yaml:"archive_block_affinity"`
 }
 
 func FillWithDefaultConfig(cfg *Config) {

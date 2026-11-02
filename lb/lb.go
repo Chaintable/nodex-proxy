@@ -67,7 +67,7 @@ func NewLoadBalancer(ctx context.Context, config types.Config,
 ) *LoadBalancer {
 	gatewayStrategy := jsonrpc.NewGatewayStrategy()
 	mirrorMap := jsonrpc.NewMirrorMap()
-	nodeSelector := random.New(utils.PickNodes, gatewayStrategy)
+	nodeSelector := random.New(utils.PickNodes, gatewayStrategy, config.ArchiveBlockAffinity)
 	// All node reverse proxies share one upstream client; its per-host pools
 	// survive node upserts so etcd refreshes no longer trigger reconnect storms.
 	if err := lbnode.InitSharedClient(
