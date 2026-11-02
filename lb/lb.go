@@ -67,7 +67,7 @@ func NewLoadBalancer(ctx context.Context, config types.Config,
 ) *LoadBalancer {
 	gatewayStrategy := jsonrpc.NewGatewayStrategy()
 	mirrorMap := jsonrpc.NewMirrorMap()
-	nodeSelector := random.New(utils.PickNodes, gatewayStrategy, config.ArchiveBlockAffinity)
+	nodeSelector := random.New(utils.PickNodes, gatewayStrategy, chainSet(config.ArchiveBlockAffinityChains))
 	// All node reverse proxies share one upstream client; its per-host pools
 	// survive node upserts so etcd refreshes no longer trigger reconnect storms.
 	if err := lbnode.InitSharedClient(
@@ -307,6 +307,16 @@ func normalizeChainID(chainID string) string {
 	}
 
 	return chainID
+}
+
+// chainSet normalizes configured chain IDs the way requests are, so "0x38"
+// and "56" name the same chain.
+func chainSet(chainIDs []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(chainIDs))
+	for _, id := range chainIDs {
+		set[normalizeChainID(id)] = struct{}{}
+	}
+	return set
 }
 
 func splitChainIdentifier(chainID string) (string, string, string) {

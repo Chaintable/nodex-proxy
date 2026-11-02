@@ -31,10 +31,10 @@ proxy_config:
   # returned -39006 and archive served it); later requests on these hashes skip
   # the state attempt. 0 = default (1024), negative = disabled.
   archive_hash_cache_size: 1024
-  # Send archive requests pinned to the same block (hash or number) to the same
-  # archive node instead of a random one, so the block's reads are cached on
-  # one node rather than on all of them.
-  archive_block_affinity: false
+  # Chains whose archive requests pinned to the same block (hash or number) go
+  # to the same archive node instead of a random one, so the block's reads are
+  # cached on one node rather than on all of them. Empty = disabled.
+  archive_block_affinity_chains: []  # e.g. ["56"]
 
   # Processor configuration
   processor:

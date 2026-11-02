@@ -22,15 +22,15 @@ type Random struct {
 	chainHeight     map[string]*hexutil.Big
 	pickNodeFunc    utils.PickNodesFunc
 	GatewayStrategy jsonrpc.GatewayStrategy
-	// blockAffinity routes archive requests pinned to a block by the block
-	// instead of at random; see pickByBlock.
-	blockAffinity bool
-	lock          sync.RWMutex
+	// affinityChains are the base chain IDs whose archive requests pinned to a
+	// block are routed by the block instead of at random; see pickByBlock.
+	affinityChains map[string]struct{}
+	lock           sync.RWMutex
 }
 
-func New(pickNodeFunc utils.PickNodesFunc, gatewayStrategy jsonrpc.GatewayStrategy, blockAffinity bool) *Random {
+func New(pickNodeFunc utils.PickNodesFunc, gatewayStrategy jsonrpc.GatewayStrategy, affinityChains map[string]struct{}) *Random {
 	return &Random{
-		blockAffinity:   blockAffinity,
+		affinityChains:  affinityChains,
 		archiveNodes:    make(map[string][]*lbnode.Node),
 		stateNodes:      make(map[string][]*lbnode.Node),
 		nativeNodes:     make(map[string][]*lbnode.Node),
@@ -98,7 +98,7 @@ func (r *Random) GetNode(ctx *types.RequestContext, requestKey string) (*lbnode.
 	// it gain from each block's reads staying in one node's caches. Native
 	// nodes may also be typed archive, so the native pool is excluded by name.
 	// A batch's block context comes from one item and does not pin the batch.
-	if r.blockAffinity && !forceNative && !ctx.IsBatch && nodes[0].NodeType == discovery.NodeTypeArchive {
+	if _, on := r.affinityChains[ctx.BaseChainId]; on && !forceNative && !ctx.IsBatch && nodes[0].NodeType == discovery.NodeTypeArchive {
 		if key, ok := blockKey(ctx.GetBlockContext()); ok {
 			return pickByBlock(key, nodes, nodeWeight), nil
 		}

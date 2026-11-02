@@ -30,9 +30,15 @@ func affinityNodes(t *testing.T, n int, nodeType discovery.NodeType, opts ...lbn
 	return nodes
 }
 
+var affinityOn = map[string]struct{}{affinityChain: {}}
+
 func newAffinitySelector(t *testing.T, gs jsonrpc.GatewayStrategy, blockAffinity bool, nodeType discovery.NodeType, nodes []*lbnode.Node) *Random {
 	t.Helper()
-	r := New(utils.PickNodes, gs, blockAffinity)
+	var chains map[string]struct{}
+	if blockAffinity {
+		chains = affinityOn
+	}
+	r := New(utils.PickNodes, gs, chains)
 	for _, node := range nodes {
 		require.NoError(t, r.UpsertNode(context.Background(), affinityChain, nodeType, node))
 	}
@@ -42,6 +48,7 @@ func newAffinitySelector(t *testing.T, gs jsonrpc.GatewayStrategy, blockAffinity
 func hashRequest(hash common.Hash, archive bool) *types.RequestContext {
 	return &types.RequestContext{
 		ChainId:      affinityChain,
+		BaseChainId:  affinityChain,
 		Archive:      archive,
 		BlockContext: &types.BlockContext{Type: "Equals", BlockId: &rpc.BlockNumberOrHash{BlockHash: &hash}},
 	}
@@ -91,6 +98,7 @@ func TestBlockAffinityByNumber(t *testing.T) {
 	number := rpc.BlockNumber(30_000_000)
 	pinned := &types.RequestContext{
 		ChainId:      affinityChain,
+		BaseChainId:  affinityChain,
 		Archive:      true,
 		BlockContext: &types.BlockContext{Type: "Equals", BlockId: &rpc.BlockNumberOrHash{BlockNumber: &number}},
 	}
@@ -99,6 +107,7 @@ func TestBlockAffinityByNumber(t *testing.T) {
 	latest := rpc.LatestBlockNumber
 	head := &types.RequestContext{
 		ChainId:      affinityChain,
+		BaseChainId:  affinityChain,
 		Archive:      true,
 		BlockContext: &types.BlockContext{Type: "Equals", BlockId: &rpc.BlockNumberOrHash{BlockNumber: &latest}},
 	}
@@ -110,12 +119,19 @@ func TestBlockAffinityByNumber(t *testing.T) {
 	require.Greater(t, distinctPicks(t, r, contains), 1)
 }
 
-// State nodes, and archive nodes with the switch off, keep the random pick.
+// State nodes, unlisted chains, batches and native nodes keep the random pick.
 func TestBlockAffinityOnlyArchive(t *testing.T) {
 	hash := common.HexToHash("0xa2340245dad7d7616fd17c69ca5eda23fb91f7f428910290eb0ea1487c2c3175")
 
 	off := newAffinitySelector(t, nil, false, discovery.NodeTypeArchive, affinityNodes(t, 22, discovery.NodeTypeArchive))
 	require.Greater(t, distinctPicks(t, off, hashRequest(hash, true)), 1)
+
+	// Only the listed chains: the same pool reached through another chain ID.
+	other := New(utils.PickNodes, nil, map[string]struct{}{"1": {}})
+	for _, node := range affinityNodes(t, 22, discovery.NodeTypeArchive) {
+		require.NoError(t, other.UpsertNode(context.Background(), affinityChain, discovery.NodeTypeArchive, node))
+	}
+	require.Greater(t, distinctPicks(t, other, hashRequest(hash, true)), 1)
 
 	state := newAffinitySelector(t, nil, true, discovery.NodeTypeState, affinityNodes(t, 22, discovery.NodeTypeState))
 	require.Greater(t, distinctPicks(t, state, hashRequest(hash, false)), 1)
@@ -128,7 +144,7 @@ func TestBlockAffinityOnlyArchive(t *testing.T) {
 	require.Greater(t, distinctPicks(t, on, batch), 1)
 
 	// Native nodes typed archive in etcd still get the random pick.
-	native := New(utils.PickNodes, nil, true)
+	native := New(utils.PickNodes, nil, affinityOn)
 	for _, node := range affinityNodes(t, 22, discovery.NodeTypeArchive, lbnode.WithSource("native")) {
 		require.NoError(t, native.UpsertNode(context.Background(), affinityChain, discovery.NodeTypeArchive, node))
 	}
