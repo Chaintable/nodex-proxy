@@ -102,6 +102,8 @@ request mirror
 如果被选中的 state/archive 节点池为空，二者会互相兜底。每个节点池在存在可用节点时优先使用可用节点。
 
 6. 非 batch 请求会先按方法路由过滤候选节点，再按权重选择最终节点。没有显式权重的节点默认权重为 `100`。
+
+   对 `archive_block_affinity_chains` 中列出的链（基础 chain ID，如 `["56"]`，默认为空），落到 archive 节点池且固定在某个区块上的非 batch 请求（`"type":"Equals"`，带区块 hash 或非负区块号）改为按该区块做带权重的 rendezvous 哈希选节点。所有 proxy 副本选出同一个节点，同一区块的请求共享这一个节点的缓存；移除节点时只有它负责的区块会迁移。state、native 节点池、batch 以及跟随链头的请求仍按权重随机选择。
 7. 被选中的节点通过 reverse proxy 接收上游请求。
 8. 特定错误会触发第二次上游请求：
 

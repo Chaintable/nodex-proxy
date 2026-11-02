@@ -22,11 +22,15 @@ type Random struct {
 	chainHeight     map[string]*hexutil.Big
 	pickNodeFunc    utils.PickNodesFunc
 	GatewayStrategy jsonrpc.GatewayStrategy
-	lock            sync.RWMutex
+	// affinityChains are the base chain IDs whose archive requests pinned to a
+	// block are routed by the block instead of at random; see pickByBlock.
+	affinityChains map[string]struct{}
+	lock           sync.RWMutex
 }
 
-func New(pickNodeFunc utils.PickNodesFunc, gatewayStrategy jsonrpc.GatewayStrategy) *Random {
+func New(pickNodeFunc utils.PickNodesFunc, gatewayStrategy jsonrpc.GatewayStrategy, affinityChains map[string]struct{}) *Random {
 	return &Random{
+		affinityChains:  affinityChains,
 		archiveNodes:    make(map[string][]*lbnode.Node),
 		stateNodes:      make(map[string][]*lbnode.Node),
 		nativeNodes:     make(map[string][]*lbnode.Node),
@@ -88,6 +92,16 @@ func (r *Random) GetNode(ctx *types.RequestContext, requestKey string) (*lbnode.
 		log.Warn(fmt.Sprintf("Weight sum is zero for chain %s: nodes_count=%d, weights_count=%d",
 			chainId, len(nodes), len(weights)))
 		return nil, utils.NewNoAvailableNodeError(chainId, "weight sum is zero, all nodes have zero weight")
+	}
+
+	// Only archive nodes: they hold the whole history, and requests spread over
+	// it gain from each block's reads staying in one node's caches. Native
+	// nodes may also be typed archive, so the native pool is excluded by name.
+	// A batch's block context comes from one item and does not pin the batch.
+	if _, on := r.affinityChains[ctx.BaseChainId]; on && !forceNative && !ctx.IsBatch && nodes[0].NodeType == discovery.NodeTypeArchive {
+		if key, ok := blockKey(ctx.GetBlockContext()); ok {
+			return pickByBlock(key, nodes, nodeWeight), nil
+		}
 	}
 
 	// targetWeight is uniform in [0, weightSum); node i owns the half-open

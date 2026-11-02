@@ -102,6 +102,8 @@ request mirror
 If a selected pool is empty, state and archive pools fall back to each other. Each pool prefers available nodes when any are available.
 
 6. Method routes filter the candidate nodes for non-batch requests, then weights choose the final node. Missing weights default to `100`.
+
+   On chains listed in `archive_block_affinity_chains` (base chain IDs, e.g. `["56"]`; empty by default), a non-batch request that lands on the archive pool and is pinned to one block (`"type":"Equals"` with a block hash or a non-negative block number) instead goes to the node chosen by weighted rendezvous hashing over that block. Every proxy replica picks the same node, so a block's requests share one node's caches; removing a node only moves the blocks it owned. State and native pools, batches, and requests that follow the head keep the weighted random pick.
 7. The selected node reverse-proxy handles the upstream request.
 8. Retry rules may trigger a second upstream request:
 
