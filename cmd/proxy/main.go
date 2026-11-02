@@ -156,6 +156,11 @@ func main() {
 		heightMap, mirrorLimiter, nodeChannel, heightChan, gatewayChannel, mirrorChannel, versionChannel)
 	go loadBalancer.BackgroundRefreshNode()
 
+	// Disable MPTCP for both listeners to mitigate CVE-2026-98432.
+	// This does not replace patching the host kernel.
+	listenConfig := &net.ListenConfig{}
+	listenConfig.SetMultipathTCP(false)
+
 	go func() {
 		router := http.NewServeMux()
 		// pprof lives on the internal metrics port, not on the RPC port that
@@ -175,7 +180,9 @@ func main() {
 			Handler: router,
 		}
 		// 启动服务器
-		listener, err := net.Listen("tcp", fmt.Sprintf(":%s", cmdlineAndLoadConfig.MetricListen))
+		listener, err := listenConfig.Listen(
+			context.Background(), "tcp", fmt.Sprintf(":%s", cmdlineAndLoadConfig.MetricListen),
+		)
 		if err != nil {
 			log.Fatal("listen failed: %v\n", err)
 		}
@@ -187,6 +194,7 @@ func main() {
 
 	h := server.Default(
 		server.WithHostPorts(fmt.Sprintf("0.0.0.0:%s", cmdlineAndLoadConfig.Listen)),
+		server.WithListenConfig(listenConfig),
 		server.WithExitWaitTime(gracefulExitWait(cmdlineAndLoadConfig.ProxyConfig)),
 	)
 
