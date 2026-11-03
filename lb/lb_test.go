@@ -7,7 +7,9 @@ import (
 
 	ejrpc "github.com/Chaintable/nodex-proxy/jsonrpc"
 	"github.com/Chaintable/nodex-proxy/lib/log"
+	"github.com/Chaintable/nodex-proxy/types"
 	nJson "github.com/bytedance/sonic"
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/stretchr/testify/require"
 )
@@ -120,6 +122,41 @@ func TestBeforeProcessNodeTypeArchiveHeader(t *testing.T) {
 
 			requestContext := lb.beforeProcess(context.Background(), &request)
 			require.Equal(t, tt.wantArchive, requestContext.Archive)
+		})
+	}
+}
+
+func TestInjectUpstreamClientIP(t *testing.T) {
+	tests := []struct {
+		name      string
+		sourceIP  string
+		forwarded string
+		want      string
+	}{
+		{
+			name:      "dbk source takes precedence",
+			sourceIP:  "203.0.113.10",
+			forwarded: "198.51.100.20, 10.0.0.8",
+			want:      "203.0.113.10",
+		},
+		{
+			name:      "forwarded client ip fallback",
+			forwarded: "198.51.100.20, 10.0.0.8",
+			want:      "198.51.100.20",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := app.NewContext(0)
+			c.Request.Header.Set(NodexClientIP, "caller-controlled")
+			if tt.forwarded != "" {
+				c.Request.Header.Set("X-Forwarded-For", tt.forwarded)
+			}
+
+			injectUpstreamClientIP(c, &types.RequestContext{SourceIP: tt.sourceIP})
+
+			require.Equal(t, tt.want, c.Request.Header.Get(NodexClientIP))
 		})
 	}
 }

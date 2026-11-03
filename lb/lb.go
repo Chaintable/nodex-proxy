@@ -56,6 +56,7 @@ const (
 	DBKEnv           = "x-dbk-env"
 	DBKServerVersion = "x-dbk-server-version"
 	NodexNodeType    = "x-nodex-node-type"
+	NodexClientIP    = "x-nodex-client-ip"
 )
 
 func NewLoadBalancer(ctx context.Context, config types.Config,
@@ -518,6 +519,7 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 		method = requestContext.Method
 	}
 	c.Request.SetOptions(hzconfig.WithReadTimeout(lb.upstreamReadTimeout(method)))
+	injectUpstreamClientIP(c, requestContext)
 
 	targetNode.ReverseProxy.ServeHTTP(ctx, c)
 
@@ -533,6 +535,31 @@ func (lb *LoadBalancer) attemptRequest(ctx context.Context, c *app.RequestContex
 		requestContext.ResponseBody = object
 		requestContext.WriteError(c, consts.StatusBadGateway, object)
 	}
+}
+
+// injectUpstreamClientIP overwrites the internal client IP header before every
+// upstream attempt. Prefer the existing DBK source metadata and fall back to
+// Hertz's client IP resolution (X-Forwarded-For, X-Real-IP, then the peer IP).
+// Overwriting prevents a caller-provided x-nodex-client-ip from reaching RPC
+// nodes unchanged.
+func injectUpstreamClientIP(c *app.RequestContext, requestContext *types.RequestContext) {
+	if c == nil {
+		return
+	}
+
+	var clientIP string
+	if requestContext != nil {
+		clientIP = strings.TrimSpace(requestContext.SourceIP)
+	}
+	if clientIP == "" {
+		clientIP = strings.TrimSpace(c.ClientIP())
+	}
+
+	if clientIP == "" {
+		c.Request.Header.Del(NodexClientIP)
+		return
+	}
+	c.Request.Header.Set(NodexClientIP, clientIP)
 }
 
 func (lb *LoadBalancer) shouldRetryWithArchive(requestContext *types.RequestContext, responseErrorCodes rpcErrorCodes) bool {
